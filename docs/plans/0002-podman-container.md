@@ -1,6 +1,7 @@
 # Plan: make sandbin installable with podman
 
-Status: draft. Decisions in `docs/decisions/0002-container-defaults.md`. Verified in this
+Status: implemented on `main` (`f459c73..6f3d497`), reviewed, three review blockers fixed.
+Decisions in `docs/decisions/0002-container-defaults.md`. Verified in this
 sandbox first: podman 5.8.9 with crun is present, `FROM scratch` builds and runs, pulls from
 docker.io work, `docker.io/library/golang:1.26-alpine` exists upstream, and
 `CGO_ENABLED=0 go build` of the current code produces a 9.8 MB static binary (modernc sqlite
@@ -181,3 +182,34 @@ manifest builds, TLS in the container (put a reverse proxy in front), quadlet `.
 `.volume` units, an authenticated or `/healthz`-only metrics endpoint, `podman secret`,
 user namespace `--userns=keep-id` tuning for bind mounts, an SELinux policy module, CI workflow
 files, and a Makefile.
+
+## Outcome
+
+The image builds at 18.9 MB, runs as uid 1000, keeps the database in a named volume across
+`podman restart`, works under `--read-only`, and answers every host-side adversarial probe
+identically to the host binary. Nothing from the build stage leaks into the runtime image.
+
+Three review blockers, all fixed:
+
+- podman 5.8.9 discards the Containerfile `HEALTHCHECK` when it builds its default OCI image
+  format, so no probe ran at all (`1e8c427`). The probe now lives in the quadlet unit as
+  `HealthCmd=` and in the README run command as `--health-cmd`, both of which podman honours:
+  quadlet translates them into `--health-cmd ... --health-interval 30s ...` with no warnings.
+  The `HEALTHCHECK` line stays for `podman build --format docker`, with a comment saying so.
+- the README told rootless users to set `EnvironmentFile=~/.config/...`, and quadlet resolves
+  that against the unit's own directory, producing `--env-file /root/.config/containers/systemd/~/...`
+  and a `Restart=always` loop. The README now rewrites the line with an absolute `$HOME` path
+  (`0c90d78`).
+- the README's curl examples used `$BIN/index.html`, and `$BIN` already ends in `/`, so every
+  example asked for a `//` path and returned `400 path must be relative`. Fixed to
+  `${BIN}index.html` across both the plain and the podman section (`0c90d78`).
+
+Two sandbox limits decide what could not be proven here, and they are limits of this machine,
+not of the code: podman never executes a health probe here at all (`podman exec` and `podman top`
+fail, and even `--health-cmd "exit 0"` on plain `alpine` stays `starting` forever), so the health
+wiring is proven but a `healthy` status is not; and `SELinuxEnabled=false` with a rootful podman,
+so the `:Z` bind-mount claim and the rootless port-mapping claim remain untested. `podman build`
+also needs `--network=host` in this sandbox because buildah's pasta networking is not permitted.
+
+`Containerfile` deviates from the plan text in one place: `-ldflags="-s -w"` is quoted, because
+the unquoted form makes `go build` read `-w` as its own flag.
