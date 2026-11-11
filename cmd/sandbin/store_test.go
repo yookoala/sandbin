@@ -1,9 +1,12 @@
 package main
 
 import (
+	"database/sql"
+	"errors"
 	"path/filepath"
 	"regexp"
 	"testing"
+	"time"
 )
 
 func newTestStore(t *testing.T) *Store {
@@ -136,5 +139,131 @@ func TestListFiles(t *testing.T) {
 		if f.UpdatedAt == "" {
 			t.Errorf("files[%d].UpdatedAt is empty", i)
 		}
+	}
+}
+
+// ipBlockRow reads one ip_blocks row for a test and reports whether it exists.
+func ipBlockRow(t *testing.T, store *Store, ip string) (int, bool) {
+	t.Helper()
+	var failures int
+	err := store.db.QueryRow(`SELECT failures FROM ip_blocks WHERE ip=?`, ip).Scan(&failures)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false
+	}
+	if err != nil {
+		t.Fatalf("read ip_blocks row for %q: %v", ip, err)
+	}
+	return failures, true
+}
+
+func TestRecordFailureEscalates(t *testing.T) {
+	store := newTestStore(t)
+	// One fixed now for every failure: the count must stack 30, 60, 90 minutes
+	// and stop growing at blockMax while the count itself is never reset.
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+
+	for i := range 49 {
+		want := time.Duration(i+1) * blockStep
+		if want > blockMax {
+			want = blockMax
+		}
+		until, err := store.RecordFailure("203.0.113.7", now)
+		if err != nil {
+			t.Fatalf("RecordFailure #%d: %v", i+1, err)
+		}
+		if got := until.Sub(now); got != want {
+			t.Errorf("failure #%d blocks for %v, want %v", i+1, got, want)
+		}
+	}
+
+	if failures, ok := ipBlockRow(t, store, "203.0.113.7"); !ok || failures != 49 {
+		t.Errorf("row after 49 failures = failures %d, ok %v; want 49 failures, present", failures, ok)
+	}
+}
+
+func TestIsBlockedEndsAtBlockedUntil(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+
+	if until, blocked := store.IsBlocked("203.0.113.7", now); blocked || !until.IsZero() {
+		t.Fatalf("unknown address = until %v, blocked %v; want zero time, not blocked", until, blocked)
+	}
+
+	until, err := store.RecordFailure("203.0.113.7", now)
+	if err != nil {
+		t.Fatalf("RecordFailure: %v", err)
+	}
+	want := now.Add(blockStep)
+	if !until.Equal(want) {
+		t.Fatalf("RecordFailure returned until %v, want %v", until, want)
+	}
+
+	if got, blocked := store.IsBlocked("203.0.113.7", now); !blocked || !got.Equal(want) {
+		t.Errorf("at the failure = until %v, blocked %v; want %v, blocked", got, blocked, want)
+	}
+	if _, blocked := store.IsBlocked("203.0.113.7", now.Add(29*time.Minute)); !blocked {
+		t.Errorf("29 minutes in is not blocked")
+	}
+	if _, blocked := store.IsBlocked("203.0.113.7", want); blocked {
+		t.Errorf("at exactly blocked_until is still blocked")
+	}
+	if _, blocked := store.IsBlocked("203.0.113.7", now.Add(31*time.Minute)); blocked {
+		t.Errorf("past blocked_until is still blocked")
+	}
+}
+
+func TestRecordFailurePrunesIdleRows(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+
+	if _, err := store.RecordFailure("10.0.0.1", now); err != nil {
+		t.Fatalf("RecordFailure(10.0.0.1): %v", err)
+	}
+	if _, err := store.RecordFailure("10.0.0.2", now.Add(29*24*time.Hour)); err != nil {
+		t.Fatalf("RecordFailure(10.0.0.2): %v", err)
+	}
+	// 29 days of idle is inside the window, so 10.0.0.1 must still be there.
+	if failures, ok := ipBlockRow(t, store, "10.0.0.1"); !ok || failures != 1 {
+		t.Errorf("10.0.0.1 after 29 days idle = failures %d, ok %v; want 1, present", failures, ok)
+	}
+
+	// This call is 31 days past 10.0.0.1's update, so the prune drops it.
+	if _, err := store.RecordFailure("10.0.0.3", now.Add(31*24*time.Hour)); err != nil {
+		t.Fatalf("RecordFailure(10.0.0.3): %v", err)
+	}
+	if _, ok := ipBlockRow(t, store, "10.0.0.1"); ok {
+		t.Errorf("10.0.0.1 survived a 31 day idle prune")
+	}
+	if failures, ok := ipBlockRow(t, store, "10.0.0.2"); !ok || failures != 1 {
+		t.Errorf("10.0.0.2 was pruned or changed = failures %d, ok %v; want 1, present", failures, ok)
+	}
+	if failures, ok := ipBlockRow(t, store, "10.0.0.3"); !ok || failures != 1 {
+		t.Errorf("10.0.0.3 = failures %d, ok %v; want 1, present", failures, ok)
+	}
+}
+
+func TestIpBlocksPersistAcrossStores(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sandbin.db")
+	store, err := openStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+	until, err := store.RecordFailure("203.0.113.7", now)
+	if err != nil {
+		t.Fatalf("RecordFailure: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	reopened, err := openStore(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { reopened.Close() })
+
+	if got, blocked := reopened.IsBlocked("203.0.113.7", now); !blocked || !got.Equal(until) {
+		t.Errorf("after reopen = until %v, blocked %v; want %v, blocked", got, blocked, until)
 	}
 }

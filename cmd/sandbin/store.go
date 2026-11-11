@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS files (
 	updated_at TEXT NOT NULL,
 	PRIMARY KEY (bin_hash, path)
 );
+CREATE TABLE IF NOT EXISTS ip_blocks (
+	ip TEXT PRIMARY KEY,
+	failures INTEGER NOT NULL,
+	blocked_until TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
 `
 
 type Store struct {
@@ -147,4 +153,48 @@ func (s *Store) ListFiles(binHash string) ([]FileEntry, error) {
 		files = append(files, f)
 	}
 	return files, rows.Err()
+}
+
+// IsBlocked reports whether ip is kept away from key-checked writes right now,
+// and when that block ends. A missing, unreadable or unparsable row reads as
+// not blocked: the block path must never fail an ordinary request.
+func (s *Store) IsBlocked(ip string, now time.Time) (time.Time, bool) {
+	var stored string
+	if err := s.db.QueryRow(`SELECT blocked_until FROM ip_blocks WHERE ip=?`, ip).Scan(&stored); err != nil {
+		return time.Time{}, false
+	}
+	until, err := time.Parse(time.RFC3339Nano, stored)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return until, until.After(now)
+}
+
+// RecordFailure charges ip one API key failure and reports when the new block
+// ends. The stored count is never reset, so blocked_until walks from blockStep
+// up to blockMax. Rows idle past blockIdlePrune are deleted in the same call
+// so the table cannot grow without bound.
+func (s *Store) RecordFailure(ip string, now time.Time) (time.Time, error) {
+	var failures int
+	err := s.db.QueryRow(`SELECT failures FROM ip_blocks WHERE ip=?`, ip).Scan(&failures)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, err
+	}
+	failures++
+	blockedUntil := now.Add(blockStep * time.Duration(failures))
+	if max := now.Add(blockMax); blockedUntil.After(max) {
+		blockedUntil = max
+	}
+	_, err = s.db.Exec(`
+INSERT INTO ip_blocks (ip, failures, blocked_until, updated_at) VALUES (?, ?, ?, ?)
+ON CONFLICT (ip) DO UPDATE SET failures=excluded.failures, blocked_until=excluded.blocked_until, updated_at=excluded.updated_at`,
+		ip, failures, blockedUntil.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339))
+	if err != nil {
+		return time.Time{}, err
+	}
+	// RFC3339 stamps in one zone sort as strings, so the prune needs no date arithmetic in SQL.
+	if _, err := s.db.Exec(`DELETE FROM ip_blocks WHERE updated_at < ?`, now.Add(-blockIdlePrune).UTC().Format(time.RFC3339)); err != nil {
+		return blockedUntil, err
+	}
+	return blockedUntil, nil
 }
