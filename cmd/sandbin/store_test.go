@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"testing"
 	"time"
 )
@@ -178,6 +179,57 @@ func TestRecordFailureEscalates(t *testing.T) {
 
 	if failures, ok := ipBlockRow(t, store, "203.0.113.7"); !ok || failures != 49 {
 		t.Errorf("row after 49 failures = failures %d, ok %v; want 49 failures, present", failures, ok)
+	}
+}
+
+// TestRecordFailureParallel hammers one address from 50 goroutines at once. The old
+// SELECT-then-UPSERT lost counts under this load (a reviewer measured 34 of 50, 12
+// under -race) and leaked SQLITE_BUSY, so every failure must be charged and no call
+// may return an error.
+func TestRecordFailureParallel(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+
+	const calls = 50
+	errs := make([]error, calls)
+	var wg sync.WaitGroup
+	for i := range calls {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = store.RecordFailure("203.0.113.7", now)
+		}()
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("RecordFailure #%d: %v", i+1, err)
+		}
+	}
+	if failures, ok := ipBlockRow(t, store, "203.0.113.7"); !ok || failures != calls {
+		t.Fatalf("after %d parallel failures = failures %d, ok %v; want %d failures, present", calls, failures, ok, calls)
+	}
+
+	want := time.Duration(calls) * blockStep
+	if want > blockMax {
+		want = blockMax
+	}
+	var untilRaw, updatedRaw string
+	if err := store.db.QueryRow(`SELECT blocked_until, updated_at FROM ip_blocks WHERE ip=?`, "203.0.113.7").
+		Scan(&untilRaw, &updatedRaw); err != nil {
+		t.Fatalf("read the stored block: %v", err)
+	}
+	until, err := time.Parse(time.RFC3339Nano, untilRaw)
+	if err != nil {
+		t.Fatalf("parse blocked_until %q: %v", untilRaw, err)
+	}
+	updated, err := time.Parse(time.RFC3339Nano, updatedRaw)
+	if err != nil {
+		t.Fatalf("parse updated_at %q: %v", updatedRaw, err)
+	}
+	if got := until.Sub(updated); got != want {
+		t.Errorf("stored block after %d parallel failures = %v, want %v", calls, got, want)
 	}
 }
 

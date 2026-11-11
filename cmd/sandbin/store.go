@@ -54,6 +54,8 @@ func openStore(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// sqlite has one writer, so one pooled connection is how goroutines are kept from failing each other with SQLITE_BUSY.
+	db.SetMaxOpenConns(1)
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, err
@@ -173,10 +175,17 @@ func (s *Store) IsBlocked(ip string, now time.Time) (time.Time, bool) {
 // RecordFailure charges ip one API key failure and reports when the new block
 // ends. The stored count is never reset, so blocked_until walks from blockStep
 // up to blockMax. Rows idle past blockIdlePrune are deleted in the same call
-// so the table cannot grow without bound.
+// so the table cannot grow without bound. The read, the upsert and the prune
+// run in one transaction so parallel failures cannot interleave and drop counts.
 func (s *Store) RecordFailure(ip string, now time.Time) (time.Time, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer tx.Rollback()
+
 	var failures int
-	err := s.db.QueryRow(`SELECT failures FROM ip_blocks WHERE ip=?`, ip).Scan(&failures)
+	err = tx.QueryRow(`SELECT failures FROM ip_blocks WHERE ip=?`, ip).Scan(&failures)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return time.Time{}, err
 	}
@@ -185,7 +194,7 @@ func (s *Store) RecordFailure(ip string, now time.Time) (time.Time, error) {
 	if max := now.Add(blockMax); blockedUntil.After(max) {
 		blockedUntil = max
 	}
-	_, err = s.db.Exec(`
+	_, err = tx.Exec(`
 INSERT INTO ip_blocks (ip, failures, blocked_until, updated_at) VALUES (?, ?, ?, ?)
 ON CONFLICT (ip) DO UPDATE SET failures=excluded.failures, blocked_until=excluded.blocked_until, updated_at=excluded.updated_at`,
 		ip, failures, blockedUntil.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339))
@@ -193,7 +202,10 @@ ON CONFLICT (ip) DO UPDATE SET failures=excluded.failures, blocked_until=exclude
 		return time.Time{}, err
 	}
 	// RFC3339 stamps in one zone sort as strings, so the prune needs no date arithmetic in SQL.
-	if _, err := s.db.Exec(`DELETE FROM ip_blocks WHERE updated_at < ?`, now.Add(-blockIdlePrune).UTC().Format(time.RFC3339)); err != nil {
+	if _, err := tx.Exec(`DELETE FROM ip_blocks WHERE updated_at < ?`, now.Add(-blockIdlePrune).UTC().Format(time.RFC3339)); err != nil {
+		return blockedUntil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return blockedUntil, err
 	}
 	return blockedUntil, nil
