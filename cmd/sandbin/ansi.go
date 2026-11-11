@@ -47,16 +47,22 @@ func ansiToHTML(s string) string {
 func parseANSI(s string) []ansiRun {
 	var runs []ansiRun
 	st := style{}
+	runStyle := st
+	var cur strings.Builder
+	flush := func() {
+		if cur.Len() > 0 {
+			runs = append(runs, ansiRun{text: cur.String(), st: runStyle})
+			cur.Reset()
+		}
+	}
+	// Each chunk is written once into the builder, so a log made of thousands of
+	// same-style segments stays linear instead of re-copying the run every time.
 	add := func(text string) {
-		text = strings.ReplaceAll(text, "\r", "")
-		if text == "" {
-			return
+		if st != runStyle {
+			flush()
+			runStyle = st
 		}
-		if n := len(runs); n > 0 && runs[n-1].st == st {
-			runs[n-1].text += text
-			return
-		}
-		runs = append(runs, ansiRun{text: text, st: st})
+		cur.WriteString(strings.ReplaceAll(text, "\r", ""))
 	}
 
 	for i := 0; i < len(s); {
@@ -85,6 +91,7 @@ func parseANSI(s string) []ansiRun {
 		// shortcut: escape sequences that are not SGR are dropped, not rendered.
 		i = j
 	}
+	flush()
 	return runs
 }
 

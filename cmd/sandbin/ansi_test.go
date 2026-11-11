@@ -1,7 +1,9 @@
 package main
 
 import (
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestANSIToHTMLPlain(t *testing.T) {
@@ -113,5 +115,23 @@ func TestANSIToHTMLOtherSequences(t *testing.T) {
 	want = "<pre class=\"ansi\">a\nb<span style=\"font-weight:bold\">\nbold\n</span>plain</pre>"
 	if got != want {
 		t.Errorf("newlines = %q, want %q", got, want)
+	}
+}
+
+// A 1 MiB log of same-style segments used to be quadratic, because every segment
+// was appended to the previous run with string +=[].
+func TestANSIToHTMLStaysLinearOnSegmentHeavyInput(t *testing.T) {
+	input := strings.Repeat("\x1b[32mok\x1b[32m ", 1<<16)
+	start := time.Now()
+	got := ansiToHTML(input)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("rendering %d bytes of segments took %v, want well under 1s", len(input), elapsed)
+	}
+	if n := strings.Count(got, "<span"); n != 1 {
+		t.Errorf("%d spans, want the same-style segments merged into 1", n)
+	}
+	if !strings.HasPrefix(got, `<pre class="ansi"><span style="color:#00aa00">ok ok ok`) ||
+		!strings.HasSuffix(got, "</span></pre>") {
+		t.Errorf("rendered output has the wrong shape: %.80q ... %.40q", got, got[len(got)-40:])
 	}
 }
