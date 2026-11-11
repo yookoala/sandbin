@@ -17,6 +17,7 @@ import (
 const usage = `usage:
   sandbin serve [--api-key k] [--db f] [--addr a] [--trusted-proxy l] [--trusted-proxy-file f]
   sandbin ip list [--db f] [--json]
+  sandbin ip show [--db f] <ip>
   sandbin ip unblock [--db f] <ip>
   sandbin ip clear [--db f]
   sandbin help | --help

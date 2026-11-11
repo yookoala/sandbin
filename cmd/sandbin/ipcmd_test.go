@@ -40,6 +40,9 @@ func TestDispatchHelp(t *testing.T) {
 		if !strings.Contains(stdout, "usage:") || !strings.Contains(stdout, "sandbin ip list") {
 			t.Errorf("sandbin %s stdout = %q, want the usage", verb, stdout)
 		}
+		if !strings.Contains(stdout, "sandbin ip show [--db f] <ip>") {
+			t.Errorf("sandbin %s stdout = %q, want the usage to name sandbin ip show", verb, stdout)
+		}
 		if stderr != "" {
 			t.Errorf("sandbin %s stderr = %q, want nothing", verb, stderr)
 		}
@@ -208,6 +211,9 @@ func TestIPNoVerb(t *testing.T) {
 	if !strings.Contains(stderr.String(), "usage:") || !strings.Contains(stderr.String(), "sandbin ip unblock") {
 		t.Errorf("sandbin ip stderr = %q, want the ip usage", stderr.String())
 	}
+	if !strings.Contains(stderr.String(), "sandbin ip show") || !strings.Contains(stderr.String(), "pass list, show <ip>, unblock <ip> or clear") {
+		t.Errorf("sandbin ip stderr = %q, want the usage and the refusal to name show", stderr.String())
+	}
 	if stdout.Len() != 0 {
 		t.Errorf("sandbin ip stdout = %q, want nothing", stdout.String())
 	}
@@ -221,6 +227,9 @@ func TestIPUnknownVerb(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), `unknown command "bogus"`) || !strings.Contains(stderr.String(), "usage:") {
 		t.Errorf("sandbin ip bogus stderr = %q, want a refusal naming it and the ip usage", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "pass list, show <ip>, unblock <ip> or clear") {
+		t.Errorf("sandbin ip bogus stderr = %q, want the refusal to name show", stderr.String())
 	}
 }
 
@@ -364,6 +373,245 @@ func TestIPListRejectsExtraArgs(t *testing.T) {
 	}
 	if _, stderr, _ := runIPTest(t, dbPath, "list", "--bogus"); !strings.Contains(stderr, "flag provided but not defined: -bogus") {
 		t.Errorf("ip list --bogus stderr = %q, want the flag refusal", stderr)
+	}
+}
+
+// TestIPShowPrintsOneRow is list's table with one row: the header plus exactly the address
+// that was named, and nothing else.
+func TestIPShowPrintsOneRow(t *testing.T) {
+	dbPath, store := newIPTestStore(t)
+	seedLiveIPBlock(t, store, "10.0.0.1", 5)
+	live := seedLiveIPBlock(t, store, "203.0.113.7", 2)
+
+	stdout, stderr, err := runIPTest(t, dbPath, "show", "203.0.113.7")
+	if err != nil {
+		t.Fatalf("ip show 203.0.113.7: %v (stderr %q)", err, stderr)
+	}
+
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("ip show printed %d lines, want a header and one row:\n%s", len(lines), stdout)
+	}
+	for _, column := range []string{"IP", "FAILURES", "BLOCKED UNTIL", "REMAINING", "LAST FAILURE"} {
+		if !strings.Contains(lines[0], column) {
+			t.Errorf("show header = %q, want a %s column", lines[0], column)
+		}
+	}
+
+	fields := strings.Fields(lines[1])
+	if len(fields) != 5 {
+		t.Fatalf("shown row = %q, want 5 columns", lines[1])
+	}
+	if fields[0] != live.IP || fields[1] != "2" || fields[2] != live.BlockedUntil || fields[4] != live.UpdatedAt {
+		t.Errorf("shown row = %q, want %s with 2 failures, blocked until %s and last failure %s",
+			lines[1], live.IP, live.BlockedUntil, live.UpdatedAt)
+	}
+	if fields[3] == "expired" {
+		t.Errorf("shown row = %q, want a remaining time, not expired", lines[1])
+	}
+	left, err := time.ParseDuration(fields[3])
+	if err != nil {
+		t.Fatalf("shown row REMAINING %q: %v", fields[3], err)
+	}
+	until, err := time.Parse(time.RFC3339Nano, live.BlockedUntil)
+	if err != nil {
+		t.Fatalf("parse the seeded blocked_until: %v", err)
+	}
+	if delta := left - time.Until(until); delta < -2*time.Second || delta > 2*time.Second {
+		t.Errorf("shown row REMAINING = %v, want about %v", left, time.Until(until))
+	}
+
+	if _, _, code := runDispatch(t, "ip", "show", "--db", dbPath, "203.0.113.7"); code != 0 {
+		t.Errorf("sandbin ip show of a blocked address exited %d, want 0", code)
+	}
+}
+
+// TestIPShowExpiredRow reads expired, the way list reads it, with the count that shapes
+// the next penalty.
+func TestIPShowExpiredRow(t *testing.T) {
+	dbPath, store := newIPTestStore(t)
+	expired := seedExpiredIPBlock(t, store, "10.0.0.1", 5)
+
+	stdout, stderr, err := runIPTest(t, dbPath, "show", "10.0.0.1")
+	if err != nil {
+		t.Fatalf("ip show 10.0.0.1: %v (stderr %q)", err, stderr)
+	}
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("ip show printed %d lines, want a header and one row:\n%s", len(lines), stdout)
+	}
+	fields := strings.Fields(lines[1])
+	if len(fields) != 5 {
+		t.Fatalf("shown row = %q, want 5 columns", lines[1])
+	}
+	want := []string{expired.IP, "5", expired.BlockedUntil, "expired", expired.UpdatedAt}
+	for i, field := range want {
+		if fields[i] != field {
+			t.Errorf("shown row column %d = %q, want %q", i, fields[i], field)
+		}
+	}
+}
+
+// TestIPShowMiss is the exit-code half of the verb: the same wording and code unblock uses
+// for the same situation, naming the canonical spelling of what was typed.
+func TestIPShowMiss(t *testing.T) {
+	dbPath, store := newIPTestStore(t)
+	seedLiveIPBlock(t, store, "203.0.113.7", 2)
+
+	stdout, stderr, err := runIPTest(t, dbPath, "show", "198.51.100.4")
+	if err == nil {
+		t.Fatalf("ip show of an unblocked address: no error, want a refusal (stdout %q)", stdout)
+	}
+	if got := strings.TrimSpace(stderr); got != "no block for 198.51.100.4" {
+		t.Errorf("ip show miss stderr = %q, want %q", got, "no block for 198.51.100.4")
+	}
+	if stdout != "" {
+		t.Errorf("ip show miss stdout = %q, want nothing", stdout)
+	}
+
+	if _, stderr, err := runIPTest(t, dbPath, "show", "::ffff:198.51.100.4"); err == nil ||
+		strings.TrimSpace(stderr) != "no block for 198.51.100.4" {
+		t.Errorf("ip show ::ffff:198.51.100.4 stderr = %q, err %v; want the miss named as %s",
+			stderr, err, "198.51.100.4")
+	}
+
+	if _, ok := ipBlockRow(t, store, "203.0.113.7"); !ok {
+		t.Errorf("203.0.113.7 vanished along with the miss")
+	}
+	if _, _, code := runDispatch(t, "ip", "show", "--db", dbPath, "198.51.100.4"); code != 1 {
+		t.Errorf("sandbin ip show of a miss exited %d, want 1", code)
+	}
+}
+
+// TestIPShowCanonicalises is the same spelling test unblock gets: the server stores
+// canonical keys, so ::ffff:1.2.3.4 and fe80::1%eth0 must reach them.
+func TestIPShowCanonicalises(t *testing.T) {
+	dbPath, store := newIPTestStore(t)
+	seeded := map[string]IPBlock{
+		"1.2.3.4":     seedLiveIPBlock(t, store, "1.2.3.4", 1),
+		"fe80::1":     seedLiveIPBlock(t, store, "fe80::1", 1),
+		"2001:db8::1": seedLiveIPBlock(t, store, "2001:db8::1", 1),
+	}
+
+	for _, c := range []struct{ typed, stored string }{
+		{"::ffff:1.2.3.4", "1.2.3.4"},
+		{"fe80::1%eth0", "fe80::1"},
+		{"2001:0DB8:0000:0000:0000:0000:0000:0001", "2001:db8::1"},
+	} {
+		stdout, stderr, err := runIPTest(t, dbPath, "show", c.typed)
+		if err != nil {
+			t.Fatalf("ip show %q: %v (stderr %q)", c.typed, err, stderr)
+		}
+		want := seeded[c.stored]
+		lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+		if len(lines) != 2 {
+			t.Fatalf("ip show %q printed %d lines, want a header and the %s row:\n%s", c.typed, len(lines), c.stored, stdout)
+		}
+		fields := strings.Fields(lines[1])
+		if len(fields) != 5 {
+			t.Fatalf("ip show %q row = %q, want 5 columns", c.typed, lines[1])
+		}
+		if fields[0] != want.IP || fields[1] != "1" || fields[2] != want.BlockedUntil || fields[4] != want.UpdatedAt {
+			t.Errorf("ip show %q printed %q, want the %s row with 1 failure", c.typed, lines[1], c.stored)
+		}
+	}
+}
+
+// TestIPShowRefusesBadArguments is unblock's argument refusals, with show named in them.
+func TestIPShowRefusesBadArguments(t *testing.T) {
+	dbPath, store := newIPTestStore(t)
+	seedLiveIPBlock(t, store, "1.2.3.4", 1)
+
+	for _, arg := range []string{"not-an-ip", "[1.2.3.4]", "1.2.3.4:8080", "203.0.113.7/32", ""} {
+		stdout, stderr, err := runIPTest(t, dbPath, "show", arg)
+		if err == nil {
+			t.Errorf("ip show %q: no error, want a refusal", arg)
+			continue
+		}
+		if !strings.Contains(stderr, "is not an IP address") {
+			t.Errorf("ip show %q stderr = %q, want a refusal naming the argument", arg, stderr)
+		}
+		if stdout != "" {
+			t.Errorf("ip show %q stdout = %q, want nothing", arg, stdout)
+		}
+	}
+
+	if _, stderr, err := runIPTest(t, dbPath, "show"); err == nil || !strings.Contains(stderr, "show needs an IP address") {
+		t.Errorf("ip show with no argument stderr = %q, err %v; want a refusal", stderr, err)
+	}
+
+	stdout, stderr, err := runIPTest(t, dbPath, "show", "1.2.3.4", "5.6.7.8")
+	if err == nil || !strings.Contains(stderr, "show takes one IP address") {
+		t.Errorf("ip show with two arguments stderr = %q, err %v; want a refusal", stderr, err)
+	}
+	if stdout != "" {
+		t.Errorf("ip show with two arguments stdout = %q, want nothing", stdout)
+	}
+
+	// Flags typed after the address are refused too, because Go's flag parser stops at
+	// the first non-flag argument.
+	if _, stderr, err := runIPTest(t, dbPath, "show", "1.2.3.4", "--db", "elsewhere.db"); err == nil || !strings.Contains(stderr, "after its flags") {
+		t.Errorf("ip show 1.2.3.4 --db stderr = %q, err %v; want a refusal naming the order", stderr, err)
+	}
+
+	if failures, ok := ipBlockRow(t, store, "1.2.3.4"); !ok || failures != 1 {
+		t.Errorf("1.2.3.4 = failures %d, ok %v; want the refused runs to change nothing", failures, ok)
+	}
+}
+
+// TestIPShowIsReadOnly is the verb's point: after a hit and a miss the table is exactly as
+// it was, so a later list still prints both rows with their counts.
+func TestIPShowIsReadOnly(t *testing.T) {
+	dbPath, store := newIPTestStore(t)
+	live := seedLiveIPBlock(t, store, "203.0.113.7", 2)
+	expired := seedExpiredIPBlock(t, store, "10.0.0.1", 5)
+
+	if _, _, err := runIPTest(t, dbPath, "show", "203.0.113.7"); err != nil {
+		t.Fatalf("ip show 203.0.113.7: %v", err)
+	}
+	if _, _, err := runIPTest(t, dbPath, "show", "198.51.100.4"); err == nil {
+		t.Fatal("ip show of a free address: no error, want a refusal")
+	}
+
+	stdout, stderr, err := runIPTest(t, dbPath, "list")
+	if err != nil {
+		t.Fatalf("ip list after show: %v (stderr %q)", err, stderr)
+	}
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("ip list after show printed %d lines, want a header and two rows:\n%s", len(lines), stdout)
+	}
+	for i, want := range [][]string{
+		{expired.IP, "5", "expired"},
+		{live.IP, "2"},
+	} {
+		fields := strings.Fields(lines[i+1])
+		if len(fields) != 5 {
+			t.Fatalf("row %d = %q, want 5 columns", i, lines[i+1])
+		}
+		if fields[0] != want[0] || fields[1] != want[1] {
+			t.Errorf("row %d = %q, want the %s row with %s failures", i, lines[i+1], want[0], want[1])
+		}
+		if len(want) > 2 && fields[3] != want[2] {
+			t.Errorf("row %d REMAINING = %q, want %s", i, fields[3], want[2])
+		}
+	}
+}
+
+// TestIPShowHelpIsNotAFailure covers show asking for its own flag list.
+func TestIPShowHelpIsNotAFailure(t *testing.T) {
+	dbPath, store := newIPTestStore(t)
+	seedLiveIPBlock(t, store, "1.2.3.4", 1)
+
+	_, stderr, err := runIPTest(t, dbPath, "show", "--help")
+	if err != nil {
+		t.Fatalf("ip show --help: %v (stderr %q), want no error", err, stderr)
+	}
+	if !strings.Contains(stderr, "Usage of sandbin ip show:") || !strings.Contains(stderr, "-db") {
+		t.Errorf("ip show --help stderr = %q, want the flag list", stderr)
+	}
+	if failures, ok := ipBlockRow(t, store, "1.2.3.4"); !ok || failures != 1 {
+		t.Errorf("1.2.3.4 = failures %d, ok %v; want the help run to change nothing", failures, ok)
 	}
 }
 
@@ -516,12 +764,12 @@ func TestIPClearCounts(t *testing.T) {
 	}
 }
 
-// TestIPJSONIsListOnly keeps --json a flag of list: unblock and clear refuse it.
+// TestIPJSONIsListOnly keeps --json a flag of list: show, unblock and clear refuse it.
 func TestIPJSONIsListOnly(t *testing.T) {
 	dbPath, store := newIPTestStore(t)
 	seedLiveIPBlock(t, store, "1.2.3.4", 1)
 
-	for _, verb := range []string{"unblock 1.2.3.4", "clear"} {
+	for _, verb := range []string{"show 1.2.3.4", "unblock 1.2.3.4", "clear"} {
 		args := strings.Split(verb, " ")
 		_, stderr, err := runIPTest(t, dbPath, append([]string{args[0], "--json"}, args[1:]...)...)
 		if err == nil {
@@ -544,7 +792,7 @@ func TestIPDBFlagRunsEveryVerbOnOneFile(t *testing.T) {
 	seedLiveIPBlock(t, store, "203.0.113.7", 1)
 	seedLiveIPBlock(t, store, "198.51.100.4", 2)
 
-	for _, verb := range [][]string{{"list"}, {"unblock", "203.0.113.7"}, {"clear"}} {
+	for _, verb := range [][]string{{"list"}, {"show", "203.0.113.7"}, {"unblock", "203.0.113.7"}, {"clear"}} {
 		stdout, stderr, err := runIPTest(t, dbPath, verb...)
 		if err != nil {
 			t.Fatalf("ip %s --db %s: %v (stderr %q)", verb[0], dbPath, err, stderr)
@@ -569,5 +817,14 @@ func TestIPDBFlagRunsEveryVerbOnOneFile(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "203.0.113.7") {
 		t.Errorf("ip list with no --db stdout = %q, want the row of sandbin.db", stdout.String())
+	}
+
+	// show reads the same default file.
+	var showStdout, showStderr bytes.Buffer
+	if err := runIP([]string{"show", "203.0.113.7"}, &showStdout, &showStderr); err != nil {
+		t.Fatalf("ip show with no --db: %v (stderr %q)", err, showStderr.String())
+	}
+	if !strings.Contains(showStdout.String(), "203.0.113.7") {
+		t.Errorf("ip show with no --db stdout = %q, want the row of sandbin.db", showStdout.String())
 	}
 }

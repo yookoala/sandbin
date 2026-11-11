@@ -264,6 +264,22 @@ func (s *Store) ListBlocks() ([]IPBlock, error) {
 	return blocks, rows.Err()
 }
 
+// GetBlock returns the one row of ip_blocks whose ip is exactly ip, or reports that the
+// table has no such row. It reads only: an address can be inspected through a db file
+// that its owner may not write.
+func (s *Store) GetBlock(ip string) (IPBlock, bool, error) {
+	var b IPBlock
+	err := s.db.QueryRow(`SELECT ip, failures, blocked_until, updated_at FROM ip_blocks WHERE ip=?`, ip).
+		Scan(&b.IP, &b.Failures, &b.BlockedUntil, &b.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return IPBlock{}, false, nil
+	}
+	if err != nil {
+		return IPBlock{}, false, err
+	}
+	return b, true, nil
+}
+
 // UnblockIP deletes one row and reports whether a row went. The failure count goes with
 // it, so the next bad key from that address starts again at blockStep.
 func (s *Store) UnblockIP(ip string) (bool, error) {

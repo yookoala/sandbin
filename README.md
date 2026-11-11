@@ -23,9 +23,10 @@ go build -o sandbin ./cmd/sandbin
 SANDBIN_API_KEY=your-key ./sandbin serve
 ```
 
-Every invocation names its verb: `serve` runs the server, `ip list`, `ip unblock <ip>` and
-`ip clear` inspect and lift the API key blocks (see Managing blocked addresses), and `help`
-prints the usage. A bare `sandbin` or an unknown verb prints that usage on stderr and exits 1.
+Every invocation names its verb: `serve` runs the server, `ip list`, `ip show <ip>`, `ip unblock
+<ip>` and `ip clear` inspect and lift the API key blocks (see Managing blocked addresses), and
+`help` prints the usage. A bare `sandbin` or an unknown verb prints that usage on stderr and
+exits 1.
 
 `--api-key` (default `$SANDBIN_API_KEY`), `--db` (default `sandbin.db`) and `--addr`
 (default `:8080`) are `serve`'s core settings; `--trusted-proxy` and `--trusted-proxy-file`
@@ -238,8 +239,9 @@ appears in the container command line, but it is visible in `podman inspect` out
 ## Managing blocked addresses
 
 `ip` commands read the sqlite file itself, so whoever owns that file controls the lockout
-blocks. They make no network request and need no API key: `list` needs read access to the
-`--db` file and `unblock` or `clear` need write access, so protecting that file is the control.
+blocks. They make no network request and need no API key: `list` and `show` need only read access
+to the `--db` file and `unblock` or `clear` need write access, so protecting that file is the
+control.
 Nothing about `serve` loosens — it still refuses to start without an API key, and an `ip` run
 never reaches the running server. Each verb takes `--db` (default `sandbin.db`, the same file
 `serve` opens); `./sandbin ip help` prints this family's usage, and a `--db` file that does not
@@ -249,18 +251,26 @@ typo in the path never reads as an all-clear:
 ```sh
 ./sandbin ip list                    # every row of the block table
 ./sandbin ip list --json             # the same rows as a json array
+./sandbin ip show 203.0.113.7        # one address's row in the block table
 ./sandbin ip unblock 203.0.113.7     # delete one address's block
 ./sandbin ip clear                   # delete every block
 ```
 
-Flags go before the address: `./sandbin ip unblock --db /data/sandbin.db 203.0.113.7`.
+Flags go before the address, for `show` and `unblock` alike:
+`./sandbin ip unblock --db /data/sandbin.db 203.0.113.7`.
 
 `list` prints `IP`, `FAILURES`, `BLOCKED UNTIL`, `REMAINING` and `LAST FAILURE`. `REMAINING`
 is worked out while the command runs and reads `expired` once `blocked_until` is past; expired
 rows are listed on purpose, because their failure count still shapes the next penalty. An empty
 table prints `no blocked addresses` and exits 0. `--json` prints the same rows as an array of
 `ip`, `failures`, `blocked_until` and `updated_at` (`[]` when there is no row), and it belongs
-to `list` alone: `unblock` and `clear` refuse it.
+to `list` alone: `show`, `unblock` and `clear` refuse it.
+
+`show` prints one address's row in that same table and nothing else: the header, then the row,
+with `REMAINING` worked out the same way. Its argument is spelled the way `unblock` spells it (see
+below), an address with no row is the same error `unblock` gives for it (`no block for
+203.0.113.7`, exit 1), and it writes nothing, so it works on a db file its owner may not write
+where `unblock` would be refused.
 
 `unblock` deletes the whole row, so the failure count goes with it: the next wrong key from
 that address starts again at 30 minutes instead of resuming the escalation it had reached. Its

@@ -433,6 +433,39 @@ func TestListBlocks(t *testing.T) {
 	}
 }
 
+func TestGetBlock(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+	seedIPBlock(t, store, "203.0.113.7", 2, now.Add(blockStep), now)
+	seedIPBlock(t, store, "10.0.0.1", 1, now.Add(-time.Minute), now.Add(-time.Hour))
+
+	block, ok, err := store.GetBlock("203.0.113.7")
+	if err != nil {
+		t.Fatalf("GetBlock: %v", err)
+	}
+	if !ok {
+		t.Fatalf("GetBlock(203.0.113.7) not found")
+	}
+	want := IPBlock{IP: "203.0.113.7", Failures: 2, BlockedUntil: now.Add(blockStep).Format(time.RFC3339Nano), UpdatedAt: now.Format(time.RFC3339Nano)}
+	if block != want {
+		t.Errorf("GetBlock(203.0.113.7) = %+v, want %+v", block, want)
+	}
+
+	// A key that is not there is not found rather than an error, and it reads as a zero row.
+	if missing, ok, err := store.GetBlock("198.51.100.4"); err != nil || ok || missing != (IPBlock{}) {
+		t.Errorf("GetBlock(unknown) = %+v, ok %v, err %v; want a zero row, not found, no error", missing, ok, err)
+	}
+
+	// GetBlock only reads: both seeded rows are still in the table.
+	blocks, err := store.ListBlocks()
+	if err != nil {
+		t.Fatalf("ListBlocks: %v", err)
+	}
+	if len(blocks) != 2 {
+		t.Errorf("after GetBlock the table holds %d rows, want 2", len(blocks))
+	}
+}
+
 func TestUnblockIP(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)

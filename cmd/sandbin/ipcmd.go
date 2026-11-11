@@ -17,6 +17,7 @@ import (
 // ipUsage is what an ip run without a working verb gets.
 const ipUsage = `usage:
   sandbin ip list [--json]     every row of the block table
+  sandbin ip show <ip>         one address's row in the block table
   sandbin ip unblock <ip>      delete one address's block
   sandbin ip clear             delete every block
 Each verb takes --db <file> (default sandbin.db) and needs no API key.
@@ -27,13 +28,15 @@ Each verb takes --db <file> (default sandbin.db) and needs no API key.
 func runIP(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, ipUsage)
-		return ipError(stderr, "no command: pass list, unblock <ip> or clear")
+		return ipError(stderr, "no command: pass list, show <ip>, unblock <ip> or clear")
 	}
 
 	var err error
 	switch args[0] {
 	case "list":
 		err = ipList(args[1:], stdout, stderr)
+	case "show":
+		err = ipShow(args[1:], stdout, stderr)
 	case "unblock":
 		err = ipUnblock(args[1:], stdout, stderr)
 	case "clear":
@@ -42,7 +45,7 @@ func runIP(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprint(stdout, ipUsage)
 	default:
 		fmt.Fprint(stderr, ipUsage)
-		err = ipError(stderr, "unknown command %q: pass list, unblock <ip> or clear", args[0])
+		err = ipError(stderr, "unknown command %q: pass list, show <ip>, unblock <ip> or clear", args[0])
 	}
 	if errors.Is(err, flag.ErrHelp) {
 		// The verb's flag list has already been printed; asking for it is not a failure.
@@ -83,13 +86,46 @@ func ipList(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	now := time.Now()
-	w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "IP\tFAILURES\tBLOCKED UNTIL\tREMAINING\tLAST FAILURE")
-	for _, b := range blocks {
-		fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\n", b.IP, b.Failures, b.BlockedUntil, remainingText(b.BlockedUntil, now), b.UpdatedAt)
+	return writeBlocksTable(stdout, blocks, time.Now())
+}
+
+// ipShow names one address's row: the same table as list, one row, and the same refusal
+// as unblock when the row is not there. It reads the db file only, so an owner of a file
+// they may not write can still ask what an address looks like right now.
+func ipShow(args []string, stdout, stderr io.Writer) error {
+	fs, dbPath := ipFlagSet("show", stderr)
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	return w.Flush()
+	rest := fs.Args()
+	if len(rest) == 0 {
+		return ipError(stderr, "show needs an IP address")
+	}
+	if len(rest) > 1 {
+		// shortcut: Go's flag parser stops at the first non-flag argument, so a verb's
+		// flags have to be typed before the address it takes.
+		return ipError(stderr, "show takes one IP address after its flags, got %q", strings.Join(rest, " "))
+	}
+
+	ip, err := canonicalIP(rest[0])
+	if err != nil {
+		return ipError(stderr, "%s", err)
+	}
+
+	store, err := openIPStore(*dbPath, stderr)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	block, ok, err := store.GetBlock(ip)
+	if err != nil {
+		return ipError(stderr, "show %s: %v", ip, err)
+	}
+	if !ok {
+		return ipError(stderr, "no block for %s", ip)
+	}
+	return writeBlocksTable(stdout, []IPBlock{block}, time.Now())
 }
 
 func ipUnblock(args []string, stdout, stderr io.Writer) error {
@@ -190,6 +226,17 @@ func remainingText(blockedUntil string, now time.Time) string {
 		return "expired"
 	}
 	return time.Until(until).Round(time.Second).String()
+}
+
+// writeBlocksTable renders rows as list's text table: a header line and one line per row,
+// with REMAINING worked out at now. list hands it every row and show hands it one.
+func writeBlocksTable(stdout io.Writer, blocks []IPBlock, now time.Time) error {
+	w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "IP\tFAILURES\tBLOCKED UNTIL\tREMAINING\tLAST FAILURE")
+	for _, b := range blocks {
+		fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\n", b.IP, b.Failures, b.BlockedUntil, remainingText(b.BlockedUntil, now), b.UpdatedAt)
+	}
+	return w.Flush()
 }
 
 // jsonIPBlock is one row in the --json shape: exactly these four fields.
