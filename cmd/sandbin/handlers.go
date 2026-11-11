@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/subtle"
 	"errors"
+	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
@@ -120,13 +122,19 @@ func (s *server) getFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 			http.Error(w, "could not read bin", http.StatusInternalServerError)
 			return
 		}
-		if !ok {
-			http.Error(w, "no files in bin", http.StatusNotFound)
+		if ok {
+			// shortcut: a stored index.html is served raw, so its author owns that page.
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(content)
 			return
 		}
-		// shortcut: a stored index.html is served raw, so its author owns that page.
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(content)
+		files, err := s.store.ListFiles(hash)
+		if err != nil {
+			log.Printf("list bin %q: %v", hash, err)
+			http.Error(w, "could not list bin", http.StatusInternalServerError)
+			return
+		}
+		renderListing(w, hash, files)
 		return
 	}
 
@@ -195,6 +203,29 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 		w.WriteHeader(http.StatusCreated)
 	}
 	io.WriteString(w, "/"+hash+"/"+sub)
+}
+
+// renderListing writes the directory listing a bin base path gets when it has
+// no index.html.
+func renderListing(w http.ResponseWriter, hash string, files []FileEntry) {
+	head := "/" + hash + "/"
+	var b strings.Builder
+	b.WriteString("<!doctype html>\n<meta charset=\"utf-8\">\n")
+	b.WriteString("<title>" + html.EscapeString(head) + "</title>\n")
+	b.WriteString("<h1>" + html.EscapeString(head) + "</h1>\n")
+	if len(files) == 0 {
+		b.WriteString("<p>empty bin</p>\n")
+	} else {
+		b.WriteString("<ul>\n")
+		for _, f := range files {
+			b.WriteString(fmt.Sprintf("<li><a href=\"./%s\">%s</a> (%d bytes, updated %s)</li>\n",
+				html.EscapeString(f.Path), html.EscapeString(f.Path), f.Size, html.EscapeString(f.UpdatedAt)))
+		}
+		b.WriteString("</ul>\n")
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	io.WriteString(w, b.String())
 }
 
 // cleanPath validates a client-supplied sub path before any SQL runs and returns

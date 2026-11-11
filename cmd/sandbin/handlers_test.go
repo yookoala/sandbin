@@ -199,6 +199,68 @@ func TestOversizeBody(t *testing.T) {
 	}
 }
 
+func TestDirectoryListing(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	base := createTestBin(t, h, "test-key")
+
+	rec := get(t, h, base)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET empty bin = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Errorf("listing Content-Type = %q, want text/html; charset=utf-8", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "empty bin") {
+		t.Errorf("empty bin listing = %q, want it to say the bin is empty", rec.Body.String())
+	}
+
+	for _, path := range []string{"b.txt", "sub/a.md", "x<y.txt"} {
+		if rec := put(t, h, base+path, "test-key", "body of "+path); rec.Code != http.StatusCreated {
+			t.Fatalf("PUT %q = %d, want %d", path, rec.Code, http.StatusCreated)
+		}
+	}
+
+	rec = get(t, h, base)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET bin base = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`<ul>`,
+		`<li><a href="./b.txt">b.txt</a> (13 bytes,`,
+		`<li><a href="./sub/a.md">sub/a.md</a> (16 bytes,`,
+		`<li><a href="./x&lt;y.txt">x&lt;y.txt</a>`,
+		base,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("listing does not contain %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "<x<y.txt>") {
+		t.Errorf("listing escaped the filename wrong:\n%s", body)
+	}
+}
+
+func TestIndexHTMLWinsOverListing(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	base := createTestBin(t, h, "test-key")
+
+	if rec := put(t, h, base+"page.html", "test-key", "<p>other</p>"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT page.html = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if rec := put(t, h, base+"index.html", "test-key", "<h1>Custom index</h1>"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT index.html = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	rec := get(t, h, base)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET bin base = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); got != "<h1>Custom index</h1>" {
+		t.Errorf("GET bin base body = %q, want the stored index.html verbatim", got)
+	}
+}
+
 func TestPathTraversal(t *testing.T) {
 	h := newTestServer(t, "test-key")
 	base := createTestBin(t, h, "test-key")
