@@ -111,6 +111,8 @@ func (l proxyList) containsHost(host string) bool {
 // clientIP charges a request to the client address, which is the header's rightmost entry
 // when the socket itself belongs to a proxy we trust. Loopback, private and link-local
 // sockets are always trusted and checked first; the configured list only adds to them.
+// The charged value is always a parsed, canonical address or the socket host: a header
+// string that is not an address never becomes an ip_blocks key.
 func clientIP(r *http.Request, proxies proxyList) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -123,7 +125,12 @@ func clientIP(r *http.Request, proxies proxyList) string {
 		entries := strings.Split(xff, ",")
 		// The rightmost entry is the one a proxy appends; anything left of it is client fiction.
 		if last := strings.TrimSpace(entries[len(entries)-1]); last != "" {
-			return last
+			// Charge a real address in canonical form (unmapped, zone-free); an entry that
+			// does not parse charges the socket instead of a header string.
+			if addr, err := netip.ParseAddr(last); err == nil {
+				return addr.Unmap().WithZone("").String()
+			}
+			return host
 		}
 	}
 	return host

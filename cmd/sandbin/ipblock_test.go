@@ -282,6 +282,46 @@ func TestClientIPChargingWithProxyList(t *testing.T) {
 	}
 }
 
+// TestClientIPChargesRealAddresses asserts the charged value is a parsed canonical
+// address or the socket host, never the header string verbatim. A reviewer measured a
+// 200 KB header landing as a 200000-byte ip_blocks primary key and growing the db
+// 425984 bytes in one request, with keys like "fe80::1%eth0" and "203.0.113.7:8080"
+// that no real socket would ever charge.
+func TestClientIPChargesRealAddresses(t *testing.T) {
+	cases := []struct {
+		xff  string
+		want string
+		why  string
+	}{
+		{"2001:DB8::1", "2001:db8::1", "a header address is charged in netip's canonical form"},
+		{"fe80::1%eth0", "fe80::1", "the zone is stripped from the charged address"},
+		{"::ffff:203.0.113.7", "203.0.113.7", "an IPv4-mapped header address is charged unmapped"},
+		{"203.0.113.7:8080", "10.0.0.1", "an entry with a port is not an address, so the socket is charged"},
+		{"0);)", "10.0.0.1", "garbage is not an address, so the socket is charged"},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest(http.MethodPost, "/", nil)
+		r.RemoteAddr = "10.0.0.1:1234"
+		r.Header.Set("X-Forwarded-For", c.xff)
+		if got := clientIP(r, nil); got != c.want {
+			t.Errorf("X-Forwarded-For %q: clientIP = %q, want %q (%s)", c.xff, got, c.want, c.why)
+		}
+	}
+
+	// A 200 KB garbage header charges the socket host, and nothing longer than
+	// that socket string is charged.
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+	r.RemoteAddr = "10.0.0.1:1234"
+	r.Header.Set("X-Forwarded-For", strings.Repeat("x", 200_000))
+	got := clientIP(r, nil)
+	if got != "10.0.0.1" {
+		t.Errorf("200 KB garbage header: clientIP = %q of %d bytes, want the socket host 10.0.0.1", got, len(got))
+	}
+	if len(got) > len("10.0.0.1") {
+		t.Errorf("charged value %q is longer than the socket string", got)
+	}
+}
+
 // TestClientIPZeroPrefixTrustsEverySocket is the deliberate footgun test: an operator who
 // puts 0.0.0.0/0 (or ::/0) in the list makes every IPv4 (or IPv6) socket header-trusted,
 // so any connection can name whichever address gets blocked. sandbin accepts such entries
