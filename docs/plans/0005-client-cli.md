@@ -1,6 +1,8 @@
 # Plan: a CLI client for agents to publish previews
 
-Status: draft. Decisions in `docs/decisions/0005-client-defaults.md`.
+Status: implemented on `main` (`6f97bb4`, `232829a`, `7871739`), reviewed as "ship with
+fixes", review fixes in `d10d001` and `67cbf98`. Decisions in
+`docs/decisions/0005-client-defaults.md`.
 
 ## What it is
 
@@ -205,3 +207,45 @@ into one HTML file, uploading images with correct types (`.png`, `.svg` and frie
 `text/plain` until someone needs them, and they are the same two-line change as the JS rule),
 automatic retry, key storage in a config file, TLS or proxy configuration, an install target,
 including the client in the container image, and any change to what the server accepts as a path.
+
+## Outcome
+
+Tests went 56 to 88 (31 client-side), with `-race`, `go vet` and `gofmt` clean. The review
+verdict was "ship with fixes"; both blockers and the cheap notes were fixed in `d10d001`, and
+the README example fix in `67cbf98`:
+
+- The README example's first command listed `build.ansi` as a file argument the example never
+  creates, so it failed verbatim with `stat build.ansi: no such file or directory`. The example
+  now uploads three prototype files and pipes the `.ansi` through stdin, which is what the
+  example already showed right after it.
+- `--name` with nothing piped in reported success after uploading an empty file — exactly what
+  a mistyped pipeline does in a script or agent harness. It is now an error naming the pipe it
+  wanted; a real pipe carrying no bytes is still a deliberate empty upload.
+- The 256-character limit is measured on the cleaned name the server actually sees, so a `./`
+  prefix no longer eats two characters here that the server never charges.
+- `--bin` refuses `.` and `..` locally instead of sending them.
+- A failed state write after `createBin` names the created bin hash, the one value an agent
+  cannot recover by rerunning.
+- README notes added: `--` escapes a name starting with `-`, `--help` prints on stderr, and
+  changing the url in use orphans the old bin, whose files stay readable at the old URL.
+
+The review confirmed against a live server: `.js`, `.mjs` and `.css` content types including
+uppercase names, with the last extension winning; `.png` with NUL bytes going
+`application/octet-stream` and `.svg` staying `text/plain` (`build.ansi` is served as rendered
+`text/html` by design, through `cmd/sandbin/ansi.go`); the protected-bin flow end to end; the
+30 s timeout; `?` and `#` in upload names reaching the server as `%3F` and `%23` with no query
+or fragment smuggling; `.sandbin.json` at mode 0600 holding no secret; and exactly one request
+per client run, so a wrong key costs one 30-minute block and not a self-dug pile. After the
+fixes, the whole README example was re-run verbatim against a live server, including the new
+`--name` refusal and the empty-pipe upload.
+
+Left as it is on purpose: `--bin` is checked for shape but not for the server's strict
+8-character hex; the client refuses `a/../b` although the server would have accepted the
+collapsed `b`, because refusing beats silently rewriting the name the caller typed; and two
+agents sharing one working directory share one bin and overwrite each other's files.
+
+Two corrections to this plan's own wording, both found in review. "This does not widen what a
+bin can do" understated one thing: a stored `.js` can be pulled in with `<script src>` by a
+third-party page and then runs in that page's own origin, which a stored `.html` cannot get,
+being embeddable only as an iframe in its own origin. And the reviewer steps' `curl -I` cannot
+work on this server, which answers `405` to `HEAD`; use `curl -s -D - -o /dev/null`.
