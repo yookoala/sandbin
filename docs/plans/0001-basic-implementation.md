@@ -1,6 +1,7 @@
 # Plan: basic sandbin implementation
 
-Status: draft. Decisions recorded in `docs/decisions/0001-server-defaults.md`.
+Status: implemented on `main` (`ac17a04..c019614`), reviewed, both review blockers fixed.
+Decisions recorded in `docs/decisions/0001-server-defaults.md`.
 
 ## What we build
 
@@ -66,7 +67,9 @@ contain NUL, then `application/octet-stream`.
 - Path handling: reject absolute paths, `..`, empty segments, backslashes; total length <= 256;
   segment count <= 16. `path.Clean` before the SQL lookup, never after.
 - All SQL through `?` placeholders.
-- API key and bin password compared with `subtle.ConstantTimeCompare`.
+- API key compared with `subtle.ConstantTimeCompare`; bin passwords are bcrypt hashes
+  compared with `bcrypt.CompareHashAndPassword` (constant time inside), and candidates
+  over 72 bytes are refused because bcrypt only compares the first 72.
 - Bin passwords stored as bcrypt hashes (`golang.org/x/crypto/bcrypt`), never plaintext.
 - `http.MaxBytesReader` at 1 MiB per PUT.
 - HTML escaping for directory listing and ANSI output.
@@ -125,3 +128,19 @@ DELETE of a bin or file, TTL/expiry, bin rename, markdown rendering (served as p
 256-color beyond `38;5;n`/`48;5;n` and truecolor, TLS (put a reverse proxy in front), rate
 limiting, pagination, static-file or multipart PUT, JSON API bodies. Each is one clear feature
 later if a real user needs it.
+
+## Outcome
+
+Two deviations from the plan, both forced by the code:
+
+- No `http.ServeMux` patterns. ServeMux answers unclean paths (`..`, `//`) with a 307
+  redirect before any handler runs, which broke the plan's "400 for path traversal"
+  contract. `server.ServeHTTP` dispatches `/{hash}/...` itself.
+- Bin passwords use bcrypt, so they cannot be compared with `ConstantTimeCompare`.
+
+Review found two defects, fixed in `7b99810` and `c019614`: a 1 MiB segment-heavy `.ansi`
+file took 1.6s to render on every GET (string `+=` per run, now a `strings.Builder`,
+23ms), and a bin password over 72 bytes returned 500 instead of 400.
+
+Still untested, though verified by hand with curl: `main` refusing to start without an API
+key, and concurrent writes exercising `busy_timeout`.
