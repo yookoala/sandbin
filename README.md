@@ -55,7 +55,23 @@ curl -u "${PBIN//\//}:sesame" http://localhost:8080${PBIN}notes.md
 
 PUT bodies are capped at 1 MiB. `403` is a bad API key, `401` a missing bin password,
 `404` an unknown bin or path, `405` an unsupported method, `400` a rejected path,
-`413` an oversized body.
+`413` an oversized body, `429` an address blocked for bad API keys.
+
+## API key lockout
+
+`POST /` and `PUT /{hash}/{path}` are the key-checked requests. A wrong or missing `X-API-Key`
+blocks that address from both for 30 minutes; every further failure adds 30 minutes, capped at
+24 hours per block, and the failure count survives a restart. While blocked, a key-checked
+request answers `429` with a `Retry-After` (the remaining wait in seconds) and counts as another
+failure, so hammering only lengthens the wait. `GET` is never charged and never blocked: a
+blocked address can still read public bins. Wrong bin passwords (`401`) are not failures here.
+
+`X-Forwarded-For` is believed only when the connection itself arrives from loopback, a private
+or a link-local address, so a reverse proxy must run on the same machine or network to be
+honoured, and only its rightmost entry is charged. Anyone reaching the port over a public route
+is charged by their own socket address and cannot frame a third party, but a client connected
+from loopback or the local network can name an arbitrary address in that header and get that
+address blocked.
 
 ## Run it with podman
 
