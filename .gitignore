@@ -1,2 +1,4 @@
 /sandbin
+/sandbin-client
 *.db
+.sandbin.json

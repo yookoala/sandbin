@@ -58,7 +58,64 @@ curl -u "${PBIN//\//}:sesame" http://localhost:8080${PBIN}notes.md
 
 PUT bodies are capped at 1 MiB. `403` is a bad API key, `401` a missing bin password,
 `404` an unknown bin or path, `405` an unsupported method, `400` a rejected path,
-`413` an oversized body, `429` an address blocked for bad API keys.
+`413` an oversized body, `429` an address blocked for bad API keys. A `HEAD` answers `405`:
+read the headers of a `GET` with `curl -s -D - -o /dev/null <url>`.
+
+## Upload previews with sandbin-client
+
+`cmd/sandbin-client` is this API shaped for an agent that just wrote a prototype: one
+command, one `created` or `updated` line per file on stdout, and the bin base URL last for
+the human to open.
+
+```sh
+go build -o sandbin-client ./cmd/sandbin-client
+```
+
+`SANDBIN_URL` (default `http://localhost:8080`), `SANDBIN_API_KEY` and
+`SANDBIN_BIN_PASSWORD` are the settings; `--url` and `--api-key` override their variables,
+and a missing key is a startup error that makes no request at all. `SANDBIN_BIN_PASSWORD`
+has no flag on purpose, so a bin password never lands on a command line: when it is set it
+goes out as `X-Bin-Password` on the create and as Basic Auth (user name = bin hash) on every
+upload. `--bin <hash>` uploads into a bin you already have, `--new` forces a fresh one, and
+`--name <path>` is what piped-in stdin is called.
+
+```sh
+export SANDBIN_URL=http://localhost:8080 SANDBIN_API_KEY=your-key
+sandbin-client prototype/index.html prototype/app.js prototype/style.css build.ansi
+# created http://localhost:8080/abc1234/prototype/index.html
+# created http://localhost:8080/abc1234/prototype/app.js
+# created http://localhost:8080/abc1234/prototype/style.css
+# http://localhost:8080/abc1234/          <- hand this to a human
+make 2>&1 | sandbin-client --name build.ansi
+# updated http://localhost:8080/abc1234/build.ansi
+```
+
+The bin is remembered in `.sandbin.json` in the working directory:
+
+```json
+{ "url": "http://localhost:8080", "bin": "abc1234", "protected": false }
+```
+
+`--bin` beats that file, a readable file whose `url` matches the url in use comes next, and
+otherwise the client creates a bin and writes it: mode `0600`, renamed in from a temp file in
+the same directory, never holding the API key or the bin password, and gitignored. A corrupt
+or unreadable `.sandbin.json` is an error naming the file, never a silent second bin for the
+same prototype. Names are checked before anything is sent, so an absolute path, a `..`
+segment or a file over 1 MiB fails locally instead of costing a request.
+
+**Do not retry a failing `sandbin-client` from a script.** It makes exactly one request per
+operation and never retries, because a wrong or missing API key blocks the client's address
+from `POST` and `PUT` for 30 minutes, every further failure adds 30 minutes (to a 24 hour
+cap per block), and an attempt while already blocked counts as another failure too. A loop
+that reruns the client after a `403` only digs that wait deeper; read the `429` and its
+`Retry-After`, fix the key, and wait out the stated seconds. `GET` is never charged or
+blocked, so a blocked address can still open what it already published.
+
+**A prototype needs `index.html` at the bin root** for the bin base URL to show the page: the
+base path serves `index.html` only when that exact path exists in the bin, and otherwise
+answers with the directory listing. `sandbin-client prototype/index.html` therefore gives a
+listing at `http://localhost:8080/abc1234/` and the page itself at
+`http://localhost:8080/abc1234/prototype/index.html`.
 
 ## API key lockout
 
