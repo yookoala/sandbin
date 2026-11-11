@@ -13,5 +13,7 @@ EXPOSE 8080
 VOLUME /data
 ENTRYPOINT ["/usr/local/bin/sandbin"]
 CMD ["--db", "/data/sandbin.db"]
+# podman drops this line when it builds the default OCI format; deploy/sandbin.container and
+# the README run command carry the same probe as --health-cmd, which podman always honours.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1

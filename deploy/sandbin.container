@@ -7,6 +7,11 @@ ContainerName=sandbin
 PublishPort=127.0.0.1:8080:8080
 Volume=sandbin-data:/data
 EnvironmentFile=/etc/sandbin/sandbin.env
+HealthCmd=wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1
+HealthInterval=30s
+HealthTimeout=3s
+HealthStartPeriod=5s
+HealthRetries=3
 
 [Service]
 Restart=always
