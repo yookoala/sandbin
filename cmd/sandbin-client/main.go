@@ -148,7 +148,9 @@ func resolveBin(c *client, dir, binFlag string, newBin bool) (string, bool, erro
 	}
 	protected := c.password != ""
 	if err := writeState(dir, binState{URL: base, Bin: hash, Protected: protected}); err != nil {
-		return "", false, err
+		// The bin exists on the server now, so the run must report its hash: rerunning
+		// would only create a second bin, not recover this one.
+		return "", false, fmt.Errorf("created bin %s but could not save it: %v", hash, err)
 	}
 	return hash, protected, nil
 }
@@ -190,6 +192,11 @@ func uploadTargets(args []string, nameFlag string, stdin io.Reader) ([]string, s
 	if err != nil {
 		return nil, "", fmt.Errorf("--name %q: %v", nameFlag, err)
 	}
+	// --name with a terminal for stdin uploads whatever gets typed, or when nothing
+	// is piped at all an empty file that a rerun would report as a success.
+	if isTerminal(stdin) {
+		return nil, "", fmt.Errorf("--name %q got no stdin: pipe the content in or pass a file argument", nameFlag)
+	}
 	return names, stdinName, nil
 }
 
@@ -199,9 +206,6 @@ func uploadTargets(args []string, nameFlag string, stdin io.Reader) ([]string, s
 func cleanUploadName(raw string) (string, error) {
 	if raw == "" {
 		return "", errors.New("empty path")
-	}
-	if len(raw) > maxPathLen {
-		return "", errors.New("path too long")
 	}
 	if strings.ContainsRune(raw, '\\') {
 		return "", errors.New("path may not contain backslashes")
@@ -225,6 +229,11 @@ func cleanUploadName(raw string) (string, error) {
 	if name == "." || name == "" {
 		return "", errors.New("empty path")
 	}
+	// The limit is measured on the cleaned name because that is what the server
+	// receives: a "./" prefix must not eat into it here and not there.
+	if len(name) > maxPathLen {
+		return "", errors.New("path too long")
+	}
 	if segs := strings.Split(name, "/"); len(segs) > maxPathSegs {
 		return "", errors.New("path has too many segments")
 	}
@@ -237,7 +246,7 @@ func cleanUploadName(raw string) (string, error) {
 func cleanBinHash(raw string) (string, error) {
 	notABin := fmt.Errorf("--bin %q is not a bin hash", raw)
 	hash := strings.Trim(raw, "/")
-	if hash == "" || strings.Contains(hash, "/") {
+	if hash == "" || hash == "." || hash == ".." || strings.Contains(hash, "/") {
 		return "", notABin
 	}
 	for _, r := range hash {

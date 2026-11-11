@@ -516,6 +516,35 @@ func TestNoArgumentsAndNoStdinIsAnError(t *testing.T) {
 	}
 }
 
+func TestNamedStdinNeedsAPipe(t *testing.T) {
+	f := newFake(t, "test-key")
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open %s: %v", os.DevNull, err)
+	}
+	defer devNull.Close()
+
+	stdout, stderr, err := runClient(t, devNull, "--name", "build.ansi")
+	if err == nil {
+		t.Fatalf("run with --name and no stdin piped in succeeded, want an error")
+	}
+	if !strings.Contains(stderr, "got no stdin") {
+		t.Errorf("stderr = %q, want it to say nothing was piped in", stderr)
+	}
+	if stdout != "" || f.requestsSeen() != 0 {
+		t.Errorf("stdout = %q, requests = %d; want neither", stdout, f.requestsSeen())
+	}
+
+	// A real pipe carrying no bytes is still a deliberate empty upload.
+	stdout, stderr, err = runClient(t, strings.NewReader(""), "--name", "empty.txt")
+	if err != nil {
+		t.Fatalf("run with an empty pipe: %v; stderr %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "created ") {
+		t.Errorf("stdout = %q, want the created line for the empty upload", stdout)
+	}
+}
+
 func TestUploadsStdinAsANamedPath(t *testing.T) {
 	f := newFake(t, "test-key")
 
@@ -571,6 +600,32 @@ func TestRefusesBadNamesLocallyWithNoRequest(t *testing.T) {
 	}
 	if f.requestsSeen() != 0 {
 		t.Errorf("requests = %d, want none: a bad name is refused locally", f.requestsSeen())
+	}
+}
+
+func TestLengthLimitCountsTheUploadedName(t *testing.T) {
+	f := newFake(t, "test-key")
+	// 255 bytes, storable on disk, but 257 raw characters once "./" is added: only
+	// the cleaned name, which is what the server sees, may touch the 256 limit.
+	name := strings.Repeat("l", 251) + ".txt"
+	writeWorkDirFile(t, name, "at the limit")
+
+	stdout, stderr, err := runClient(t, nil, "./"+name)
+	if err != nil {
+		t.Fatalf("run: %v; stderr %s", err, stderr)
+	}
+	hash := binHashOf(t, stdout)
+	if got := f.stored(hash + "/" + name); got != "at the limit" {
+		t.Errorf("stored %q, want the file's bytes", got)
+	}
+
+	// One character past the limit is refused locally, measured the way the server measures it.
+	_, stderr, err = runClient(t, nil, "./"+strings.Repeat("x", maxPathLen+1))
+	if err == nil {
+		t.Fatalf("run with a %d character name succeeded, want a local refusal", maxPathLen+1)
+	}
+	if !strings.Contains(stderr, "path too long") {
+		t.Errorf("stderr = %q, want it to name the length limit", stderr)
 	}
 }
 
@@ -848,6 +903,25 @@ func TestBinAndNewTogetherAreRefused(t *testing.T) {
 	}
 }
 
+func TestRejectsADotAsABinHash(t *testing.T) {
+	f := newFake(t, "test-key")
+	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
+
+	for _, bad := range []string{".", "..", "./.."} {
+		stdout, _, err := runClient(t, nil, "--bin", bad, "index.html")
+		if err == nil {
+			t.Errorf("run with --bin %q succeeded, want a refusal", bad)
+			continue
+		}
+		if stdout != "" {
+			t.Errorf("stdout for --bin %q = %q, want nothing", bad, stdout)
+		}
+	}
+	if f.requestsSeen() != 0 {
+		t.Errorf("requests = %d, want none: a dot hash never reaches the server", f.requestsSeen())
+	}
+}
+
 func TestStateFileWhoseBinNoLongerExistsReports404(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
@@ -923,6 +997,29 @@ func TestStateWriteFailureNamesTheFile(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), stateFileName) {
 		t.Errorf("writeState error = %q, want it to name %s", err, stateFileName)
+	}
+}
+
+func TestStateWriteFailureNamesTheCreatedBin(t *testing.T) {
+	// The bin exists on the server the moment createBin succeeds, so losing the
+	// state file must still tell the agent which bin was created.
+	f := newFake(t, "test-key")
+	c, err := newClient(os.Getenv("SANDBIN_URL"), "test-key", "")
+	if err != nil {
+		t.Fatalf("newClient: %v", err)
+	}
+	_, _, err = resolveBin(c, filepath.Join(t.TempDir(), "gone"), "", false)
+	if err == nil {
+		t.Fatalf("resolveBin into a missing directory succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "bin bin0001") {
+		t.Errorf("error = %q, want it to name the created bin", err)
+	}
+	if !strings.Contains(err.Error(), stateFileName) {
+		t.Errorf("error = %q, want it to name %s", err, stateFileName)
+	}
+	if f.binCount() != 1 {
+		t.Errorf("bins = %d, want the one bin resolveBin created", f.binCount())
 	}
 }
 
