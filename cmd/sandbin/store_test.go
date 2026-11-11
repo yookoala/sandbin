@@ -349,3 +349,102 @@ func TestIpBlocksPersistAcrossStores(t *testing.T) {
 		t.Errorf("after reopen = until %v, blocked %v; want %v, blocked", got, blocked, until)
 	}
 }
+
+// seedIPBlock writes one ip_blocks row exactly as the test wants it, which is how these
+// tests get a row with a blocked_until already in the past.
+func seedIPBlock(t *testing.T, store *Store, ip string, failures int, blockedUntil, updatedAt time.Time) {
+	t.Helper()
+	if _, err := store.db.Exec(`
+INSERT INTO ip_blocks (ip, failures, blocked_until, updated_at) VALUES (?, ?, ?, ?)`,
+		ip, failures, blockedUntil.UTC().Format(time.RFC3339Nano), updatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("seed %s: %v", ip, err)
+	}
+}
+
+func TestListBlocks(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+
+	blocks, err := store.ListBlocks()
+	if err != nil {
+		t.Fatalf("ListBlocks on an empty table: %v", err)
+	}
+	if len(blocks) != 0 {
+		t.Fatalf("ListBlocks on an empty table returned %d rows, want 0", len(blocks))
+	}
+
+	// Inserted newest ip first: ListBlocks orders by ip.
+	seedIPBlock(t, store, "203.0.113.7", 2, now.Add(blockStep), now)
+	seedIPBlock(t, store, "10.0.0.1", 1, now.Add(-time.Minute), now.Add(-time.Hour))
+
+	blocks, err = store.ListBlocks()
+	if err != nil {
+		t.Fatalf("ListBlocks: %v", err)
+	}
+	want := []IPBlock{
+		{IP: "10.0.0.1", Failures: 1, BlockedUntil: now.Add(-time.Minute).Format(time.RFC3339Nano), UpdatedAt: now.Add(-time.Hour).Format(time.RFC3339Nano)},
+		{IP: "203.0.113.7", Failures: 2, BlockedUntil: now.Add(blockStep).Format(time.RFC3339Nano), UpdatedAt: now.Format(time.RFC3339Nano)},
+	}
+	if len(blocks) != len(want) {
+		t.Fatalf("ListBlocks returned %d rows, want %d", len(blocks), len(want))
+	}
+	for i, b := range blocks {
+		if b != want[i] {
+			t.Errorf("blocks[%d] = %+v, want %+v", i, b, want[i])
+		}
+	}
+}
+
+func TestUnblockIP(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+	seedIPBlock(t, store, "203.0.113.7", 3, now.Add(blockStep), now)
+	seedIPBlock(t, store, "198.51.100.4", 1, now.Add(blockStep), now)
+
+	gone, err := store.UnblockIP("203.0.113.7")
+	if err != nil {
+		t.Fatalf("UnblockIP: %v", err)
+	}
+	if !gone {
+		t.Errorf("UnblockIP(203.0.113.7) = %v, want true", gone)
+	}
+	if _, ok := ipBlockRow(t, store, "203.0.113.7"); ok {
+		t.Errorf("203.0.113.7 survived UnblockIP")
+	}
+	if failures, ok := ipBlockRow(t, store, "198.51.100.4"); !ok || failures != 1 {
+		t.Errorf("198.51.100.4 = failures %d, ok %v; want 1 failure, present", failures, ok)
+	}
+
+	gone, err = store.UnblockIP("203.0.113.7")
+	if err != nil || gone {
+		t.Errorf("UnblockIP of a missing row = %v, err %v; want false, no error", gone, err)
+	}
+}
+
+func TestClearBlocks(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+	for _, ip := range []string{"10.0.0.1", "203.0.113.7", "198.51.100.4"} {
+		seedIPBlock(t, store, ip, 1, now.Add(blockStep), now)
+	}
+
+	cleared, err := store.ClearBlocks()
+	if err != nil {
+		t.Fatalf("ClearBlocks: %v", err)
+	}
+	if cleared != 3 {
+		t.Errorf("ClearBlocks cleared %d rows, want 3", cleared)
+	}
+	blocks, err := store.ListBlocks()
+	if err != nil {
+		t.Fatalf("ListBlocks after clear: %v", err)
+	}
+	if len(blocks) != 0 {
+		t.Errorf("after ClearBlocks the table holds %d rows, want 0", len(blocks))
+	}
+
+	cleared, err = store.ClearBlocks()
+	if err != nil || cleared != 0 {
+		t.Errorf("ClearBlocks on an empty table = %d, err %v; want 0, no error", cleared, err)
+	}
+}

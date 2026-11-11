@@ -16,6 +16,9 @@ import (
 // usage is what every run without a working verb gets.
 const usage = `usage:
   sandbin serve [--api-key k] [--db f] [--addr a] [--trusted-proxy l] [--trusted-proxy-file f]
+  sandbin ip list [--json]
+  sandbin ip unblock <ip>
+  sandbin ip clear
   sandbin help | --help
 `
 
@@ -33,6 +36,12 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "serve":
 		return runServe(args[1:], stderr)
+	case "ip":
+		// runIP has already reported its own failure on stderr.
+		if err := runIP(args[1:], stdout, stderr); err != nil {
+			return 1
+		}
+		return 0
 	case "help", "--help":
 		fmt.Fprint(stdout, usage)
 		return 0

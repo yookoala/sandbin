@@ -217,3 +217,54 @@ ON CONFLICT (ip) DO UPDATE SET failures=excluded.failures, blocked_until=exclude
 	}
 	return blockedUntil, nil
 }
+
+// IPBlock is one row of ip_blocks as an operator sees it.
+type IPBlock struct {
+	IP           string
+	Failures     int
+	BlockedUntil string
+	UpdatedAt    string
+}
+
+// ListBlocks returns every row of ip_blocks, ordered by ip. Rows whose blocked_until is
+// past are included on purpose: their failure count still shapes the next penalty.
+func (s *Store) ListBlocks() ([]IPBlock, error) {
+	rows, err := s.db.Query(`SELECT ip, failures, blocked_until, updated_at FROM ip_blocks ORDER BY ip`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var blocks []IPBlock
+	for rows.Next() {
+		var b IPBlock
+		if err := rows.Scan(&b.IP, &b.Failures, &b.BlockedUntil, &b.UpdatedAt); err != nil {
+			return nil, err
+		}
+		blocks = append(blocks, b)
+	}
+	return blocks, rows.Err()
+}
+
+// UnblockIP deletes one row and reports whether a row went. The failure count goes with
+// it, so the next bad key from that address starts again at blockStep.
+func (s *Store) UnblockIP(ip string) (bool, error) {
+	res, err := s.db.Exec(`DELETE FROM ip_blocks WHERE ip=?`, ip)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
+// ClearBlocks deletes every row and reports how many went.
+func (s *Store) ClearBlocks() (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM ip_blocks`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
