@@ -483,6 +483,29 @@ func TestIPShowMiss(t *testing.T) {
 	}
 }
 
+// TestIPShowCorruptRow reaches GetBlock's read-failure arm and show's answer to it: a
+// row whose failures column is not an integer (only raw SQL can store that) must fail
+// with a message naming the address, not a half-rendered table.
+func TestIPShowCorruptRow(t *testing.T) {
+	dbPath, store := newIPTestStore(t)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := store.db.Exec(`INSERT INTO ip_blocks (ip, failures, blocked_until, updated_at) VALUES (?, ?, ?, ?)`,
+		"1.2.3.9", "abc", now, now); err != nil {
+		t.Fatalf("seed a row with failures=abc: %v", err)
+	}
+
+	stdout, stderr, err := runIPTest(t, dbPath, "show", "1.2.3.9")
+	if err == nil {
+		t.Fatalf("ip show of a corrupt row: no error, want a read failure (stdout %q)", stdout)
+	}
+	if !strings.HasPrefix(stderr, "show 1.2.3.9: ") {
+		t.Errorf("ip show corrupt stderr = %q, want it to start with %q", stderr, "show 1.2.3.9: ")
+	}
+	if stdout != "" {
+		t.Errorf("ip show corrupt stdout = %q, want nothing", stdout)
+	}
+}
+
 // TestIPShowCanonicalises is the same spelling test unblock gets: the server stores
 // canonical keys, so ::ffff:1.2.3.4 and fe80::1%eth0 must reach them.
 func TestIPShowCanonicalises(t *testing.T) {
