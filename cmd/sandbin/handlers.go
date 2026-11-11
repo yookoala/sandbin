@@ -166,6 +166,11 @@ func (s *server) getFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 		http.Error(w, "unknown path", http.StatusNotFound)
 		return
 	}
+	if strings.ToLower(path.Ext(sub)) == ".ansi" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		io.WriteString(w, ansiToHTML(string(content)))
+		return
+	}
 	w.Header().Set("Content-Type", contentType(sub, content))
 	w.Write(content)
 }

@@ -338,6 +338,28 @@ func TestBinPassword(t *testing.T) {
 	}
 }
 
+func TestANSIFileIsRendered(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	base := createTestBin(t, h, "test-key")
+
+	body := "\x1b[1mReport\x1b[0m done\n"
+	if rec := put(t, h, base+"report.ansi", "test-key", body); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT report.ansi = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	rec := get(t, h, base+"report.ansi")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET report.ansi = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8", ct)
+	}
+	want := `<pre class="ansi"><span style="font-weight:bold">Report</span> done` + "\n</pre>"
+	if got := rec.Body.String(); got != want {
+		t.Errorf("rendered body = %q, want %q", got, want)
+	}
+}
+
 func TestPathTraversal(t *testing.T) {
 	h := newTestServer(t, "test-key")
 	base := createTestBin(t, h, "test-key")
