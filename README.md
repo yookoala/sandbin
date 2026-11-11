@@ -24,15 +24,17 @@ SANDBIN_API_KEY=your-key ./sandbin serve
 ```
 
 Every invocation names its verb: `serve` runs the server, `ip list`, `ip show <ip>`, `ip unblock
-<ip>` and `ip clear` inspect and lift the API key blocks (see Managing blocked addresses), and
-`help` prints the usage. A bare `sandbin` or an unknown verb prints that usage on stderr and
-exits 1.
+<ip>` and `ip clear` inspect and lift the API key blocks through that server's control socket
+(see Managing blocked addresses), and `help` prints the usage. A bare `sandbin` or an unknown verb
+prints that usage on stderr and exits 1.
 
-`--api-key` (default `$SANDBIN_API_KEY`), `--db` (default `sandbin.db`) and `--addr`
-(default `:8080`) are `serve`'s core settings; `--trusted-proxy` and `--trusted-proxy-file`
-(defaults `$SANDBIN_TRUSTED_PROXIES` and `$SANDBIN_TRUSTED_PROXIES_FILE`, see Trusted
-proxies) optionally name the proxies the server believes. The server exits when no API key
-is configured or a trusted proxy value cannot be read.
+`--api-key` (default `$SANDBIN_API_KEY`), `--db` (default `sandbin.db`), `--addr` (default
+`:8080`) and `--socket` (default `$SANDBIN_SOCKET`, otherwise the `--db` path plus `.sock`; see
+Managing blocked addresses) are `serve`'s core settings; `--trusted-proxy` and
+`--trusted-proxy-file` (defaults `$SANDBIN_TRUSTED_PROXIES` and `$SANDBIN_TRUSTED_PROXIES_FILE`,
+see Trusted proxies) optionally name the proxies the server believes. The server exits when no API
+key is configured, a trusted proxy value cannot be read, or another serve already answers on its
+control socket.
 
 Create a bin, then PUT files under it. `$BIN` already ends in `/`, so write `${BIN}name` and
 not `$BIN/name`, which asks for a `//` path the server rejects:
@@ -238,16 +240,22 @@ appears in the container command line, but it is visible in `podman inspect` out
 
 ## Managing blocked addresses
 
-`ip` commands read the sqlite file itself, so whoever owns that file controls the lockout
-blocks. They make no network request and need no API key: `list` and `show` need only read access
-to the `--db` file and `unblock` or `clear` need write access, so protecting that file is the
-control. Read access is enough once the block table exists; the first `ip` run against a db file
-that predates it needs one write, because creating the table is part of opening the file.
-Nothing about `serve` loosens — it still refuses to start without an API key, and an `ip` run
-never reaches the running server. Each verb takes `--db` (default `sandbin.db`, the same file
-`serve` opens); `./sandbin ip help` prints this family's usage, and a `--db` file that does not
-exist yet is created the way `serve` would create it — with a warning on stderr naming it, so a
-typo in the path never reads as an all-clear:
+`serve` listens on a second address besides its port: a unix control socket that exposes the
+block table, and the `ip` commands drive it. The socket is what controls the lockout now, not the
+sqlite file. `serve` creates it beside the db it opens — `sandbin.db` comes with
+`sandbin.db.sock`, `/data/sandbin.db` with `/data/sandbin.db.sock` — and chmods it `0600` after
+binding, so it is the server's own user who may manage blocks; relax that mode only on purpose.
+`--socket <path>` names another socket for either side (the socket on a tmpfs while the db stays
+on disk), and `serve` also falls back to `SANDBIN_SOCKET` the way it falls back for its other
+settings.
+
+A live `serve` is required: there is no offline mode, and no verb opens, stats or creates the
+`--db` file. Nothing answering the socket is one readable error naming it (`no sandbin serve
+listening on sandbin.db.sock`, exit 1) and nothing changes. No verb sends an API key, and
+connecting to the socket grants block management and nothing else — narrower than what it used to
+be, because `ip unblock` once needed write access to the whole db file, which also allowed
+editing bins and files with plain SQL. Each verb takes `--db` (default `sandbin.db`) and asks the
+serve whose socket sits next to that file; `./sandbin ip help` prints this family's usage:
 
 ```sh
 ./sandbin ip list                    # every row of the block table
@@ -269,9 +277,9 @@ to `list` alone: `show`, `unblock` and `clear` refuse it.
 
 `show` prints one address's row in that same table and nothing else: the header, then the row,
 with `REMAINING` worked out the same way. Its argument is spelled the way `unblock` spells it (see
-below), an address with no row is the same error `unblock` gives for it (`no block for
-203.0.113.7`, exit 1), and it writes nothing, so it works on a db file its owner may not write
-where `unblock` would be refused.
+below), and an address with no row is the same error `unblock` gives for it (`no block for
+203.0.113.7`, exit 1). Reading a row and lifting one now need the same thing — the right to
+connect to the socket — so there is no read-only half of the family any more.
 
 `unblock` deletes the whole row, so the failure count goes with it: the next wrong key from
 that address starts again at 30 minutes instead of resuming the escalation it had reached. Its
@@ -282,17 +290,32 @@ and `ip clear` or plain SQL is how to remove one. An address with no block is an
 it (`no block for 203.0.113.7`, exit 1), which is how a typo shows up.
 `clear` deletes every row and prints `cleared N blocks`; `N=0` is fine.
 
-They are safe to run next to a live server, in both directions. `openStore`'s `busy_timeout(5000)`
-queues a management write behind whatever transaction the server is in, up to five seconds; if it
-still cannot get the lock it fails readably (`clear blocks: database is locked`, exit 1) and the
-table is left intact. The reverse direction needs a retry, because sqlite answers `SQLITE_BUSY`
-immediately when `RecordFailure`'s read transaction tries to upgrade to a write while a management
-verb holds the lock: a refused charge is retried up to three times, and one that outlives every
-retry is lost but logged (`record auth failure`), never silently dropped. In the container the
-sqlite file lives in the `sandbin-data` volume at `/data/sandbin.db`, so the same verbs run
-through the image:
+The socket speaks four requests and nothing else: `GET /ip` (every row), `GET /ip/{ip}` (one
+row), `DELETE /ip/{ip}` and `DELETE /ip`, answering `404` with `{"error":"no block for <ip>"}`
+for a key the table does not have and `{"unblocked":"<ip>"}` or `{"cleared":N}` when a delete
+did something; anything else is `404` or `405`. `curl --unix-socket` drives it the same way:
 
 ```sh
-podman run --rm localhost/sandbin ip list --db /data/sandbin.db
+curl --unix-socket sandbin.db.sock http://localhost/ip
+curl -X DELETE --unix-socket sandbin.db.sock http://localhost/ip/203.0.113.7
+```
+
+The two listeners share no routes: `/ip` on the public port is an unknown bin, and the socket has
+no bin, file or healthz route. The running server is now the only writer of the block table, so a
+management run cannot contend with it for the sqlite lock; `RecordFailure` keeps its bounded
+retry for the writers that remain — an old binary or a stray sqlite client can still open the db
+file — and a charge that outlives every retry is logged (`record auth failure`), never dropped.
+`serve` refuses to start when the socket path is already answering (`another sandbin serve is
+already listening on sandbin.db.sock`), replaces the stale socket a killed server left behind, and
+refuses a path that holds a regular file or a symlink, leaving that file exactly where it is.
+
+In the container the socket rides the same `sandbin-data` volume as `/data/sandbin.db`, so a
+second container of the same image is the management route, and it needs the volume rather than
+the key. The image's working directory is `/`, so name that db, or work in the volume and the
+default `sandbin.db` resolves to it:
+
+```sh
+podman run --rm -v sandbin-data:/data localhost/sandbin ip list --db /data/sandbin.db
+podman run --rm -w /data -v sandbin-data:/data localhost/sandbin ip list
 ```
 
