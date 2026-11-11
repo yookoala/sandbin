@@ -1,0 +1,16 @@
+[Unit]
+Description=sandbin preview bins
+
+[Container]
+Image=localhost/sandbin:latest
+ContainerName=sandbin
+PublishPort=127.0.0.1:8080:8080
+Volume=sandbin-data:/data
+EnvironmentFile=/etc/sandbin/sandbin.env
+
+[Service]
+Restart=always
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target
