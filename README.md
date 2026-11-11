@@ -237,11 +237,14 @@ appears in the container command line, but it is visible in `podman inspect` out
 
 ## Managing blocked addresses
 
-`ip` commands read the sqlite file itself, so whoever owns that file can see and undo the
-lockout blocks. They make no network request and need no API key: whoever can read the `--db`
-file can lift blocks from it, and protecting that file is the control. Nothing about `serve`
-loosens — it still refuses to start without an API key, and an `ip` run never reaches the
-running server. Each verb takes `--db` (default `sandbin.db`, the same file `serve` opens):
+`ip` commands read the sqlite file itself, so whoever owns that file controls the lockout
+blocks. They make no network request and need no API key: `list` needs read access to the
+`--db` file and `unblock` or `clear` need write access, so protecting that file is the control.
+Nothing about `serve` loosens — it still refuses to start without an API key, and an `ip` run
+never reaches the running server. Each verb takes `--db` (default `sandbin.db`, the same file
+`serve` opens); `./sandbin ip help` prints this family's usage, and a `--db` file that does not
+exist yet is created the way `serve` would create it — with a warning on stderr naming it, so a
+typo in the path never reads as an all-clear:
 
 ```sh
 ./sandbin ip list                    # every row of the block table
@@ -261,15 +264,22 @@ to `list` alone: `unblock` and `clear` refuse it.
 
 `unblock` deletes the whole row, so the failure count goes with it: the next wrong key from
 that address starts again at 30 minutes instead of resuming the escalation it had reached. Its
-argument is spelled the way the server spells an address it charges, so `::ffff:203.0.113.7`,
-`fe80::1%eth0` and `2001:0DB8::1` all reach the key the server stored. An address with no block
-is an error naming it (`no block for 203.0.113.7`, exit 1), which is how a typo shows up.
+argument is spelled the way the server spells an address it charges — the keys the server
+stores never carry a zone — so `::ffff:203.0.113.7`, `fe80::1%eth0` and `2001:0DB8::1` all
+reach the stored key. A key that itself carries a zone can only come from a hand-inserted row,
+and `ip clear` or plain SQL is how to remove one. An address with no block is an error naming
+it (`no block for 203.0.113.7`, exit 1), which is how a typo shows up.
 `clear` deletes every row and prints `cleared N blocks`; `N=0` is fine.
 
-They are safe to run next to a live server: `openStore`'s `busy_timeout(5000)` queues the
-management write behind whatever transaction the server is in instead of failing with
-`SQLITE_BUSY`. In the container the sqlite file lives in the `sandbin-data` volume at
-`/data/sandbin.db`, so the same verbs run through the image:
+They are safe to run next to a live server, in both directions. `openStore`'s `busy_timeout(5000)`
+queues a management write behind whatever transaction the server is in, up to five seconds; if it
+still cannot get the lock it fails readably (`clear blocks: database is locked`, exit 1) and the
+table is left intact. The reverse direction needs a retry, because sqlite answers `SQLITE_BUSY`
+immediately when `RecordFailure`'s read transaction tries to upgrade to a write while a management
+verb holds the lock: a refused charge is retried up to three times, and one that outlives every
+retry is lost but logged (`record auth failure`), never silently dropped. In the container the
+sqlite file lives in the `sandbin-data` volume at `/data/sandbin.db`, so the same verbs run
+through the image:
 
 ```sh
 podman run --rm localhost/sandbin ip list --db /data/sandbin.db

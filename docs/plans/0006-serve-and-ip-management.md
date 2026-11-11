@@ -1,7 +1,8 @@
 # Plan: `sandbin serve` and a command to inspect and lift blocks
 
-Status: draft. Decisions in `docs/decisions/0006-serve-and-ip.md`. Extends
-`docs/plans/0003-api-key-lockout.md`.
+Status: implemented on `main` (`098235d`, `23c8bf1`, `2891b7c`), reviewed as "ship with
+fixes", review fixes in `8e8e8c6` and `8e93a54`. Decisions in
+`docs/decisions/0006-serve-and-ip.md`. Extends `docs/plans/0003-api-key-lockout.md`.
 
 ## What it is
 
@@ -173,3 +174,47 @@ Containerfile   CMD gains serve
 An admin HTTP API, manual `ip block`, a single-ip `ip show`, editing `failures` or
 `blocked_until` by hand, remote management, TLS, changing the block parameters from the CLI,
 per-verb config files, and shipping anything new in the image beyond the CMD line.
+
+## Outcome
+
+Tests went 92 to 119 (84 in `cmd/sandbin`) and the review verdict was "ship with fixes". Both
+blockers were fixed in `8e8e8c6` and `8e93a54`:
+
+- `ip unblock` or `ip clear` running beside a hammering server dropped ~0.4% of wrong-key
+  charges (reviewer: 3–4 of 808): sqlite answers `SQLITE_BUSY` immediately when
+  `RecordFailure`'s deferred read transaction upgrades to a write, and `busy_timeout` never
+  queues that upgrade; the charge fell with only a log line to show it. A refused charge is now
+  retried up to three times (25/50/75 ms backoff). Re-measured live: 8 rounds of 101 wrong-key
+  requests with `list`/`unblock`/`clear` running in flight, uploads included — ~900 charged
+  requests, zero dropped charges, zero `SQLITE_BUSY` lines in the server log, every management
+  command done in 7–20 ms, and uploads taking `201` under the same load.
+- `ip list --db sanbin.db` (a typo for `sandbin.db`) created the file, printed
+  `no blocked addresses` and exited 0: a false all-clear over a table that was never opened.
+  The created file is now warned about on stderr.
+
+The review confirmed against a live server: all four refuse-to-start guards and both env
+fallbacks byte-identical to the pre-split binary; the 403→429 escalation with `Retry-After`
+walk; `GET` staying open and wrong bin passwords charging nothing; `ip` verbs making zero
+network requests (`unshare -rn` plus a copy-of-the-db proof); the three store methods never
+touching `bins` or `files`; container start on the image CMD alone, container-side management
+against a live volume, and the quadlet dryrun riding the same CMD; canonicalisation against
+real charged keys (`::ffff:` hits, uppercase IPv6 hits, `[1.2.3.4]` and `203.0.113.07` refused
+as non-addresses); an expired row walking to `failures 2` on its next charge; and `--json`
+field discipline.
+
+Accepted as they are: top-level `-h` is an unknown verb (exit 1); a verb's `--help` prints Go's
+flag list on stderr with exit 0; `sandbin ip help` prints the family usage; an `ip` command
+against a db under continuous hammering may wait the full 5 s busy timeout and then fail
+readably with the table intact; a stored key carrying a zone (only possible from raw SQL,
+never from the server) can only be removed by `clear` or SQL; `unblock` names the canonicalised
+spelling on a miss, not what was typed; and a stray positional after `serve` flags is now
+refused where the pre-split binary silently served — proven by running the old binary.
+
+Corrections to this plan's own wording, all found in review: "no `SQLITE_BUSY` in its log"
+held for bin and file writes but not for charges before the retry fix — `PutFile` and
+`CreateBin` are statement-level and never hit the upgrade path; "whoever can **read** the
+`--db` file can lift blocks" — listing needs read, lifting needs write, proven as uid 1000
+against a `0644` db; and the `fe80::1%eth0` example reaches zone-free stored keys, not a key
+that itself carries a zone. Left unproven here: a genuinely untrusted public socket (this
+sandbox has no way to bind one), an actually unreadable-but-existing db file as root, and the
+`serve` refuse-to-start guards under `go test` — they stay proven from the shell only.
