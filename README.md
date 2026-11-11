@@ -77,6 +77,13 @@ reaching the port over a route the server does not trust is charged by their own
 and cannot frame a third party, but a client whose connection arrives through a trusted proxy
 can name an arbitrary address in that header and get that address blocked.
 
+That freedom cuts both ways on every trusted socket, loopback included: a client allowed to name
+itself can also send a different valid address per attempt and have each failure charged to a
+fresh identity, so it never accumulates a penalty of its own. The defence is configuration, not
+code: trust only the sockets and ranges you really front with a proxy, because the default
+loopback, private and link-local trust is what makes the trick available wherever clients share a
+network.
+
 ### Trusted proxies
 
 An origin behind a public proxy such as Cloudflare sees the proxy's own public address as the
