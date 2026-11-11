@@ -11,13 +11,16 @@ import (
 	"net/http"
 	"path"
 	"strings"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
-	apiKeyHeader = "X-API-Key"
-	maxBodyBytes = 1 << 20 // 1 MiB per PUT
-	maxPathLen   = 256
-	maxPathSegs  = 16
+	apiKeyHeader      = "X-API-Key"
+	binPasswordHeader = "X-Bin-Password"
+	maxBodyBytes      = 1 << 20 // 1 MiB per PUT
+	maxPathLen        = 256
+	maxPathSegs       = 16
 )
 
 type server struct {
@@ -83,7 +86,19 @@ func (s *server) createBin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := s.store.CreateBin("")
+	// An empty X-Bin-Password means the bin stays open.
+	passwordHash := ""
+	if plain := r.Header.Get(binPasswordHeader); plain != "" {
+		hashed, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
+		if err != nil {
+			log.Printf("hash bin password: %v", err)
+			http.Error(w, "could not set the bin password", http.StatusInternalServerError)
+			return
+		}
+		passwordHash = string(hashed)
+	}
+
+	hash, err := s.store.CreateBin(passwordHash)
 	if err != nil {
 		log.Printf("create bin: %v", err)
 		http.Error(w, "could not create bin", http.StatusInternalServerError)
@@ -104,7 +119,7 @@ func (s *server) getFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 		}
 	}
 
-	_, ok, err := s.store.GetBin(hash)
+	bin, ok, err := s.store.GetBin(hash)
 	if err != nil {
 		log.Printf("get bin %q: %v", hash, err)
 		http.Error(w, "unknown bin", http.StatusNotFound)
@@ -112,6 +127,9 @@ func (s *server) getFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 	}
 	if !ok {
 		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
+	}
+	if !s.binAuthorized(w, r, bin) {
 		return
 	}
 
@@ -168,12 +186,16 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 		return
 	}
 
-	if _, ok, err := s.store.GetBin(hash); err != nil {
+	bin, ok, err := s.store.GetBin(hash)
+	if err != nil {
 		log.Printf("get bin %q: %v", hash, err)
 		http.Error(w, "unknown bin", http.StatusNotFound)
 		return
 	} else if !ok {
 		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
+	}
+	if !s.binAuthorized(w, r, bin) {
 		return
 	}
 
@@ -203,6 +225,21 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 		w.WriteHeader(http.StatusCreated)
 	}
 	io.WriteString(w, "/"+hash+"/"+sub)
+}
+
+// binAuthorized answers 401 itself when the bin has a password the request does
+// not carry. bcrypt.CompareHashAndPassword is constant time on its own.
+func (s *server) binAuthorized(w http.ResponseWriter, r *http.Request, bin Bin) bool {
+	if bin.PasswordHash == "" {
+		return true
+	}
+	// The user name is conventionally the bin hash, but any name works.
+	if _, password, ok := r.BasicAuth(); ok && bcrypt.CompareHashAndPassword([]byte(bin.PasswordHash), []byte(password)) == nil {
+		return true
+	}
+	w.Header().Set("WWW-Authenticate", `Basic realm="sandbin"`)
+	http.Error(w, "bin password required", http.StatusUnauthorized)
+	return false
 }
 
 // renderListing writes the directory listing a bin base path gets when it has

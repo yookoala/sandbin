@@ -261,6 +261,83 @@ func TestIndexHTMLWinsOverListing(t *testing.T) {
 	}
 }
 
+func TestBinPassword(t *testing.T) {
+	h := newTestServer(t, "test-key")
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("X-Bin-Password", "sesame")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST with a bin password = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	base := rec.Body.String()
+
+	rec = get(t, h, base+"page.html")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET without the bin password = %d, want %d; body %q", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+	if www := rec.Header().Get("WWW-Authenticate"); !strings.HasPrefix(www, "Basic") {
+		t.Errorf("WWW-Authenticate = %q, want a Basic challenge", www)
+	}
+
+	rec = get(t, h, base)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("GET the listing without the bin password = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	rec = put(t, h, base+"page.html", "test-key", "<p>x</p>")
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("PUT without the bin password = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	req = httptest.NewRequest(http.MethodPut, base+"page.html", strings.NewReader("<h1>Secret</h1>"))
+	req.Header.Set("X-API-Key", "test-key")
+	req.SetBasicAuth(strings.Trim(base, "/"), "wrong")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("PUT with a wrong bin password = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	req = httptest.NewRequest(http.MethodPut, base+"page.html", strings.NewReader("<h1>Secret</h1>"))
+	req.Header.Set("X-API-Key", "test-key")
+	req.SetBasicAuth("anyone", "sesame")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("PUT with the bin password = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	rec = get(t, h, base+"page.html")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET without the password on a protected bin = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, base+"page.html", nil)
+	req.SetBasicAuth("anyone", "sesame")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET with the bin password = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "<h1>Secret</h1>" {
+		t.Errorf("body = %q, want %q", got, "<h1>Secret</h1>")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, base, nil)
+	req.SetBasicAuth("anyone", "sesame")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET the listing with the bin password = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), "page.html") {
+		t.Errorf("protected listing = %q, want it to list page.html", rec.Body.String())
+	}
+}
+
 func TestPathTraversal(t *testing.T) {
 	h := newTestServer(t, "test-key")
 	base := createTestBin(t, h, "test-key")
