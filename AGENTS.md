@@ -15,3 +15,4 @@
 
 1. "docs/plans": All plans are documented into the subfolder.
 2. "docs/decisions": All made decisions memory are documented into the subfolder here.
+3. "cmd/sandbin": The main program location.
