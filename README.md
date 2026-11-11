@@ -77,11 +77,13 @@ and a missing key is a startup error that makes no request at all. `SANDBIN_BIN_
 has no flag on purpose, so a bin password never lands on a command line: when it is set it
 goes out as `X-Bin-Password` on the create and as Basic Auth (user name = bin hash) on every
 upload. `--bin <hash>` uploads into a bin you already have, `--new` forces a fresh one, and
-`--name <path>` is what piped-in stdin is called.
+`--name <path>` names piped-in stdin; with nothing piped in it is an error, not an empty
+upload. A name that starts with `-` goes after `--` (`sandbin-client -- -draft.html`), and
+`--help` prints the flag list on stderr.
 
 ```sh
 export SANDBIN_URL=http://localhost:8080 SANDBIN_API_KEY=your-key
-sandbin-client prototype/index.html prototype/app.js prototype/style.css build.ansi
+sandbin-client prototype/index.html prototype/app.js prototype/style.css
 # created http://localhost:8080/abc1234/prototype/index.html
 # created http://localhost:8080/abc1234/prototype/app.js
 # created http://localhost:8080/abc1234/prototype/style.css
@@ -100,8 +102,11 @@ The bin is remembered in `.sandbin.json` in the working directory:
 otherwise the client creates a bin and writes it: mode `0600`, renamed in from a temp file in
 the same directory, never holding the API key or the bin password, and gitignored. A corrupt
 or unreadable `.sandbin.json` is an error naming the file, never a silent second bin for the
-same prototype. Names are checked before anything is sent, so an absolute path, a `..`
-segment or a file over 1 MiB fails locally instead of costing a request.
+same prototype. Change the url in use and the file simply stops matching: the client makes a
+new bin for the new url, and the old bin is orphaned — its files stay readable at the old
+URL, but nothing in this directory points at them any more. Names are checked before anything
+is sent, so an absolute path, a `..` segment or a file over 1 MiB fails locally instead of
+costing a request.
 
 **Do not retry a failing `sandbin-client` from a script.** It makes exactly one request per
 operation and never retries, because a wrong or missing API key blocks the client's address
