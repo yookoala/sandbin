@@ -10,7 +10,9 @@ import (
 	"log"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -93,7 +95,21 @@ func (s *server) binRoutes(w http.ResponseWriter, r *http.Request, hash, sub str
 
 // createBin makes a bin and answers with the path it lives under.
 func (s *server) createBin(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if until, blocked := s.store.IsBlocked(ip, time.Now()); blocked {
+		w.Header().Set("Retry-After", strconv.Itoa(int(time.Until(until).Seconds())))
+		// An attempt while blocked is itself a failure, so hammering walks the penalty up.
+		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
+			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
+		}
+		http.Error(w, "too many bad API keys", http.StatusTooManyRequests)
+		return
+	}
+
 	if subtle.ConstantTimeCompare([]byte(r.Header.Get(apiKeyHeader)), s.apiKey) != 1 {
+		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
+			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
+		}
 		http.Error(w, "invalid API key", http.StatusForbidden)
 		return
 	}
@@ -192,7 +208,21 @@ func (s *server) getFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 }
 
 func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub string) {
+	ip := clientIP(r)
+	if until, blocked := s.store.IsBlocked(ip, time.Now()); blocked {
+		w.Header().Set("Retry-After", strconv.Itoa(int(time.Until(until).Seconds())))
+		// An attempt while blocked is itself a failure, so hammering walks the penalty up.
+		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
+			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
+		}
+		http.Error(w, "too many bad API keys", http.StatusTooManyRequests)
+		return
+	}
+
 	if subtle.ConstantTimeCompare([]byte(r.Header.Get(apiKeyHeader)), s.apiKey) != 1 {
+		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
+			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
+		}
 		http.Error(w, "invalid API key", http.StatusForbidden)
 		return
 	}

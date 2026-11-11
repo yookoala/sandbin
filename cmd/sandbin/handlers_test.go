@@ -6,11 +6,13 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
-func newTestServer(t *testing.T, apiKey string) http.Handler {
+func newTestServer(t *testing.T, apiKey string) *server {
 	t.Helper()
 	store, err := openStore(filepath.Join(t.TempDir(), "sandbin.db"))
 	if err != nil {
@@ -189,20 +191,19 @@ func TestWrongAPIKey(t *testing.T) {
 	h := newTestServer(t, "test-key")
 	base := createTestBin(t, h, "test-key")
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req.Header.Set("X-API-Key", "wrong")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	// Each attempt arrives from a fresh address, because only a first failure
+	// from an address answers 403; escalation has its own tests below.
+	rec := postFrom(t, h, "198.51.100.1:1234", "wrong")
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("POST with wrong key = %d, want %d; body %q", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
 
-	rec = put(t, h, base+"page.html", "wrong", "x")
+	rec = putFrom(t, h, "198.51.100.2:1234", base+"page.html", "wrong", "x")
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("PUT with wrong key = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 
-	rec = put(t, h, base+"page.html", "", "x")
+	rec = putFrom(t, h, "198.51.100.3:1234", base+"page.html", "", "x")
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("PUT with no key = %d, want %d", rec.Code, http.StatusForbidden)
 	}
@@ -491,5 +492,315 @@ func TestPathTraversal(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("GET %q = %d, want %d", bad, rec.Code, http.StatusBadRequest)
 		}
+	}
+}
+
+// postFrom POSTs "/" from a fixed socket address; an empty apiKey omits the header.
+func postFrom(t *testing.T, h http.Handler, remoteAddr, apiKey string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.RemoteAddr = remoteAddr
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// putFrom PUTs under a bin from a fixed socket address; an empty apiKey omits the header.
+func putFrom(t *testing.T, h http.Handler, remoteAddr, path, apiKey, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPut, path, strings.NewReader(body))
+	req.RemoteAddr = remoteAddr
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// getFrom GETs a path from a fixed socket address; an empty apiKey omits the header.
+func getFrom(t *testing.T, h http.Handler, remoteAddr, path, apiKey string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.RemoteAddr = remoteAddr
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// retryAfter parses the recorder's Retry-After header.
+func retryAfter(t *testing.T, rec *httptest.ResponseRecorder) int {
+	t.Helper()
+	value := rec.Header().Get("Retry-After")
+	seconds, err := strconv.Atoi(value)
+	if err != nil || seconds <= 0 {
+		t.Fatalf("Retry-After = %q, want a positive whole number of seconds", value)
+	}
+	return seconds
+}
+
+// storedBlock reads the ip_blocks row for ip and reports the failure count and
+// how long the stored block lasts, blocked_until minus updated_at.
+func storedBlock(t *testing.T, s *server, ip string) (int, time.Duration) {
+	t.Helper()
+	var failures int
+	var untilRaw, updatedRaw string
+	err := s.store.db.QueryRow(`SELECT failures, blocked_until, updated_at FROM ip_blocks WHERE ip=?`, ip).
+		Scan(&failures, &untilRaw, &updatedRaw)
+	if err != nil {
+		t.Fatalf("read ip_blocks row for %q: %v", ip, err)
+	}
+	until, err := time.Parse(time.RFC3339Nano, untilRaw)
+	if err != nil {
+		t.Fatalf("parse blocked_until %q: %v", untilRaw, err)
+	}
+	updated, err := time.Parse(time.RFC3339Nano, updatedRaw)
+	if err != nil {
+		t.Fatalf("parse updated_at %q: %v", updatedRaw, err)
+	}
+	return failures, until.Sub(updated)
+}
+
+func TestWrongKeyBlocksAddress(t *testing.T) {
+	s := newTestServer(t, "test-key")
+
+	rec := postFrom(t, s, "203.0.113.7:1234", "wrong")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("first wrong key = %d, want %d; body %q", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if ra := rec.Header().Get("Retry-After"); ra != "" {
+		t.Errorf("403 carries Retry-After %q, want none", ra)
+	}
+	if failures, dur := storedBlock(t, s, "203.0.113.7"); failures != 1 || dur != blockStep {
+		t.Errorf("after the first failure = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
+	}
+
+	// The address is now blocked, even with the correct key.
+	rec = postFrom(t, s, "203.0.113.7:1234", "test-key")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("blocked POST = %d, want %d; body %q", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "too many bad API keys") {
+		t.Errorf("429 body = %q, want the too many bad API keys message", rec.Body.String())
+	}
+	if failures, dur := storedBlock(t, s, "203.0.113.7"); failures != 2 || dur != 2*blockStep {
+		t.Errorf("after a blocked attempt = failures %d, block %v; want 2 failures, %v", failures, dur, 2*blockStep)
+	}
+	ra1 := retryAfter(t, rec)
+	if ra1 <= 1800-30 || ra1 > 1800 {
+		t.Errorf("Retry-After = %d, want the first block's 1800 seconds less the elapsed time", ra1)
+	}
+
+	// Attempting while blocked escalates to the second block.
+	rec = postFrom(t, s, "203.0.113.7:1234", "test-key")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second blocked POST = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+	ra2 := retryAfter(t, rec)
+	if ra2 <= ra1 {
+		t.Errorf("Retry-After went from %d to %d; the block must grow while hammered", ra1, ra2)
+	}
+	if failures, dur := storedBlock(t, s, "203.0.113.7"); failures != 3 || dur != 3*blockStep {
+		t.Errorf("after the third failure = failures %d, block %v; want 3 failures, %v", failures, dur, 3*blockStep)
+	}
+
+	// An unrelated address is untouched by another one's block.
+	if rec := postFrom(t, s, "198.51.100.9:1234", "test-key"); rec.Code != http.StatusCreated {
+		t.Errorf("unrelated POST = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+}
+
+func TestMissingAPIKeyCountsAsFailure(t *testing.T) {
+	s := newTestServer(t, "test-key")
+
+	rec := postFrom(t, s, "203.0.113.8:1234", "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("POST without the header = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	rec = postFrom(t, s, "203.0.113.8:1234", "")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second header-less POST = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+	if failures, dur := storedBlock(t, s, "203.0.113.8"); failures != 2 || dur != 2*blockStep {
+		t.Errorf("missing headers = failures %d, block %v; want 2 failures, %v", failures, dur, 2*blockStep)
+	}
+}
+
+func TestBlockedAddressKeepsGetService(t *testing.T) {
+	s := newTestServer(t, "test-key")
+
+	const addr = "198.51.100.5:1234"
+	rec := postFrom(t, s, addr, "test-key")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create bin = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	base := rec.Body.String()
+	if rec := putFrom(t, s, addr, base+"notes.md", "test-key", "# Notes"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT notes.md = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	// One bad key blocks the address from writes.
+	if rec := postFrom(t, s, addr, "wrong"); rec.Code != http.StatusForbidden {
+		t.Fatalf("wrong key = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	// GETs stay open for the blocked address, even with a wrong key attached.
+	rec = getFrom(t, s, addr, base, "wrong")
+	if rec.Code != http.StatusOK {
+		t.Errorf("blocked GET listing = %d, want %d", rec.Code, http.StatusOK)
+	} else if !strings.Contains(rec.Body.String(), "notes.md") {
+		t.Errorf("listing = %q, want it to list notes.md", rec.Body.String())
+	}
+	if rec := getFrom(t, s, addr, base+"notes.md", ""); rec.Code != http.StatusOK || rec.Body.String() != "# Notes" {
+		t.Errorf("blocked GET file = %d, body %q; want 200 and the stored body", rec.Code, rec.Body.String())
+	}
+	// A GET never charges, so the row still holds exactly one failure.
+	if failures, dur := storedBlock(t, s, "198.51.100.5"); failures != 1 || dur != blockStep {
+		t.Errorf("GETs charged the block = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
+	}
+
+	// The blocked write is refused with an honest wait.
+	rec = putFrom(t, s, addr, base+"other.md", "test-key", "x")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("blocked PUT = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+	if ra := retryAfter(t, rec); ra <= 1800-30 || ra > 1800 {
+		t.Errorf("blocked PUT Retry-After = %d, want about 1800", ra)
+	}
+}
+
+func TestPutFailureEscalates(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+
+	const addr = "198.51.100.6:1234"
+	rec := putFrom(t, s, addr, base+"page.html", "wrong", "x")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("PUT with wrong key = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if failures, dur := storedBlock(t, s, "198.51.100.6"); failures != 1 || dur != blockStep {
+		t.Errorf("PUT failure = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
+	}
+
+	rec = putFrom(t, s, addr, base+"page.html", "wrong", "x")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("blocked PUT = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+	ra1 := retryAfter(t, rec)
+	if ra1 <= 1800-30 || ra1 > 1800 {
+		t.Errorf("Retry-After = %d, want about 1800", ra1)
+	}
+
+	rec = putFrom(t, s, addr, base+"page.html", "wrong", "x")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("hammered PUT = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+	ra2 := retryAfter(t, rec)
+	if ra2 <= ra1 {
+		t.Errorf("PUT Retry-After went from %d to %d; want it to grow", ra1, ra2)
+	}
+	if failures, dur := storedBlock(t, s, "198.51.100.6"); failures != 3 || dur != 3*blockStep {
+		t.Errorf("after three PUT failures = failures %d, block %v; want 3 failures, %v", failures, dur, 3*blockStep)
+	}
+}
+
+func TestBlockSurvivesRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sandbin.db")
+	store, err := openStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	s := &server{store: store, apiKey: []byte("test-key")}
+	if rec := postFrom(t, s, "203.0.113.9:1234", "wrong"); rec.Code != http.StatusForbidden {
+		t.Fatalf("first wrong key = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	restarted, err := openStore(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { restarted.Close() })
+	s2 := &server{store: restarted, apiKey: []byte("test-key")}
+
+	rec := postFrom(t, s2, "203.0.113.9:1234", "test-key")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("POST after a restart = %d, want %d; body %q", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+	}
+	if ra := retryAfter(t, rec); ra <= 1800-30 || ra > 1800 {
+		t.Errorf("Retry-After after the restart = %d, want about 1800", ra)
+	}
+}
+
+func TestForgedXFFFromPublicAddress(t *testing.T) {
+	s := newTestServer(t, "test-key")
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.RemoteAddr = "8.8.8.8:1234"
+	req.Header.Set("X-Forwarded-For", "198.51.100.4")
+	req.Header.Set("X-API-Key", "wrong")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("forged-XFF POST = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if _, blocked := s.store.IsBlocked("8.8.8.8", time.Now()); !blocked {
+		t.Errorf("8.8.8.8 not charged although it held the socket")
+	}
+	if _, blocked := s.store.IsBlocked("198.51.100.4", time.Now()); blocked {
+		t.Errorf("198.51.100.4 blocked although it only appeared in a forged header")
+	}
+
+	// Rotating forged headers cannot buy a fresh identity.
+	req = httptest.NewRequest(http.MethodPost, "/", nil)
+	req.RemoteAddr = "8.8.8.8:1234"
+	req.Header.Set("X-Forwarded-For", "198.51.100.99")
+	req.Header.Set("X-API-Key", "test-key")
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second POST from 8.8.8.8 = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+	retryAfter(t, rec)
+
+	// The address named in the forged header is unaffected.
+	if rec := postFrom(t, s, "198.51.100.4:1234", "test-key"); rec.Code != http.StatusCreated {
+		t.Errorf("POST from the named address = %d, want %d", rec.Code, http.StatusCreated)
+	}
+}
+
+func TestLocalProxyXFFChargesRightmost(t *testing.T) {
+	s := newTestServer(t, "test-key")
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.7, 198.51.100.4")
+	req.Header.Set("X-API-Key", "wrong")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("local-proxy POST = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if _, blocked := s.store.IsBlocked("198.51.100.4", time.Now()); !blocked {
+		t.Errorf("198.51.100.4 not charged, although it is the rightmost X-Forwarded-For entry")
+	}
+	if _, blocked := s.store.IsBlocked("203.0.113.7", time.Now()); blocked {
+		t.Errorf("203.0.113.7 charged, although only the rightmost header entry is believed")
+	}
+	if _, blocked := s.store.IsBlocked("127.0.0.1", time.Now()); blocked {
+		t.Errorf("127.0.0.1 charged, although the header made it a proxy hop")
+	}
+
+	// The proxy address itself is a different identity and stays allowed.
+	if rec := postFrom(t, s, "127.0.0.1:1234", "test-key"); rec.Code != http.StatusCreated {
+		t.Errorf("header-less POST from 127.0.0.1 = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
 	}
 }
