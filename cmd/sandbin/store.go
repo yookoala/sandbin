@@ -7,7 +7,7 @@ import (
 	"errors"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 const schema = `
@@ -177,7 +177,25 @@ func (s *Store) IsBlocked(ip string, now time.Time) (time.Time, bool) {
 // up to blockMax. Rows idle past blockIdlePrune are deleted in the same call
 // so the table cannot grow without bound. The read, the upsert and the prune
 // run in one transaction so parallel failures cannot interleave and drop counts.
+// A management verb (ip unblock, ip clear) is a second writer, and sqlite answers
+// SQLITE_BUSY immediately when this deferred read transaction tries to upgrade,
+// so a refused charge is retried a bounded few times: dropping it silently would
+// under-count the penalty.
 func (s *Store) RecordFailure(ip string, now time.Time) (time.Time, error) {
+	until, err := s.recordFailureOnce(ip, now)
+	for attempt := 2; err != nil && isBusy(err) && attempt <= 4; attempt++ {
+		time.Sleep(time.Duration(attempt-1) * 25 * time.Millisecond)
+		until, err = s.recordFailureOnce(ip, now)
+	}
+	return until, err
+}
+
+func isBusy(err error) bool {
+	var dbErr *sqlite.Error
+	return errors.As(err, &dbErr) && dbErr.Code() == 5 // sqlite3's SQLITE_BUSY
+}
+
+func (s *Store) recordFailureOnce(ip string, now time.Time) (time.Time, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return time.Time{}, err

@@ -233,6 +233,44 @@ func TestRecordFailureParallel(t *testing.T) {
 	}
 }
 
+// TestRecordFailureRetriesALockedWrite plays the reviewer's second-writer case: a
+// management verb (here a second store on the same file) holds the write lock, and
+// sqlite answers SQLITE_BUSY immediately to this deferred read transaction's upgrade
+// instead of queueing it. The charge must survive that as a retry, exactly once.
+func TestRecordFailureRetriesALockedWrite(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sandbin.db")
+	store, err := openStore(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	holder, err := openStore(dbPath)
+	if err != nil {
+		t.Fatalf("open holder: %v", err)
+	}
+	defer holder.Close()
+
+	now := time.Now().UTC()
+	tx, err := holder.db.Begin()
+	if err != nil {
+		t.Fatalf("holder begin: %v", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO ip_blocks (ip, failures, blocked_until, updated_at) VALUES (?, ?, ?, ?)`,
+		"198.51.100.1", 1, now.Add(blockStep).Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+		tx.Rollback()
+		t.Fatalf("holder write: %v", err)
+	}
+	// The lock is what an unblock or clear holds; it goes away while the retries are running.
+	time.AfterFunc(40*time.Millisecond, func() { tx.Commit() })
+
+	if _, err := store.RecordFailure("203.0.113.60", now); err != nil {
+		t.Fatalf("RecordFailure while the write lock was held: %v", err)
+	}
+	if failures, ok := ipBlockRow(t, store, "203.0.113.60"); !ok || failures != 1 {
+		t.Errorf("charge through the lock = failures %d, ok %v; want exactly 1", failures, ok)
+	}
+}
+
 // TestRecordFailureCapsOverflow seeds the row a long-lived hammerer eventually
 // reaches. A reviewer stored failures=6000000 and got duration -2124095h4m33s,
 // blocked_until 1784-07-18, and IsBlocked false: the multiplication overflowed
