@@ -1,14 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
+	"net"
+	"net/http"
 	"net/netip"
-	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -20,7 +21,9 @@ const ipUsage = `usage:
   sandbin ip show <ip>         one address's row in the block table
   sandbin ip unblock <ip>      delete one address's block
   sandbin ip clear             delete every block
-Each verb takes --db <file> (default sandbin.db) and needs no API key.
+Each verb reaches the running serve through its control socket, which serve keeps next to
+--db (default sandbin.db, so sandbin.db.sock); --socket <path> names another socket. A live
+serve is required and no API key is sent: with nothing listening the verb changes nothing.
 `
 
 // runIP is the whole sandbin ip family, so a test can hand it args and writers.
@@ -55,7 +58,7 @@ func runIP(args []string, stdout, stderr io.Writer) error {
 }
 
 func ipList(args []string, stdout, stderr io.Writer) error {
-	fs, dbPath := ipFlagSet("list", stderr)
+	fs, dbPath, socketPath := ipFlagSet("list", stderr)
 	jsonOut := fs.Bool("json", false, "print the rows as a json array")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -64,22 +67,26 @@ func ipList(args []string, stdout, stderr io.Writer) error {
 		return ipError(stderr, "list takes no arguments, got %q", strings.Join(extra, " "))
 	}
 
-	store, err := openIPStore(*dbPath, stderr)
+	socket := controlSocketPath(*dbPath, *socketPath)
+	code, body, err := controlRequest(stderr, http.MethodGet, socket, "/ip")
 	if err != nil {
 		return err
 	}
-	defer store.Close()
-
-	blocks, err := store.ListBlocks()
-	if err != nil {
-		return ipError(stderr, "list blocks: %v", err)
+	if code != http.StatusOK {
+		return controlFailure(stderr, "list blocks", socket, code, body)
 	}
 
 	if *jsonOut {
-		if err := writeBlocksJSON(stdout, blocks); err != nil {
+		// The server's array is already the four-field shape --json prints.
+		if _, err := stdout.Write(body); err != nil {
 			return ipError(stderr, "write json: %v", err)
 		}
 		return nil
+	}
+
+	blocks, err := parseBlocks(body)
+	if err != nil {
+		return ipError(stderr, "list blocks: %v", err)
 	}
 	if len(blocks) == 0 {
 		fmt.Fprintln(stdout, "no blocked addresses")
@@ -89,11 +96,10 @@ func ipList(args []string, stdout, stderr io.Writer) error {
 	return writeBlocksTable(stdout, blocks, time.Now())
 }
 
-// ipShow names one address's row: the same table as list, one row, and the same refusal
-// as unblock when the row is not there. It reads the db file only, so an owner of a file
-// they may not write can still ask what an address looks like right now.
+// ipShow names one address's row: the same table as list, one row, and the same refusal as
+// unblock when the row is not there.
 func ipShow(args []string, stdout, stderr io.Writer) error {
-	fs, dbPath := ipFlagSet("show", stderr)
+	fs, dbPath, socketPath := ipFlagSet("show", stderr)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -112,24 +118,27 @@ func ipShow(args []string, stdout, stderr io.Writer) error {
 		return ipError(stderr, "%s", err)
 	}
 
-	store, err := openIPStore(*dbPath, stderr)
+	socket := controlSocketPath(*dbPath, *socketPath)
+	code, body, err := controlRequest(stderr, http.MethodGet, socket, "/ip/"+ip)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	if code == http.StatusNotFound {
+		return ipError(stderr, "no block for %s", ip)
+	}
+	if code != http.StatusOK {
+		return controlFailure(stderr, "show "+ip, socket, code, body)
+	}
 
-	block, ok, err := store.GetBlock(ip)
+	block, err := parseBlock(body)
 	if err != nil {
 		return ipError(stderr, "show %s: %v", ip, err)
-	}
-	if !ok {
-		return ipError(stderr, "no block for %s", ip)
 	}
 	return writeBlocksTable(stdout, []IPBlock{block}, time.Now())
 }
 
 func ipUnblock(args []string, stdout, stderr io.Writer) error {
-	fs, dbPath := ipFlagSet("unblock", stderr)
+	fs, dbPath, socketPath := ipFlagSet("unblock", stderr)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -148,25 +157,24 @@ func ipUnblock(args []string, stdout, stderr io.Writer) error {
 		return ipError(stderr, "%s", err)
 	}
 
-	store, err := openIPStore(*dbPath, stderr)
+	socket := controlSocketPath(*dbPath, *socketPath)
+	code, body, err := controlRequest(stderr, http.MethodDelete, socket, "/ip/"+ip)
 	if err != nil {
 		return err
 	}
-	defer store.Close()
-
-	gone, err := store.UnblockIP(ip)
-	if err != nil {
-		return ipError(stderr, "unblock %s: %v", ip, err)
-	}
-	if !gone {
+	if code == http.StatusNotFound {
 		return ipError(stderr, "no block for %s", ip)
 	}
+	if code != http.StatusOK {
+		return controlFailure(stderr, "unblock "+ip, socket, code, body)
+	}
+
 	fmt.Fprintf(stdout, "unblocked %s\n", ip)
 	return nil
 }
 
 func ipClear(args []string, stdout, stderr io.Writer) error {
-	fs, dbPath := ipFlagSet("clear", stderr)
+	fs, dbPath, socketPath := ipFlagSet("clear", stderr)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -174,40 +182,86 @@ func ipClear(args []string, stdout, stderr io.Writer) error {
 		return ipError(stderr, "clear takes no arguments, got %q", strings.Join(extra, " "))
 	}
 
-	store, err := openIPStore(*dbPath, stderr)
+	socket := controlSocketPath(*dbPath, *socketPath)
+	code, body, err := controlRequest(stderr, http.MethodDelete, socket, "/ip")
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	if code != http.StatusOK {
+		return controlFailure(stderr, "clear blocks", socket, code, body)
+	}
 
-	cleared, err := store.ClearBlocks()
-	if err != nil {
+	var answer clearedBody
+	if err := json.Unmarshal(body, &answer); err != nil {
 		return ipError(stderr, "clear blocks: %v", err)
 	}
-	fmt.Fprintf(stdout, "cleared %d blocks\n", cleared)
+	fmt.Fprintf(stdout, "cleared %d blocks\n", answer.Cleared)
 	return nil
 }
 
-// ipFlagSet is one verb's flags. --db names the same file serve uses, and reading that
-// file is the only authority these verbs need: they make no network request.
-func ipFlagSet(verb string, stderr io.Writer) (*flag.FlagSet, *string) {
+// ipFlagSet is one verb's flags. --db names the same file serve opens, and the control
+// socket of that db is what the verb asks; --socket names a socket somewhere else. Reading
+// or writing the db file is not part of any verb: the running server is asked instead.
+func ipFlagSet(verb string, stderr io.Writer) (*flag.FlagSet, *string, *string) {
 	fs := flag.NewFlagSet("sandbin ip "+verb, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	return fs, fs.String("db", "sandbin.db", "sqlite file holding all bins")
+	dbPath := fs.String("db", "sandbin.db", "sqlite file holding all bins")
+	socketPath := fs.String("socket", "", "control socket of the running serve (default <db>.sock)")
+	return fs, dbPath, socketPath
 }
 
-// openIPStore opens the --db file the way serve opens it. A --db that does not
-// exist yet is still created, exactly as serve would create it, but the run says
-// so on stderr: a typo must not read as a silent all-clear over the real file.
-func openIPStore(dbPath string, stderr io.Writer) (*Store, error) {
-	if _, err := os.Stat(dbPath); errors.Is(err, fs.ErrNotExist) {
-		fmt.Fprintf(stderr, "warning: %s does not exist; created empty\n", dbPath)
+// controlSocketPath is where a verb looks for the live serve: --socket when it is given,
+// otherwise the socket serve derives from the very same --db path.
+func controlSocketPath(dbPath, socketPath string) string {
+	if socketPath != "" {
+		return socketPath
 	}
-	store, err := openStore(dbPath)
+	return dbPath + ".sock"
+}
+
+// controlClient is the one client every verb uses: a request dialed through the control
+// socket, with a ten second ceiling.
+func controlClient(socketPath string) *http.Client {
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var dialer net.Dialer
+				return dialer.DialContext(ctx, "unix", socketPath)
+			},
+		},
+	}
+}
+
+// controlRequest makes one verb's request over the control socket. A socket nobody answers
+// on is the whole story an operator needs, so it is reported as one line naming the socket;
+// every other answer comes back for the verb to read.
+func controlRequest(stderr io.Writer, method, socketPath, path string) (int, []byte, error) {
+	req, err := http.NewRequest(method, "http://localhost"+path, nil)
 	if err != nil {
-		return nil, ipError(stderr, "open store: %v", err)
+		return 0, nil, ipError(stderr, "%s %s: %v", method, path, err)
 	}
-	return store, nil
+	resp, err := controlClient(socketPath).Do(req)
+	if err != nil {
+		return 0, nil, ipError(stderr, "no sandbin serve listening on %s", socketPath)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, ipError(stderr, "read the answer from %s: %v", socketPath, err)
+	}
+	return resp.StatusCode, body, nil
+}
+
+// controlFailure turns an answer that is not the row or rows the verb asked for into that
+// verb's error, in the server's own words whenever it sent any.
+func controlFailure(stderr io.Writer, what, socketPath string, code int, body []byte) error {
+	var answer errorBody
+	if err := json.Unmarshal(body, &answer); err == nil && answer.Error != "" {
+		return ipError(stderr, "%s: %s", what, answer.Error)
+	}
+	return ipError(stderr, "%s: %s answered %s", what, socketPath, http.StatusText(code))
 }
 
 // ipError writes a failure to stderr and returns it, so each failure is reported once.
@@ -239,7 +293,8 @@ func writeBlocksTable(stdout io.Writer, blocks []IPBlock, now time.Time) error {
 	return w.Flush()
 }
 
-// jsonIPBlock is one row in the --json shape: exactly these four fields.
+// jsonIPBlock is one row in the json shape: exactly these four fields, which is also what
+// the control API answers with.
 type jsonIPBlock struct {
 	IP           string `json:"ip"`
 	Failures     int    `json:"failures"`
@@ -247,18 +302,26 @@ type jsonIPBlock struct {
 	UpdatedAt    string `json:"updated_at"`
 }
 
-// writeBlocksJSON renders the rows as a json array, [] when there is no row at all.
-func writeBlocksJSON(stdout io.Writer, blocks []IPBlock) error {
-	rows := make([]jsonIPBlock, 0, len(blocks))
-	for _, b := range blocks {
-		rows = append(rows, jsonIPBlock{IP: b.IP, Failures: b.Failures, BlockedUntil: b.BlockedUntil, UpdatedAt: b.UpdatedAt})
+// parseBlocks reads the json array the control API answers with back into rows.
+func parseBlocks(body []byte) ([]IPBlock, error) {
+	var rows []jsonIPBlock
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, err
 	}
-	out, err := json.Marshal(rows)
-	if err != nil {
-		return err
+	blocks := make([]IPBlock, 0, len(rows))
+	for _, row := range rows {
+		blocks = append(blocks, IPBlock{IP: row.IP, Failures: row.Failures, BlockedUntil: row.BlockedUntil, UpdatedAt: row.UpdatedAt})
 	}
-	fmt.Fprintln(stdout, string(out))
-	return nil
+	return blocks, nil
+}
+
+// parseBlock reads the one row object a show answer carries.
+func parseBlock(body []byte) (IPBlock, error) {
+	var row jsonIPBlock
+	if err := json.Unmarshal(body, &row); err != nil {
+		return IPBlock{}, err
+	}
+	return IPBlock{IP: row.IP, Failures: row.Failures, BlockedUntil: row.BlockedUntil, UpdatedAt: row.UpdatedAt}, nil
 }
 
 // canonicalIP spells an address the way clientIP spells a charged one, so an operator's

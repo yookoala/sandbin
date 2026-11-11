@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,6 +73,9 @@ func TestDispatchServeHelp(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "Usage of sandbin serve") {
 		t.Errorf("sandbin serve --help stderr = %q, want the flag list", stderr)
+	}
+	if !strings.Contains(stderr, "-socket") {
+		t.Errorf("sandbin serve --help stderr = %q, want the flag list to name --socket", stderr)
 	}
 	if stdout != "" {
 		t.Errorf("sandbin serve --help stdout = %q, want nothing", stdout)
@@ -158,9 +163,9 @@ func TestDispatchServeBadFlag(t *testing.T) {
 	}
 }
 
-// TestDispatchIPVerb shows dispatch hands the db file to the ip verbs.
+// TestDispatchIPVerb shows dispatch hands the ip verbs the live server next to the db file.
 func TestDispatchIPVerb(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+	dbPath, store := newIPControlServer(t)
 	seedLiveIPBlock(t, store, "203.0.113.7", 2)
 
 	stdout, stderr, code := runDispatch(t, "ip", "list", "--db", dbPath)
@@ -173,7 +178,7 @@ func TestDispatchIPVerb(t *testing.T) {
 }
 
 // newIPTestStore returns a db path and the store open on it, so a test can seed rows and
-// then run an ip command against the same file.
+// then reach them through a server or read them straight afterwards.
 func newIPTestStore(t *testing.T) (string, *Store) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "sandbin.db")
@@ -185,13 +190,43 @@ func newIPTestStore(t *testing.T) (string, *Store) {
 	return dbPath, store
 }
 
-// runIPTest runs one sandbin ip command against dbPath and returns what it printed and
-// its error. --db goes right after the verb, the way Go's flag parser reads a flag.
+// newIPControlServer is the live half of the harness: it opens a store, binds the control
+// socket that serve would derive from that db path, and serves the control API on it, so an
+// ip verb run against dbPath reaches the very store the test seeded.
+func newIPControlServer(t *testing.T) (string, *Store) {
+	t.Helper()
+	dbPath, store := newIPTestStore(t)
+	listener, err := listenControl(dbPath + ".sock")
+	if err != nil {
+		t.Fatalf("listenControl(%s.sock): %v", dbPath, err)
+	}
+	server := &http.Server{Handler: controlMux(store)}
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("control server on %s.sock: %v", dbPath, err)
+		}
+	}()
+	t.Cleanup(func() { server.Close() })
+	return dbPath, store
+}
+
+// runIPTest runs one sandbin ip command against the server listening next to dbPath and
+// returns what it printed and its error. --db goes right after the verb, the way Go's flag
+// parser reads a flag.
 func runIPTest(t *testing.T, dbPath string, args ...string) (string, string, error) {
 	t.Helper()
 	verb, rest := args[0], args[1:]
 	var stdout, stderr bytes.Buffer
 	err := runIP(append([]string{verb, "--db", dbPath}, rest...), &stdout, &stderr)
+	return stdout.String(), stderr.String(), err
+}
+
+// runIPSocket runs one sandbin ip command with an explicit --socket instead of --db.
+func runIPSocket(t *testing.T, socketPath string, args ...string) (string, string, error) {
+	t.Helper()
+	verb, rest := args[0], args[1:]
+	var stdout, stderr bytes.Buffer
+	err := runIP(append([]string{verb, "--socket", socketPath}, rest...), &stdout, &stderr)
 	return stdout.String(), stderr.String(), err
 }
 
@@ -246,7 +281,7 @@ func TestIPUnknownVerb(t *testing.T) {
 }
 
 func TestIPListEmpty(t *testing.T) {
-	dbPath, _ := newIPTestStore(t)
+	dbPath, _ := newIPControlServer(t)
 	stdout, stderr, err := runIPTest(t, dbPath, "list")
 	if err != nil {
 		t.Fatalf("ip list on an empty table: %v (stderr %q)", err, stderr)
@@ -256,28 +291,39 @@ func TestIPListEmpty(t *testing.T) {
 	}
 }
 
-// TestIPMissingDbFileWarns proves a typo'd --db never reads as a silent all-clear:
-// the empty file it gets is announced on stderr.
-func TestIPMissingDbFileWarns(t *testing.T) {
+// TestIPNoServerCreatesNoFile is the offline rule that replaced openIPStore's warning: a
+// verb with no serve listening says so naming the socket it looked for, exits 1, and leaves
+// no file behind, not even the db it was named.
+func TestIPNoServerCreatesNoFile(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sanbin.db")
+
 	var stdout, stderr bytes.Buffer
 	err := runIP([]string{"list", "--db", dbPath}, &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("ip list with a --db that does not exist: %v (stderr %q)", err, stderr.String())
+	if err == nil {
+		t.Fatalf("ip list with no serve listening: no error, want a refusal (stdout %q)", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "sanbin.db") || !strings.Contains(stderr.String(), "does not exist") {
-		t.Errorf("stderr = %q, want a warning naming the file that was not there", stderr.String())
+	if !strings.Contains(stderr.String(), "no sandbin serve listening on") ||
+		!strings.Contains(stderr.String(), dbPath+".sock") {
+		t.Errorf("stderr = %q, want one readable failure naming the socket %s", stderr.String(), dbPath+".sock")
 	}
-	if !strings.Contains(stdout.String(), "no blocked addresses") {
-		t.Errorf("stdout = %q, want the empty list", stdout.String())
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want nothing", stdout.String())
 	}
-	if _, err := os.Stat(dbPath); err != nil {
-		t.Errorf("stat %s: %v, want the file created the way serve would create it", dbPath, err)
+
+	if _, stderr, code := runDispatch(t, "ip", "clear", "--db", dbPath); code != 1 {
+		t.Errorf("sandbin ip clear with no serve listening exited %d, want 1; stderr %q", code, stderr)
+	}
+
+	// The verbs never open, stat or create the db file.
+	for _, path := range []string{dbPath, dbPath + ".sock"} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("stat %s after the runs = %v, want no file created", path, err)
+		}
 	}
 }
 
 func TestIPListEmptyJSON(t *testing.T) {
-	dbPath, _ := newIPTestStore(t)
+	dbPath, _ := newIPControlServer(t)
 	stdout, stderr, err := runIPTest(t, dbPath, "list", "--json")
 	if err != nil {
 		t.Fatalf("ip list --json on an empty table: %v (stderr %q)", err, stderr)
@@ -288,7 +334,7 @@ func TestIPListEmptyJSON(t *testing.T) {
 }
 
 func TestIPListShowsRows(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+	dbPath, store := newIPControlServer(t)
 	live := seedLiveIPBlock(t, store, "203.0.113.7", 2)
 	expired := seedExpiredIPBlock(t, store, "10.0.0.1", 5)
 
@@ -344,7 +390,7 @@ func TestIPListShowsRows(t *testing.T) {
 }
 
 func TestIPListJSON(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+	dbPath, store := newIPControlServer(t)
 	live := seedLiveIPBlock(t, store, "203.0.113.7", 2)
 	expired := seedExpiredIPBlock(t, store, "10.0.0.1", 5)
 
@@ -377,8 +423,29 @@ func TestIPListJSON(t *testing.T) {
 	}
 }
 
+// TestIPListJSONIsTheServersBody is the --json discipline across the new path: what list
+// --json prints is the very array GET /ip answered with.
+func TestIPListJSONIsTheServersBody(t *testing.T) {
+	dbPath, store := newIPControlServer(t)
+	seedLiveIPBlock(t, store, "203.0.113.7", 2)
+	seedExpiredIPBlock(t, store, "10.0.0.1", 5)
+
+	stdout, stderr, err := runIPTest(t, dbPath, "list", "--json")
+	if err != nil {
+		t.Fatalf("ip list --json: %v (stderr %q)", err, stderr)
+	}
+
+	code, body := controlProbe(t, controlTestClient(dbPath+".sock"), http.MethodGet, "/ip")
+	if code != http.StatusOK {
+		t.Fatalf("GET /ip over the control socket = %d (body %q), want 200", code, body)
+	}
+	if got, served := strings.TrimSpace(stdout), strings.TrimSpace(string(body)); got != served {
+		t.Errorf("ip list --json = %q, want the raw GET /ip body %q", got, served)
+	}
+}
+
 func TestIPListRejectsExtraArgs(t *testing.T) {
-	dbPath, _ := newIPTestStore(t)
+	dbPath, _ := newIPControlServer(t)
 	stdout, _, err := runIPTest(t, dbPath, "list", "extra")
 	if err == nil {
 		t.Fatalf("ip list extra: no error, want a refusal (stdout %q)", stdout)
@@ -391,7 +458,7 @@ func TestIPListRejectsExtraArgs(t *testing.T) {
 // TestIPShowPrintsOneRow is list's table with one row: the header plus exactly the address
 // that was named, and nothing else.
 func TestIPShowPrintsOneRow(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+	dbPath, store := newIPControlServer(t)
 	seedLiveIPBlock(t, store, "10.0.0.1", 5)
 	live := seedLiveIPBlock(t, store, "203.0.113.7", 2)
 
@@ -441,7 +508,7 @@ func TestIPShowPrintsOneRow(t *testing.T) {
 // TestIPShowExpiredRow reads expired, the way list reads it, with the count that shapes
 // the next penalty.
 func TestIPShowExpiredRow(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+	dbPath, store := newIPControlServer(t)
 	expired := seedExpiredIPBlock(t, store, "10.0.0.1", 5)
 
 	stdout, stderr, err := runIPTest(t, dbPath, "show", "10.0.0.1")
@@ -467,7 +534,7 @@ func TestIPShowExpiredRow(t *testing.T) {
 // TestIPShowMiss is the exit-code half of the verb: the same wording and code unblock uses
 // for the same situation, naming the canonical spelling of what was typed.
 func TestIPShowMiss(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+	dbPath, store := newIPControlServer(t)
 	seedLiveIPBlock(t, store, "203.0.113.7", 2)
 
 	stdout, stderr, err := runIPTest(t, dbPath, "show", "198.51.100.4")
@@ -495,11 +562,11 @@ func TestIPShowMiss(t *testing.T) {
 	}
 }
 
-// TestIPShowCorruptRow reaches GetBlock's read-failure arm and show's answer to it: a
-// row whose failures column is not an integer (only raw SQL can store that) must fail
-// with a message naming the address, not a half-rendered table.
+// TestIPShowCorruptRow reaches the 500 arm: a row whose failures column is not an integer
+// (only raw SQL can store that) fails the server's read, and show reports that failure in
+// the server's own words naming the address, never as a half-rendered table.
 func TestIPShowCorruptRow(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+	dbPath, store := newIPControlServer(t)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := store.db.Exec(`INSERT INTO ip_blocks (ip, failures, blocked_until, updated_at) VALUES (?, ?, ?, ?)`,
 		"1.2.3.9", "abc", now, now); err != nil {
@@ -513,6 +580,9 @@ func TestIPShowCorruptRow(t *testing.T) {
 	if !strings.HasPrefix(stderr, "show 1.2.3.9: ") {
 		t.Errorf("ip show corrupt stderr = %q, want it to start with %q", stderr, "show 1.2.3.9: ")
 	}
+	if !strings.Contains(stderr, "1.2.3.9") {
+		t.Errorf("ip show corrupt stderr = %q, want it to name the address 1.2.3.9", stderr)
+	}
 	if stdout != "" {
 		t.Errorf("ip show corrupt stdout = %q, want nothing", stdout)
 	}
@@ -521,7 +591,7 @@ func TestIPShowCorruptRow(t *testing.T) {
 // TestIPShowCanonicalises is the same spelling test unblock gets: the server stores
 // canonical keys, so ::ffff:1.2.3.4 and fe80::1%eth0 must reach them.
 func TestIPShowCanonicalises(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+	dbPath, store := newIPControlServer(t)
 	seeded := map[string]IPBlock{
 		"1.2.3.4":     seedLiveIPBlock(t, store, "1.2.3.4", 1),
 		"fe80::1":     seedLiveIPBlock(t, store, "fe80::1", 1),
@@ -553,8 +623,9 @@ func TestIPShowCanonicalises(t *testing.T) {
 }
 
 // TestIPShowRefusesBadArguments is unblock's argument refusals, with show named in them.
+// None of them reaches the server at all: canonicalIP is the front gate.
 func TestIPShowRefusesBadArguments(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+	dbPath, store := newIPControlServer(t)
 	seedLiveIPBlock(t, store, "1.2.3.4", 1)
 
 	for _, arg := range []string{"not-an-ip", "[1.2.3.4]", "1.2.3.4:8080", "203.0.113.7/32", ""} {
@@ -594,10 +665,10 @@ func TestIPShowRefusesBadArguments(t *testing.T) {
 	}
 }
 
-// TestIPShowIsReadOnly is the verb's point: after a hit and a miss the table is exactly as
-// it was, so a later list still prints both rows with their counts.
-func TestIPShowIsReadOnly(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+// TestIPShowLeavesRowsUntouched is the verb's point: after a hit and a miss the table is
+// exactly as it was, so a later list still prints both rows with their counts.
+func TestIPShowLeavesRowsUntouched(t *testing.T) {
+	dbPath, store := newIPControlServer(t)
 	live := seedLiveIPBlock(t, store, "203.0.113.7", 2)
 	expired := seedExpiredIPBlock(t, store, "10.0.0.1", 5)
 
@@ -635,7 +706,7 @@ func TestIPShowIsReadOnly(t *testing.T) {
 
 // TestIPShowHelpIsNotAFailure covers show asking for its own flag list.
 func TestIPShowHelpIsNotAFailure(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+	dbPath, store := newIPControlServer(t)
 	seedLiveIPBlock(t, store, "1.2.3.4", 1)
 
 	_, stderr, err := runIPTest(t, dbPath, "show", "--help")
@@ -645,13 +716,16 @@ func TestIPShowHelpIsNotAFailure(t *testing.T) {
 	if !strings.Contains(stderr, "Usage of sandbin ip show:") || !strings.Contains(stderr, "-db") {
 		t.Errorf("ip show --help stderr = %q, want the flag list", stderr)
 	}
+	if !strings.Contains(stderr, "-socket") {
+		t.Errorf("ip show --help stderr = %q, want the flag list to name --socket", stderr)
+	}
 	if failures, ok := ipBlockRow(t, store, "1.2.3.4"); !ok || failures != 1 {
 		t.Errorf("1.2.3.4 = failures %d, ok %v; want the help run to change nothing", failures, ok)
 	}
 }
 
 func TestIPUnblockRemovesOnlyItsRow(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+	dbPath, store := newIPControlServer(t)
 	seedLiveIPBlock(t, store, "203.0.113.7", 2)
 	kept := seedLiveIPBlock(t, store, "198.51.100.4", 1)
 
@@ -673,7 +747,7 @@ func TestIPUnblockRemovesOnlyItsRow(t *testing.T) {
 }
 
 func TestIPUnblockMiss(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+	dbPath, store := newIPControlServer(t)
 	seedLiveIPBlock(t, store, "203.0.113.7", 2)
 
 	stdout, stderr, err := runIPTest(t, dbPath, "unblock", "198.51.100.4")
@@ -697,7 +771,7 @@ func TestIPUnblockMiss(t *testing.T) {
 // TestIPUnblockCanonicalises is the operator's spelling test: the server stores canonical
 // keys, so ::ffff:1.2.3.4 and fe80::1%eth0 must reach them.
 func TestIPUnblockCanonicalises(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+	dbPath, store := newIPControlServer(t)
 	seedLiveIPBlock(t, store, "1.2.3.4", 1)
 	seedLiveIPBlock(t, store, "fe80::1", 1)
 	seedLiveIPBlock(t, store, "2001:db8::1", 1)
@@ -721,7 +795,7 @@ func TestIPUnblockCanonicalises(t *testing.T) {
 }
 
 func TestIPUnblockRefusesNonAddresses(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+	dbPath, store := newIPControlServer(t)
 	seedLiveIPBlock(t, store, "1.2.3.4", 1)
 
 	for _, arg := range []string{"not-an-ip", "[1.2.3.4]", "1.2.3.4:8080", "203.0.113.7/32", ""} {
@@ -740,7 +814,7 @@ func TestIPUnblockRefusesNonAddresses(t *testing.T) {
 }
 
 func TestIPUnblockArgumentCount(t *testing.T) {
-	dbPath, _ := newIPTestStore(t)
+	dbPath, _ := newIPControlServer(t)
 
 	_, stderr, err := runIPTest(t, dbPath, "unblock")
 	if err == nil || !strings.Contains(stderr, "unblock needs an IP address") {
@@ -763,7 +837,7 @@ func TestIPUnblockArgumentCount(t *testing.T) {
 }
 
 func TestIPClearCounts(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+	dbPath, store := newIPControlServer(t)
 	seedLiveIPBlock(t, store, "10.0.0.1", 1)
 	seedLiveIPBlock(t, store, "203.0.113.7", 2)
 	seedExpiredIPBlock(t, store, "198.51.100.4", 3)
@@ -801,7 +875,7 @@ func TestIPClearCounts(t *testing.T) {
 
 // TestIPJSONIsListOnly keeps --json a flag of list: show, unblock and clear refuse it.
 func TestIPJSONIsListOnly(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+	dbPath, store := newIPControlServer(t)
 	seedLiveIPBlock(t, store, "1.2.3.4", 1)
 
 	for _, verb := range []string{"show 1.2.3.4", "unblock 1.2.3.4", "clear"} {
@@ -820,10 +894,50 @@ func TestIPJSONIsListOnly(t *testing.T) {
 	}
 }
 
-// TestIPDBFlagRunsEveryVerbOnOneFile is the point of --db: the ip verbs read and write the
-// very file serve uses, by default the sandbin.db of the working directory.
-func TestIPDBFlagRunsEveryVerbOnOneFile(t *testing.T) {
-	dbPath, store := newIPTestStore(t)
+// TestIPSocketFlagReachesThatServer is --socket: the verb asks the socket it is given, even
+// when --db names a file that does not exist, because the verbs never touch that file.
+func TestIPSocketFlagReachesThatServer(t *testing.T) {
+	dbPath, store := newIPControlServer(t)
+	seedLiveIPBlock(t, store, "203.0.113.7", 2)
+	seedLiveIPBlock(t, store, "198.51.100.4", 1)
+	socketPath := dbPath + ".sock"
+	absentDB := filepath.Join(t.TempDir(), "absent.db")
+
+	for _, verb := range [][]string{{"list"}, {"show", "203.0.113.7"}, {"unblock", "203.0.113.7"}, {"clear"}} {
+		stdout, stderr, err := runIPSocket(t, socketPath, append([]string{verb[0], "--db", absentDB}, verb[1:]...)...)
+		if err != nil {
+			t.Fatalf("ip %s --socket %s --db %s: %v (stderr %q)", verb[0], socketPath, absentDB, err, stderr)
+		}
+		if !strings.Contains(stdout, "203.0.113.7") && !strings.Contains(stdout, "cleared") {
+			t.Errorf("ip %s --socket %s stdout = %q, want the rows of the live server", verb[0], socketPath, stdout)
+		}
+	}
+
+	// The --db the verbs were handed stays the file it always was: absent.
+	if _, err := os.Stat(absentDB); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stat %s after the runs = %v, want no db file created", absentDB, err)
+	}
+
+	// --socket pointing at nothing is the same readable failure naming that socket.
+	quiet := filepath.Join(t.TempDir(), "quiet.sock")
+	_, _, code := runDispatch(t, "ip", "list", "--socket", quiet)
+	if code != 1 {
+		t.Errorf("sandbin ip list --socket %s exited %d, want 1", quiet, code)
+	}
+	stdout, stderr, err := runIPSocket(t, quiet, "list")
+	if err == nil {
+		t.Fatalf("ip list --socket %s: no error, want a refusal (stdout %q)", quiet, stdout)
+	}
+	if !strings.Contains(stderr, quiet) {
+		t.Errorf("ip list --socket %s stderr = %q, want it to name the socket", quiet, stderr)
+	}
+}
+
+// TestIPVerbsReachTheLiveServer is the point of --db: every verb asks the running serve
+// whose control socket sits next to that very db file, by default the sandbin.db of the
+// working directory.
+func TestIPVerbsReachTheLiveServer(t *testing.T) {
+	dbPath, store := newIPControlServer(t)
 	seedLiveIPBlock(t, store, "203.0.113.7", 1)
 	seedLiveIPBlock(t, store, "198.51.100.4", 2)
 
@@ -833,7 +947,7 @@ func TestIPDBFlagRunsEveryVerbOnOneFile(t *testing.T) {
 			t.Fatalf("ip %s --db %s: %v (stderr %q)", verb[0], dbPath, err, stderr)
 		}
 		if !strings.Contains(stdout, "203.0.113.7") && !strings.Contains(stdout, "cleared") {
-			t.Errorf("ip %s --db %s stdout = %q, want the rows of that file", verb[0], dbPath, stdout)
+			t.Errorf("ip %s --db %s stdout = %q, want the rows of the server on that file", verb[0], dbPath, stdout)
 		}
 	}
 
@@ -846,6 +960,19 @@ func TestIPDBFlagRunsEveryVerbOnOneFile(t *testing.T) {
 	defer defaultStore.Close()
 	seedLiveIPBlock(t, defaultStore, "203.0.113.7", 1)
 
+	// serve would be listening on the socket derived from that same default path.
+	listener, err := listenControl("sandbin.db.sock")
+	if err != nil {
+		t.Fatalf("listenControl on the default socket: %v", err)
+	}
+	defaultServer := &http.Server{Handler: controlMux(defaultStore)}
+	go func() {
+		if err := defaultServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("control server on the default socket: %v", err)
+		}
+	}()
+	t.Cleanup(func() { defaultServer.Close() })
+
 	var stdout, stderr bytes.Buffer
 	if err := runIP([]string{"list"}, &stdout, &stderr); err != nil {
 		t.Fatalf("ip list with no --db: %v (stderr %q)", err, stderr.String())
@@ -854,7 +981,7 @@ func TestIPDBFlagRunsEveryVerbOnOneFile(t *testing.T) {
 		t.Errorf("ip list with no --db stdout = %q, want the row of sandbin.db", stdout.String())
 	}
 
-	// show reads the same default file.
+	// show reaches the same default server.
 	var showStdout, showStderr bytes.Buffer
 	if err := runIP([]string{"show", "203.0.113.7"}, &showStdout, &showStderr); err != nil {
 		t.Fatalf("ip show with no --db: %v (stderr %q)", err, showStderr.String())

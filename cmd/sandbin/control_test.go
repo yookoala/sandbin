@@ -51,9 +51,9 @@ func newControlTestServer(t *testing.T) (string, *Store, *http.Client) {
 	return socketPath, store, controlTestClient(socketPath)
 }
 
-// controlRequest sends one request through the socket and returns its status and body, the
+// controlProbe sends one request through the socket and returns its status and body, the
 // way curl --unix-socket reports them.
-func controlRequest(t *testing.T, client *http.Client, method, path string) (int, []byte) {
+func controlProbe(t *testing.T, client *http.Client, method, path string) (int, []byte) {
 	t.Helper()
 	req, err := http.NewRequest(method, "http://localhost"+path, nil)
 	if err != nil {
@@ -113,7 +113,7 @@ func wantRow(t *testing.T, row map[string]any, want IPBlock) {
 func TestControlListEmpty(t *testing.T) {
 	_, _, client := newControlTestServer(t)
 
-	code, body := controlRequest(t, client, http.MethodGet, "/ip")
+	code, body := controlProbe(t, client, http.MethodGet, "/ip")
 	if code != http.StatusOK {
 		t.Fatalf("GET /ip on an empty table = %d, want 200 (body %q)", code, body)
 	}
@@ -138,7 +138,7 @@ func TestControlListShowsRows(t *testing.T) {
 	live := seedLiveIPBlock(t, store, "203.0.113.7", 2)
 	expired := seedExpiredIPBlock(t, store, "10.0.0.1", 5)
 
-	code, body := controlRequest(t, client, http.MethodGet, "/ip")
+	code, body := controlProbe(t, client, http.MethodGet, "/ip")
 	if code != http.StatusOK {
 		t.Fatalf("GET /ip = %d, want 200 (body %q)", code, body)
 	}
@@ -156,7 +156,7 @@ func TestControlShowHit(t *testing.T) {
 	seedLiveIPBlock(t, store, "10.0.0.1", 5)
 	live := seedLiveIPBlock(t, store, "203.0.113.7", 2)
 
-	code, body := controlRequest(t, client, http.MethodGet, "/ip/203.0.113.7")
+	code, body := controlProbe(t, client, http.MethodGet, "/ip/203.0.113.7")
 	if code != http.StatusOK {
 		t.Fatalf("GET /ip/203.0.113.7 = %d, want 200 (body %q)", code, body)
 	}
@@ -168,7 +168,7 @@ func TestControlShowMiss(t *testing.T) {
 	_, store, client := newControlTestServer(t)
 	seedLiveIPBlock(t, store, "203.0.113.7", 2)
 
-	code, body := controlRequest(t, client, http.MethodGet, "/ip/198.51.100.4")
+	code, body := controlProbe(t, client, http.MethodGet, "/ip/198.51.100.4")
 	if code != http.StatusNotFound {
 		t.Fatalf("GET /ip/198.51.100.4 = %d, want 404 (body %q)", code, body)
 	}
@@ -185,7 +185,7 @@ func TestControlUnblockHit(t *testing.T) {
 	seedLiveIPBlock(t, store, "203.0.113.7", 2)
 	kept := seedLiveIPBlock(t, store, "198.51.100.4", 1)
 
-	code, body := controlRequest(t, client, http.MethodDelete, "/ip/203.0.113.7")
+	code, body := controlProbe(t, client, http.MethodDelete, "/ip/203.0.113.7")
 	if code != http.StatusOK {
 		t.Fatalf("DELETE /ip/203.0.113.7 = %d, want 200 (body %q)", code, body)
 	}
@@ -200,7 +200,7 @@ func TestControlUnblockHit(t *testing.T) {
 		t.Errorf("%s = failures %d, ok %v; want it untouched", kept.IP, failures, ok)
 	}
 
-	if code, body := controlRequest(t, client, http.MethodGet, "/ip/203.0.113.7"); code != http.StatusNotFound {
+	if code, body := controlProbe(t, client, http.MethodGet, "/ip/203.0.113.7"); code != http.StatusNotFound {
 		t.Errorf("GET /ip/203.0.113.7 after the unblock = %d (body %q), want 404", code, body)
 	}
 }
@@ -209,7 +209,7 @@ func TestControlUnblockMiss(t *testing.T) {
 	_, store, client := newControlTestServer(t)
 	seedLiveIPBlock(t, store, "203.0.113.7", 2)
 
-	code, body := controlRequest(t, client, http.MethodDelete, "/ip/198.51.100.4")
+	code, body := controlProbe(t, client, http.MethodDelete, "/ip/198.51.100.4")
 	if code != http.StatusNotFound {
 		t.Fatalf("DELETE /ip/198.51.100.4 = %d, want 404 (body %q)", code, body)
 	}
@@ -227,7 +227,7 @@ func TestControlClearCounts(t *testing.T) {
 	seedLiveIPBlock(t, store, "203.0.113.7", 2)
 	seedExpiredIPBlock(t, store, "198.51.100.4", 3)
 
-	code, body := controlRequest(t, client, http.MethodDelete, "/ip")
+	code, body := controlProbe(t, client, http.MethodDelete, "/ip")
 	if code != http.StatusOK {
 		t.Fatalf("DELETE /ip = %d, want 200 (body %q)", code, body)
 	}
@@ -242,7 +242,7 @@ func TestControlClearCounts(t *testing.T) {
 		t.Errorf("after DELETE /ip the table holds %d rows, want 0", len(blocks))
 	}
 
-	code, body = controlRequest(t, client, http.MethodDelete, "/ip")
+	code, body = controlProbe(t, client, http.MethodDelete, "/ip")
 	if code != http.StatusOK || strings.TrimSpace(string(body)) != `{"cleared":0}` {
 		t.Errorf("DELETE /ip on an empty table = %d %q, want 200 %q", code, body, `{"cleared":0}`)
 	}
@@ -260,7 +260,7 @@ func TestControlWrongMethod(t *testing.T) {
 		{http.MethodPut, "/ip/203.0.113.7"},
 		{http.MethodPost, "/ip/203.0.113.7"},
 	} {
-		code, body := controlRequest(t, client, c.method, c.path)
+		code, body := controlProbe(t, client, c.method, c.path)
 		if code != http.StatusMethodNotAllowed {
 			t.Errorf("%s %s = %d (body %q), want 405", c.method, c.path, code, body)
 		}
@@ -268,7 +268,7 @@ func TestControlWrongMethod(t *testing.T) {
 
 	// HEAD reads, so Go's mux answers it the way it answers GET, which is how the bin
 	// server's own healthz route treats HEAD too.
-	code, body := controlRequest(t, client, http.MethodHead, "/ip")
+	code, body := controlProbe(t, client, http.MethodHead, "/ip")
 	if code != http.StatusOK {
 		t.Errorf("HEAD /ip = %d (body %q), want 200: a read is not a wrong method", code, body)
 	}
@@ -287,14 +287,14 @@ func TestControlHasNoBinRoutes(t *testing.T) {
 	}
 
 	for _, path := range []string{"/", "/healthz", binPath, binPath + "index.html", "/ip/203.0.113.7/extra", "/ip/"} {
-		code, body := controlRequest(t, client, http.MethodGet, path)
+		code, body := controlProbe(t, client, http.MethodGet, path)
 		if code != http.StatusNotFound {
 			t.Errorf("GET %s over %s = %d (body %q), want 404: the control mux has no bin, file or healthz route",
 				path, socketPath, code, body)
 		}
 	}
 
-	code, body := controlRequest(t, client, http.MethodPut, binPath+"index.html")
+	code, body := controlProbe(t, client, http.MethodPut, binPath+"index.html")
 	if code != http.StatusMethodNotAllowed && code != http.StatusNotFound {
 		t.Errorf("PUT %s over %s = %d (body %q), want 404 or 405", binPath+"index.html", socketPath, code, body)
 	}
@@ -311,7 +311,7 @@ func TestControlStoreErrorIs500(t *testing.T) {
 		t.Fatalf("seed a row with failures=abc: %v", err)
 	}
 
-	code, body := controlRequest(t, client, http.MethodGet, "/ip/1.2.3.9")
+	code, body := controlProbe(t, client, http.MethodGet, "/ip/1.2.3.9")
 	if code != http.StatusInternalServerError {
 		t.Fatalf("GET /ip/1.2.3.9 with a row its read cannot decode = %d (body %q), want 500", code, body)
 	}
@@ -324,7 +324,7 @@ func TestControlStoreErrorIs500(t *testing.T) {
 	}
 
 	// list hits the same row and answers the same way.
-	if code, body := controlRequest(t, client, http.MethodGet, "/ip"); code != http.StatusInternalServerError {
+	if code, body := controlProbe(t, client, http.MethodGet, "/ip"); code != http.StatusInternalServerError {
 		t.Errorf("GET /ip with an undecodable row = %d (body %q), want 500", code, body)
 	}
 }
@@ -361,7 +361,7 @@ func TestControlRefusesALiveSocket(t *testing.T) {
 	}
 
 	// The refusal left the live server answering.
-	if code, body := controlRequest(t, client, http.MethodGet, "/ip"); code != http.StatusOK {
+	if code, body := controlProbe(t, client, http.MethodGet, "/ip"); code != http.StatusOK {
 		t.Errorf("GET /ip after the refusal = %d (body %q), want the live server untouched", code, body)
 	}
 }
@@ -418,7 +418,7 @@ func TestControlReplacesAStaleSocket(t *testing.T) {
 	t.Cleanup(func() { server.Close() })
 
 	// The replacement answers, and it is a fresh 0600 socket.
-	if code, body := controlRequest(t, controlTestClient(socketPath), http.MethodGet, "/ip"); code != http.StatusOK {
+	if code, body := controlProbe(t, controlTestClient(socketPath), http.MethodGet, "/ip"); code != http.StatusOK {
 		t.Errorf("GET /ip over the replaced socket = %d (body %q), want 200", code, body)
 	}
 	info, err := os.Stat(socketPath)
