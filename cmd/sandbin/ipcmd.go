@@ -6,7 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/netip"
+	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -158,10 +160,13 @@ func ipFlagSet(verb string, stderr io.Writer) (*flag.FlagSet, *string) {
 	return fs, fs.String("db", "sandbin.db", "sqlite file holding all bins")
 }
 
-// openIPStore opens the --db file the way serve opens it.
-// shortcut: a --db that does not exist yet is created empty, exactly as serve would
-// create it, so a typo reads as "no blocked addresses" instead of a refusal.
+// openIPStore opens the --db file the way serve opens it. A --db that does not
+// exist yet is still created, exactly as serve would create it, but the run says
+// so on stderr: a typo must not read as a silent all-clear over the real file.
 func openIPStore(dbPath string, stderr io.Writer) (*Store, error) {
+	if _, err := os.Stat(dbPath); errors.Is(err, fs.ErrNotExist) {
+		fmt.Fprintf(stderr, "warning: %s does not exist; created empty\n", dbPath)
+	}
 	store, err := openStore(dbPath)
 	if err != nil {
 		return nil, ipError(stderr, "open store: %v", err)

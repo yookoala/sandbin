@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -55,6 +56,21 @@ func TestDispatchUnknownVerb(t *testing.T) {
 	}
 	if stdout != "" {
 		t.Errorf("sandbin bogus stdout = %q, want nothing", stdout)
+	}
+}
+
+// TestDispatchServeHelp covers serve's flag.ErrHelp arm: asking for the flag list is
+// not a failure and starts no listener.
+func TestDispatchServeHelp(t *testing.T) {
+	stdout, stderr, code := runDispatch(t, "serve", "--help")
+	if code != 0 {
+		t.Errorf("sandbin serve --help exited %d, want 0; stderr %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "Usage of sandbin serve") {
+		t.Errorf("sandbin serve --help stderr = %q, want the flag list", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("sandbin serve --help stdout = %q, want nothing", stdout)
 	}
 }
 
@@ -216,6 +232,26 @@ func TestIPListEmpty(t *testing.T) {
 	}
 	if got := strings.TrimSpace(stdout); got != "no blocked addresses" {
 		t.Errorf("ip list on an empty table = %q, want %q", got, "no blocked addresses")
+	}
+}
+
+// TestIPMissingDbFileWarns proves a typo'd --db never reads as a silent all-clear:
+// the empty file it gets is announced on stderr.
+func TestIPMissingDbFileWarns(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sanbin.db")
+	var stdout, stderr bytes.Buffer
+	err := runIP([]string{"list", "--db", dbPath}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("ip list with a --db that does not exist: %v (stderr %q)", err, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "sanbin.db") || !strings.Contains(stderr.String(), "does not exist") {
+		t.Errorf("stderr = %q, want a warning naming the file that was not there", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "no blocked addresses") {
+		t.Errorf("stdout = %q, want the empty list", stdout.String())
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Errorf("stat %s: %v, want the file created the way serve would create it", dbPath, err)
 	}
 }
 
