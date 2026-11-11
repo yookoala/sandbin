@@ -91,6 +91,10 @@ func (s *server) createBin(w http.ResponseWriter, r *http.Request) {
 	if plain := r.Header.Get(binPasswordHeader); plain != "" {
 		hashed, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
 		if err != nil {
+			if errors.Is(err, bcrypt.ErrPasswordTooLong) {
+				http.Error(w, "bin password too long", http.StatusBadRequest)
+				return
+			}
 			log.Printf("hash bin password: %v", err)
 			http.Error(w, "could not set the bin password", http.StatusInternalServerError)
 			return
@@ -239,7 +243,15 @@ func (s *server) binAuthorized(w http.ResponseWriter, r *http.Request, bin Bin) 
 		return true
 	}
 	// The user name is conventionally the bin hash, but any name works.
-	if _, password, ok := r.BasicAuth(); ok && bcrypt.CompareHashAndPassword([]byte(bin.PasswordHash), []byte(password)) == nil {
+	_, password, ok := r.BasicAuth()
+	if !ok || len(password) > 72 {
+		// bcrypt silently compares only the first 72 bytes, so a longer candidate
+		// could match a shorter stored password.
+		w.Header().Set("WWW-Authenticate", `Basic realm="sandbin"`)
+		http.Error(w, "bin password required", http.StatusUnauthorized)
+		return false
+	}
+	if bcrypt.CompareHashAndPassword([]byte(bin.PasswordHash), []byte(password)) == nil {
 		return true
 	}
 	w.Header().Set("WWW-Authenticate", `Basic realm="sandbin"`)

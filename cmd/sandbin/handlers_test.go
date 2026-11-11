@@ -37,6 +37,21 @@ func createTestBin(t *testing.T, h http.Handler, apiKey string) string {
 	return body
 }
 
+// createTestBinWithPassword POSTs a password protected bin and returns its path.
+func createTestBinWithPassword(t *testing.T, h http.Handler, password string) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("X-Bin-Password", password)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST with a bin password = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	return rec.Body.String()
+}
+
+// put writes a file with the API key and returns the recorder.
 func put(t *testing.T, h http.Handler, path, apiKey, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPut, path, strings.NewReader(body))
@@ -335,6 +350,56 @@ func TestBinPassword(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "page.html") {
 		t.Errorf("protected listing = %q, want it to list page.html", rec.Body.String())
+	}
+}
+
+func TestBinPasswordTooLongIsRejected(t *testing.T) {
+	h := newTestServer(t, "test-key")
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("X-Bin-Password", strings.Repeat("p", 100))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST with a 100 byte bin password = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("X-Bin-Password", strings.Repeat("p", 72))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Errorf("POST with a 72 byte bin password = %d, want %d", rec.Code, http.StatusCreated)
+	}
+}
+
+func TestPUTNeedsTheAPIKeyEvenWithTheBinPassword(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	base := createTestBinWithPassword(t, h, "sesame")
+
+	req := httptest.NewRequest(http.MethodPut, base+"page.html", strings.NewReader("<p>x</p>"))
+	req.SetBasicAuth("anyone", "sesame")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("PUT with the bin password but no API key = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestBinPasswordLongerThanBcryptCanCompareIsUnauthorized(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	// bcrypt only ever compares the first 72 bytes, so an 80 byte candidate whose
+	// first 72 bytes match must still be refused.
+	base := createTestBinWithPassword(t, h, strings.Repeat("p", 72))
+
+	req := httptest.NewRequest(http.MethodGet, base, nil)
+	req.SetBasicAuth("anyone", strings.Repeat("p", 80))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET with a longer matching prefix = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
 
