@@ -69,6 +69,46 @@ func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	return rec
 }
 
+func TestHealthz(t *testing.T) {
+	h := newTestServer(t, "test-key")
+
+	// No API key is sent: /healthz must answer anyway.
+	rec := get(t, h, "/healthz")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /healthz = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "ok" {
+		t.Errorf("GET /healthz body = %q, want %q", got, "ok")
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", ct)
+	}
+
+	req := httptest.NewRequest(http.MethodHead, "/healthz", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("HEAD /healthz = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/healthz", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /healthz = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+
+	// The branch must not shadow a real bin: a full round trip still works.
+	base := createTestBin(t, h, "test-key")
+	if rec := put(t, h, base+"page.html", "test-key", "<h1>Hello</h1>"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT after the healthz branch = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if rec := get(t, h, base+"page.html"); rec.Code != http.StatusOK || rec.Body.String() != "<h1>Hello</h1>" {
+		t.Errorf("GET after the healthz branch = %d, body %q", rec.Code, rec.Body.String())
+	}
+}
+
 func TestPostPutGetRoundTrip(t *testing.T) {
 	h := newTestServer(t, "test-key")
 	base := createTestBin(t, h, "test-key")

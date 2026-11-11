@@ -45,6 +45,18 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Unauthenticated on purpose for the container HEALTHCHECK: it says nothing
+	// about bins, and bin hashes are hex so "healthz" can never name one.
+	if r.URL.Path == "/healthz" {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		io.WriteString(w, "ok")
+		return
+	}
+
 	hash, sub, ok := splitBinPath(r.URL.Path)
 	if !ok {
 		http.Error(w, "unknown bin", http.StatusNotFound)
