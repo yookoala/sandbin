@@ -466,6 +466,39 @@ func TestANSIFileIsRendered(t *testing.T) {
 	}
 }
 
+// TestJavaScriptAndCSSContentTypes is the boundary the JS prototype needs: .js and .css
+// come back as themselves so a browser runs and applies them, while extensions nobody
+// asked for stay text/plain. A stored NUL byte still beats any extension, which
+// TestPostPutGetRoundTrip asserts for blob.dat.
+func TestJavaScriptAndCSSContentTypes(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	base := createTestBin(t, h, "test-key")
+
+	for _, want := range []struct {
+		path string
+		body string
+		ct   string
+	}{
+		{"app.js", "document.title = 'x'\n", "text/javascript; charset=utf-8"},
+		{"sub/app.mjs", "export const x = 1\n", "text/javascript; charset=utf-8"},
+		{"style.css", "body { color: red }\n", "text/css; charset=utf-8"},
+		{"App.JS", "an upper case extension is the same file\n", "text/javascript; charset=utf-8"},
+		{"data.json", "{\"x\": 1}\n", "text/plain; charset=utf-8"},
+		{"icon.png", "\x89PNG a fake png with no NUL byte\n", "text/plain; charset=utf-8"},
+	} {
+		if rec := put(t, h, base+want.path, "test-key", want.body); rec.Code != http.StatusCreated {
+			t.Fatalf("PUT %s = %d, want %d; body %q", want.path, rec.Code, http.StatusCreated, rec.Body.String())
+		}
+		rec := get(t, h, base+want.path)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want %d; body %q", want.path, rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != want.ct {
+			t.Errorf("GET %s Content-Type = %q, want %q", want.path, ct, want.ct)
+		}
+	}
+}
+
 func TestPathTraversal(t *testing.T) {
 	h := newTestServer(t, "test-key")
 	base := createTestBin(t, h, "test-key")

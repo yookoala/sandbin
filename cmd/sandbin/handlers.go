@@ -368,6 +368,10 @@ func contentType(subPath string, content []byte) string {
 		return "text/html; charset=utf-8"
 	case ".md", ".txt":
 		return "text/plain; charset=utf-8"
+	case ".js", ".mjs":
+		return "text/javascript; charset=utf-8"
+	case ".css":
+		return "text/css; charset=utf-8"
 	}
 	if bytes.IndexByte(content, 0) >= 0 {
 		return "application/octet-stream"
