@@ -15,7 +15,7 @@ import (
 
 // usage is what every run without a working verb gets.
 const usage = `usage:
-  sandbin serve [--api-key k] [--db f] [--addr a] [--trusted-proxy l] [--trusted-proxy-file f]
+  sandbin serve [--api-key k] [--db f] [--addr a] [--socket s] [--trusted-proxy l] [--trusted-proxy-file f]
   sandbin ip list [--db f] [--json]
   sandbin ip show [--db f] <ip>
   sandbin ip unblock [--db f] <ip>
@@ -55,7 +55,7 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 
 // serveConfig is what serve's flags say the server should be.
 type serveConfig struct {
-	apiKey, dbPath, addr, trustedProxy, trustedProxyFile string
+	apiKey, dbPath, addr, socketPath, trustedProxy, trustedProxyFile string
 }
 
 // parseServeFlags parses serve's flags on their own FlagSet, so a test can check the
@@ -68,6 +68,8 @@ func parseServeFlags(args []string, stderr io.Writer) (serveConfig, error) {
 	fs.StringVar(&cfg.apiKey, "api-key", os.Getenv("SANDBIN_API_KEY"), "pre-shared API key clients send as X-API-Key")
 	fs.StringVar(&cfg.dbPath, "db", "sandbin.db", "sqlite file holding all bins")
 	fs.StringVar(&cfg.addr, "addr", ":8080", "address to listen on")
+	fs.StringVar(&cfg.socketPath, "socket", os.Getenv("SANDBIN_SOCKET"),
+		"control socket the ip commands reach this server through")
 	fs.StringVar(&cfg.trustedProxy, "trusted-proxy", os.Getenv("SANDBIN_TRUSTED_PROXIES"),
 		"comma-separated proxy IPs and CIDRs whose X-Forwarded-For is believed")
 	fs.StringVar(&cfg.trustedProxyFile, "trusted-proxy-file", os.Getenv("SANDBIN_TRUSTED_PROXIES_FILE"),
@@ -81,6 +83,11 @@ func parseServeFlags(args []string, stderr io.Writer) (serveConfig, error) {
 		err := fmt.Errorf("serve takes no arguments, got %q", strings.Join(extra, " "))
 		fmt.Fprintln(stderr, err)
 		return serveConfig{}, err
+	}
+	// The control socket rides next to the db it manages, so a run that only names --db
+	// can never drift away from what the ip verbs look for.
+	if cfg.socketPath == "" {
+		cfg.socketPath = cfg.dbPath + ".sock"
 	}
 	return cfg, nil
 }
@@ -114,6 +121,20 @@ func runServe(args []string, stderr io.Writer) int {
 		log.Fatalf("sandbin: open store: %v", err)
 	}
 	defer store.Close()
+
+	// The control socket comes up before the public listener: an operator who cannot
+	// reach the block table should not get a server that starts anyway.
+	controlListener, err := listenControl(cfg.socketPath)
+	if err != nil {
+		log.Fatalf("sandbin: %v", err)
+	}
+	controlServer := &http.Server{Handler: controlMux(store)}
+	go func() {
+		if err := controlServer.Serve(controlListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("sandbin: control socket: %v", err)
+		}
+	}()
+	log.Printf("sandbin control socket on %s", cfg.socketPath)
 
 	srv := &server{store: store, apiKey: []byte(cfg.apiKey), trustedProxies: proxies}
 	log.Printf("sandbin listening on %s", cfg.addr)

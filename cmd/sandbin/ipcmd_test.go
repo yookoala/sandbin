@@ -88,8 +88,9 @@ func TestServeFlagParsing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseServeFlags: %v", err)
 	}
+	// With no --socket the control socket is the one derived from --db.
 	want := serveConfig{
-		apiKey: "k", dbPath: "elsewhere.db", addr: "127.0.0.1:8081",
+		apiKey: "k", dbPath: "elsewhere.db", addr: "127.0.0.1:8081", socketPath: "elsewhere.db.sock",
 		trustedProxy: "203.0.113.7", trustedProxyFile: "proxies.txt",
 	}
 	if cfg != want {
@@ -101,13 +102,14 @@ func TestServeFlagParsing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseServeFlags with no flags: %v", err)
 	}
-	want = serveConfig{dbPath: "sandbin.db", addr: ":8080"}
+	want = serveConfig{dbPath: "sandbin.db", addr: ":8080", socketPath: "sandbin.db.sock"}
 	if cfg != want {
 		t.Errorf("serve defaults = %+v, want %+v", cfg, want)
 	}
 
 	// Each flag still falls back to its environment variable.
 	t.Setenv("SANDBIN_API_KEY", "env-key")
+	t.Setenv("SANDBIN_SOCKET", "env.sock")
 	t.Setenv("SANDBIN_TRUSTED_PROXIES", "198.51.100.0/24")
 	t.Setenv("SANDBIN_TRUSTED_PROXIES_FILE", "env-proxies.txt")
 	cfg, err = parseServeFlags(nil, &stdout)
@@ -115,11 +117,21 @@ func TestServeFlagParsing(t *testing.T) {
 		t.Fatalf("parseServeFlags with the env set: %v", err)
 	}
 	want = serveConfig{
-		apiKey: "env-key", dbPath: "sandbin.db", addr: ":8080",
+		apiKey: "env-key", dbPath: "sandbin.db", addr: ":8080", socketPath: "env.sock",
 		trustedProxy: "198.51.100.0/24", trustedProxyFile: "env-proxies.txt",
 	}
 	if cfg != want {
 		t.Errorf("serve env fallbacks = %+v, want %+v", cfg, want)
+	}
+
+	// --socket beats the derived default, which is how the socket lives somewhere else
+	// than the db.
+	cfg, err = parseServeFlags([]string{"--db", "elsewhere.db", "--socket", "/run/sandbin.sock"}, &stdout)
+	if err != nil {
+		t.Fatalf("parseServeFlags with --socket: %v", err)
+	}
+	if cfg.socketPath != "/run/sandbin.sock" {
+		t.Errorf("serve --socket = %q, want the path it was given", cfg.socketPath)
 	}
 
 	if _, err := parseServeFlags([]string{"--bogus"}, &stdout); err == nil {
