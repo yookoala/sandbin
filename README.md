@@ -24,7 +24,10 @@ SANDBIN_API_KEY=your-key ./sandbin
 ```
 
 `--api-key` (default `$SANDBIN_API_KEY`), `--db` (default `sandbin.db`) and `--addr`
-(default `:8080`) are the only settings; the server exits when no API key is configured.
+(default `:8080`) are the core settings; `--trusted-proxy` and `--trusted-proxy-file`
+(defaults `$SANDBIN_TRUSTED_PROXIES` and `$SANDBIN_TRUSTED_PROXIES_FILE`, see Trusted
+proxies) optionally name the proxies the server believes. The server exits when no API key
+is configured or a trusted proxy value cannot be read.
 
 Create a bin, then PUT files under it. `$BIN` already ends in `/`, so write `${BIN}name` and
 not `$BIN/name`, which asks for a `//` path the server rejects:
@@ -66,12 +69,49 @@ request answers `429` with a `Retry-After` (the remaining wait in seconds) and c
 failure, so hammering only lengthens the wait. `GET` is never charged and never blocked: a
 blocked address can still read public bins. Wrong bin passwords (`401`) are not failures here.
 
-`X-Forwarded-For` is believed only when the connection itself arrives from loopback, a private
-or a link-local address, so a reverse proxy must run on the same machine or network to be
-honoured, and only its rightmost entry is charged. Anyone reaching the port over a public route
-is charged by their own socket address and cannot frame a third party, but a client connected
-from loopback or the local network can name an arbitrary address in that header and get that
-address blocked.
+`X-Forwarded-For` is believed only when the connection itself arrives from a proxy the server
+trusts, and only its rightmost entry is charged. Loopback, private and link-local addresses are
+trusted with no configuration, so a reverse proxy on the same machine or network is honoured
+exactly as before; `--trusted-proxy` only adds to that list (see Trusted proxies). Anyone
+reaching the port over a route the server does not trust is charged by their own socket address
+and cannot frame a third party, but a client whose connection arrives through a trusted proxy
+can name an arbitrary address in that header and get that address blocked.
+
+### Trusted proxies
+
+An origin behind a public proxy such as Cloudflare sees the proxy's own public address as the
+socket and the real client only in `X-Forwarded-For`. `--trusted-proxy` (default
+`$SANDBIN_TRUSTED_PROXIES`) takes a comma-separated list of proxy IPs and CIDRs whose header is
+believed the way loopback's is:
+
+```sh
+./sandbin --api-key your-key --trusted-proxy 203.0.113.7,173.245.48.0/20
+```
+
+`--trusted-proxy-file` (default `$SANDBIN_TRUSTED_PROXIES_FILE`) reads the same entries one per
+line, ignoring blank lines and `#` comments, for lists long enough to deserve a file, such as
+the published Cloudflare ranges. The file list and the comma list are merged, file first:
+
+```sh
+cat > ~/.config/sandbin/proxies.txt <<'EOF'
+# Cloudflare IPv4 ranges (example entries; fetch the current list from Cloudflare)
+173.245.48.0/20
+103.21.244.0/22
+103.22.200.0/22
+EOF
+./sandbin --api-key your-key --trusted-proxy-file ~/.config/sandbin/proxies.txt
+```
+
+A bad entry or an unreadable file makes the server refuse to start, naming the offending value,
+the way a missing API key does. In the quadlet flow these settings come from the same `0600`
+env file as the key, as `SANDBIN_TRUSTED_PROXIES=203.0.113.7,173.245.48.0/20`; use
+`SANDBIN_TRUSTED_PROXIES_FILE` there only if the file itself is mounted into the container.
+
+Trusting a public range means any connection whose source address is inside that range gets
+header authority: whoever can open a socket from such an address can name whichever address the
+penalty lands on. `0.0.0.0/0` (every IPv4 connection) and `::/0` (every IPv6 connection) are
+accepted only as a deliberate operator choice and enable that framing for the whole internet;
+they are never defaults, and loopback, private and link-local trust needs no configuration.
 
 ## Run it with podman
 
