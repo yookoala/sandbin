@@ -1,6 +1,7 @@
 # Plan: trust a configured list of proxy addresses
 
-Status: draft. Extends `docs/plans/0003-api-key-lockout.md`; the identity row in
+Status: implemented on `main` (`5280895`, `8519701`), reviewed together with plan 0003.
+Extends `docs/plans/0003-api-key-lockout.md`; the identity row in
 `docs/decisions/0003-api-key-lockout.md` is amended by `docs/decisions/0004-trusted-proxies.md`.
 
 ## What changes
@@ -119,3 +120,26 @@ Cloudflare needs no special case: its proxy appends the real client as the right
 `CF-Connecting-IP` support, fetching Cloudflare ranges automatically, a `--no-local-proxy` switch
 to disable implicit local trust, per-proxy differentiation of trust level, Unix socket support, and
 validating that a configured proxy range is actually yours.
+
+## Outcome
+
+Implemented in `5280895` and `8519701`, reviewed together with plan 0003. Verified against a live
+server: a socket inside a configured `/24` charged the header's rightmost address and escalated
+30/60/90 minutes while the proxy address itself kept returning `201`; the same request with no
+`--trusted-proxy` charged the socket instead. Both flags and both environment fallbacks work; a
+bad CIDR, a garbage entry, a missing file and a directory given as the file each refuse to start
+with exit 1 and name the value. Implicit loopback, private and link-local trust did not regress,
+which the container flow on `127.0.0.1:18097` re-confirmed: the gateway socket was never charged
+and the header was.
+
+Cost was measured, not assumed: wrong-key `POST /` p50 was 0.855/0.978 ms with no list and
+0.916/0.892 ms with a 2000-entry list, and `clientIP` short-circuits on local sockets so they
+never scan the list at all. The linear scan stays.
+
+One plan wording correction: `0.0.0.0/0` header-trusts every IPv4 socket and `::/0` every IPv6
+socket, not every socket at once. The review's blocker 3 (the header value becoming the
+`ip_blocks` key verbatim) belongs to this plan's identity rule and was fixed in `88a0f44`.
+
+Not proven here: an unreadable-but-existing proxy file refusing to start, because the review ran
+as root and a mode-000 file was still readable; and a live public socket in the untrusted
+direction, because this sandbox has no `iproute2`, so that branch rests on handler-level tests.

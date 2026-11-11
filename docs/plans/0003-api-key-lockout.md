@@ -1,6 +1,7 @@
 # Plan: block addresses that keep sending bad API keys
 
-Status: draft. Decisions in `docs/decisions/0003-api-key-lockout.md`.
+Status: implemented on `main` (`f88d02e..88a0f44`), reviewed, three review blockers fixed.
+Decisions in `docs/decisions/0003-api-key-lockout.md`.
 
 ## Rule being implemented
 
@@ -198,3 +199,32 @@ Blocking on wrong bin passwords, blocking `GET`, per-bin rather than per-address
 limiting of *successful* requests, an unblock command or admin API, a `--trusted-proxy` flag,
 CIDR-range bans, distributed bans across replicas, and any attempt to hide the penalty from the
 client (`Retry-After` is deliberately honest).
+
+## Outcome
+
+Implemented in `f88d02e`, `e845b46`, `2f69e4b` and reviewed. The reviewer confirmed 30/60/90
+minute escalation against a live server, the 24 hour cap, `Retry-After` accuracy, restart
+persistence, `GET` staying open, wrong bin passwords not being charged, and that a non-local
+socket cannot dodge a block by rotating headers. Three defects were found and fixed:
+
+- `6ab72b9`: `RecordFailure` read and wrote as two statements, so 50 parallel failures from one
+  address stored 34 (12 under `-race`), and 34 of 200 hammer requests failed with `SQLITE_BUSY`,
+  which also hit ordinary bin and file writes. The store now pools exactly one connection and the
+  read, upsert and prune run in one transaction. Re-measured live: 250 parallel wrong-key
+  requests stored exactly 250 failures and the log held no store errors.
+- `3fd3729`: `blockStep * failures` overflows int64 nanoseconds past about 5.1 million failures
+  and puts `blocked_until` in the past, disarming the block for exactly the hammerers whose
+  counter grew most. From 48 failures the penalty is charged as `blockMax` without multiplying.
+  Re-measured live: a seeded `failures=6000000` row produced `Retry-After: 86391`.
+- `88a0f44`: the header's rightmost entry was charged verbatim, so a 200 KB header became a
+  200000-byte primary key and grew the database 425984 bytes in one request, and keys like
+  `fe80::1%eth0` or `203.0.113.7:8080` never matched a real client. The charged value is now a
+  parsed, canonical, unmapped, zone-free address, or the socket host when the entry is not one.
+
+Known and accepted: the 30 day prune is an unindexed scan of `ip_blocks` on each failure, fine at
+current table sizes; `Retry-After` can be `0` in the last second of a block; `main.go`'s
+refuse-to-start guards are proven from the shell but have no `go test` coverage; and an attacker
+who can reach the port with one failure each from many identities is never blocked, which is the
+cost of blocking per identity rather than by rate. `b96c943` records the residual bypass: on any
+trusted socket, including loopback, a client may rotate valid header addresses and keep each
+failure charged to a fresh identity.
