@@ -1,6 +1,7 @@
 # Plan: `sandbin ip show <ip>`
 
-Status: draft. Decisions in `docs/decisions/0007-ip-show.md`. Extends
+Status: implemented on `main` (`40faaef`), reviewed as "ship", review test in `5241a03`.
+Decisions in `docs/decisions/0007-ip-show.md`. Extends
 `docs/plans/0006-serve-and-ip-management.md`, which already delivered `ip list`, `ip unblock`
 and `ip clear`.
 
@@ -95,3 +96,46 @@ renderer, usage strings, README line, tests.
 
 `show --json`, multiple addresses in one run, CIDR or wildcard matching, showing failure
 history beyond the stored row, and any change to what `list`, `unblock` or `clear` do.
+
+## Outcome
+
+One commit, `40faaef`: `GetBlock` in `store.go`, `ipShow` in `ipcmd.go`, `list`'s tabwriter
+block moved verbatim into a shared `writeBlocksTable`, `show` named in every verb-listing site,
+8 new tests. Tests went 119 to 127 (92 then 93 in `cmd/sandbin`, client 35 unchanged);
+`gofmt`, `go vet` and `go test -race` green at every step.
+
+The review verdict was **ship**, with no blockers. Verified against a live server
+(127.0.0.1:18212): charged `203.0.113.44` via `X-Forwarded-For` on the trusted loopback socket,
+`show` printed the row identical to `ip list` (exit 0), `show ::ffff:203.0.113.44` hit the same
+row, `show 198.51.100.77` answered `no block for 198.51.100.77` exit 1 with empty stdout.
+Canonicalisation parity with `unblock` was total — uppercase IPv6, `::ffff:`, and `fe80::1%eth0`
+onto a zone-free key all hit for both verbs; `not-an-ip`, `203.0.113.07`, `[1.2.3.4]`,
+`1.2.3.4:8080` and `203.0.113.44/32` refused with identical wording for both. The read-only
+claim — the verb's whole point — held as uid 65534 against a root-owned 0644 db and a 0444 copy:
+`show` exit 0 where `unblock` and `clear` failed with `attempt to write a readonly database (8)`
+and the row survived. `show` writes nothing: `ip list --json` and the db file's inode, size and
+mtime were byte-identical before and after five `show` runs, and against a missing `--db` the
+created-empty warning appears over a table with zero rows. 30 `show` runs alongside 150
+concurrent wrong-key charges: all 30 exit 0, all 150 charges landed, zero `SQLITE_BUSY`. After
+the renderer factoring, `list`'s text and `--json` output are byte-identical to `40faaef^`
+against identically seeded dbs, including the empty-table line, the `expired` marker and an
+unparsable `blocked_until`; all 15 pre-existing list/unblock/clear CLI cases compared old
+binary against new came out identical apart from the usage strings that now name `show`.
+
+The review's three untested arms (`GetBlock`'s non-`ErrNoRows` error, `ipShow`'s `show %s: %v`
+message, `ipShow`'s store-open failure) were proven live; `5241a03` adds `TestIPShowCorruptRow`,
+which covers the first two. The third is shared with `list`/`unblock`/`clear` and stays
+shell-proven only.
+
+Accepted as they are: flags must precede the address (`ip show 203.0.113.44 --db x` is refused
+as a two-address run, the same rule `unblock` has, and it is refused before any file is opened);
+column padding in a one-row `show` differs from `list`'s when the table has wider siblings —
+values identical, widths per render; `show` on a row the tools cannot decode (corrupt
+`failures`, only reachable via raw SQL) exits 1 naming the address while `unblock` still deletes
+it; a `show` whose stdout cannot be written exits 1 silently, exactly as `list` does; and an
+empty-string key row (raw SQL only) is listed but named by neither `show` nor `unblock`.
+
+One README correction came out of the review: "`list` and `show` need only read access" is true
+once `ip_blocks` exists — `openStore`'s `CREATE TABLE IF NOT EXISTS` means the first `ip` run
+against a db file that predates plan 0006 needs one write, proven as uid 65534 against a
+bins-only 0644 db (the pre-`show` binary fails `list` the same way).

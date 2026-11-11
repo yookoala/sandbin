@@ -241,7 +241,8 @@ appears in the container command line, but it is visible in `podman inspect` out
 `ip` commands read the sqlite file itself, so whoever owns that file controls the lockout
 blocks. They make no network request and need no API key: `list` and `show` need only read access
 to the `--db` file and `unblock` or `clear` need write access, so protecting that file is the
-control.
+control. Read access is enough once the block table exists; the first `ip` run against a db file
+that predates it needs one write, because creating the table is part of opening the file.
 Nothing about `serve` loosens — it still refuses to start without an API key, and an `ip` run
 never reaches the running server. Each verb takes `--db` (default `sandbin.db`, the same file
 `serve` opens); `./sandbin ip help` prints this family's usage, and a `--db` file that does not
