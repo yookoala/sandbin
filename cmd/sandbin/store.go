@@ -190,9 +190,16 @@ func (s *Store) RecordFailure(ip string, now time.Time) (time.Time, error) {
 		return time.Time{}, err
 	}
 	failures++
-	blockedUntil := now.Add(blockStep * time.Duration(failures))
-	if max := now.Add(blockMax); blockedUntil.After(max) {
-		blockedUntil = max
+	// 48 failures already reach blockMax, and multiplying a bigger count would
+	// overflow int64 nanoseconds and flip blocked_until into the past.
+	var blockedUntil time.Time
+	if failures >= 48 {
+		blockedUntil = now.Add(blockMax)
+	} else {
+		blockedUntil = now.Add(blockStep * time.Duration(failures))
+		if max := now.Add(blockMax); blockedUntil.After(max) {
+			blockedUntil = max
+		}
 	}
 	_, err = tx.Exec(`
 INSERT INTO ip_blocks (ip, failures, blocked_until, updated_at) VALUES (?, ?, ?, ?)

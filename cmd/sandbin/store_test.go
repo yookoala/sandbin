@@ -233,6 +233,36 @@ func TestRecordFailureParallel(t *testing.T) {
 	}
 }
 
+// TestRecordFailureCapsOverflow seeds the row a long-lived hammerer eventually
+// reaches. A reviewer stored failures=6000000 and got duration -2124095h4m33s,
+// blocked_until 1784-07-18, and IsBlocked false: the multiplication overflowed
+// int64 nanoseconds, so the penalty arithmetic must be capped before it runs.
+func TestRecordFailureCapsOverflow(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+
+	if _, err := store.db.Exec(`
+INSERT INTO ip_blocks (ip, failures, blocked_until, updated_at) VALUES (?, ?, ?, ?)`,
+		"203.0.113.7", 6000000,
+		now.Add(blockMax).UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("seed failures=6000000: %v", err)
+	}
+
+	until, err := store.RecordFailure("203.0.113.7", now)
+	if err != nil {
+		t.Fatalf("RecordFailure: %v", err)
+	}
+	if got := until.Sub(now); got != blockMax {
+		t.Errorf("block after 6000001 failures = %v, want exactly %v", got, blockMax)
+	}
+	if failures, ok := ipBlockRow(t, store, "203.0.113.7"); !ok || failures != 6000001 {
+		t.Errorf("row after the failure = failures %d, ok %v; want 6000001, present", failures, ok)
+	}
+	if got, blocked := store.IsBlocked("203.0.113.7", now); !blocked {
+		t.Errorf("IsBlocked after the overflow-capped failure = until %v, blocked %v; want blocked", got, blocked)
+	}
+}
+
 func TestIsBlockedEndsAtBlockedUntil(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
