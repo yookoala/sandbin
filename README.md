@@ -55,3 +55,37 @@ curl -u "${PBIN//\//}:sesame" http://localhost:8080$PBIN/notes.md
 PUT bodies are capped at 1 MiB. `403` is a bad API key, `401` a missing bin password,
 `404` an unknown bin or path, `405` an unsupported method, `400` a rejected path,
 `413` an oversized body.
+
+## Run it with podman
+
+Build the image (hermetic two stages: `golang:1.26-alpine` builds, `alpine:3.22` runs; the
+host needs nothing but podman):
+
+```sh
+podman build -t localhost/sandbin:latest .
+```
+
+Ad-hoc run, with a named volume holding the sqlite file and the key from a `0600` env file:
+
+```sh
+podman run -d --name sandbin -p 127.0.0.1:8080:8080 -v sandbin-data:/data --env-file ~/.config/sandbin/sandbin.env localhost/sandbin:latest
+```
+
+As a systemd user service through podman quadlet:
+
+```sh
+mkdir -p ~/.config/containers/systemd ~/.config/sandbin
+cp deploy/sandbin.container ~/.config/containers/systemd/
+install -m 600 deploy/sandbin.env.example ~/.config/sandbin/sandbin.env   # then edit replace-me
+systemctl --user daemon-reload
+systemctl --user start sandbin
+```
+
+`deploy/sandbin.container` points `EnvironmentFile=` at `/etc/sandbin/sandbin.env` for a
+system install; for a rootless install change it to `~/.config/sandbin/sandbin.env`.
+
+The published port is loopback-only (`PublishPort=127.0.0.1:8080:8080`) because this is a
+preview tool; edit the unit to `8080:8080` to expose it on the network. The API key never
+appears in the container command line, but it is visible in `podman inspect` output
+(`Config.Env`), so treat the env file like a password.
+
