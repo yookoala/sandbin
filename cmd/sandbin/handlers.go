@@ -28,6 +28,10 @@ const (
 type server struct {
 	store  *Store
 	apiKey []byte
+
+	// trustedProxies adds configured proxy addresses to the loopback, private and
+	// link-local sockets whose X-Forwarded-For clientIP already believes.
+	trustedProxies proxyList
 }
 
 // ServeHTTP sends "/" to bin creation and everything else to the bin subrouter.
@@ -95,7 +99,7 @@ func (s *server) binRoutes(w http.ResponseWriter, r *http.Request, hash, sub str
 
 // createBin makes a bin and answers with the path it lives under.
 func (s *server) createBin(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
+	ip := clientIP(r, s.trustedProxies)
 	if until, blocked := s.store.IsBlocked(ip, time.Now()); blocked {
 		w.Header().Set("Retry-After", strconv.Itoa(int(time.Until(until).Seconds())))
 		// An attempt while blocked is itself a failure, so hammering walks the penalty up.
@@ -208,7 +212,7 @@ func (s *server) getFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 }
 
 func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub string) {
-	ip := clientIP(r)
+	ip := clientIP(r, s.trustedProxies)
 	if until, blocked := s.store.IsBlocked(ip, time.Now()); blocked {
 		w.Header().Set("Retry-After", strconv.Itoa(int(time.Until(until).Seconds())))
 		// An attempt while blocked is itself a failure, so hammering walks the penalty up.

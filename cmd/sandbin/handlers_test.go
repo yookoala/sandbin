@@ -804,3 +804,84 @@ func TestLocalProxyXFFChargesRightmost(t *testing.T) {
 		t.Errorf("header-less POST from 127.0.0.1 = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
 	}
 }
+
+// TestTrustedProxyChargesHeaderAddress is the lockout asserted end to end through a
+// configured public proxy: one wrong key from a header-named address blocks that
+// address, not the proxy, and the proxy itself keeps working.
+func TestTrustedProxyChargesHeaderAddress(t *testing.T) {
+	proxies, err := loadTrustedProxies("198.51.100.0/24", "")
+	if err != nil {
+		t.Fatalf("loadTrustedProxies: %v", err)
+	}
+	s := newTestServer(t, "test-key")
+	s.trustedProxies = proxies
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.RemoteAddr = "198.51.100.9:43210" // a socket inside the trusted range
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	req.Header.Set("X-API-Key", "wrong")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("wrong key behind the trusted proxy = %d, want %d; body %q", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if failures, dur := storedBlock(t, s, "203.0.113.9"); failures != 1 || dur != blockStep {
+		t.Errorf("charged address = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
+	}
+	if _, blocked := s.store.IsBlocked("198.51.100.9", time.Now()); blocked {
+		t.Errorf("the proxy socket 198.51.100.9 was blocked, although its header named 203.0.113.9")
+	}
+
+	// The blocked client address is refused even behind the proxy, and hammering escalates.
+	req = httptest.NewRequest(http.MethodPost, "/", nil)
+	req.RemoteAddr = "198.51.100.9:43210"
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	req.Header.Set("X-API-Key", "test-key")
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("the blocked client behind the proxy = %d, want %d; body %q", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+	}
+	if ra := retryAfter(t, rec); ra <= 1800-30 || ra > 1800 {
+		t.Errorf("Retry-After = %d, want about 1800", ra)
+	}
+
+	// The proxy socket is a different identity and still works behind its own proxy.
+	if rec := postFrom(t, s, "198.51.100.9:9999", "test-key"); rec.Code != http.StatusCreated {
+		t.Errorf("header-less POST from the proxy socket = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+}
+
+// TestUntrustedPublicSocketChargesSocket keeps the plan 0003 outcome asserted for the
+// same request shape when the range is not configured: the header never moves the penalty.
+func TestUntrustedPublicSocketChargesSocket(t *testing.T) {
+	s := newTestServer(t, "test-key") // no trusted proxies configured at all
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.RemoteAddr = "198.51.100.9:43210"
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	req.Header.Set("X-API-Key", "wrong")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("wrong key from an untrusted public socket = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if failures, dur := storedBlock(t, s, "198.51.100.9"); failures != 1 || dur != blockStep {
+		t.Errorf("charged socket = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
+	}
+	if _, blocked := s.store.IsBlocked("203.0.113.9", time.Now()); blocked {
+		t.Errorf("203.0.113.9 was blocked, although it only appeared in an untrusted header")
+	}
+
+	// Rotating the header cannot buy the socket a fresh identity.
+	req = httptest.NewRequest(http.MethodPost, "/", nil)
+	req.RemoteAddr = "198.51.100.9:43210"
+	req.Header.Set("X-Forwarded-For", "203.0.113.99")
+	req.Header.Set("X-API-Key", "test-key")
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second POST from the same socket = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+	retryAfter(t, rec)
+}
