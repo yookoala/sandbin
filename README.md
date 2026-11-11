@@ -20,11 +20,15 @@ Build and run:
 
 ```sh
 go build -o sandbin ./cmd/sandbin
-SANDBIN_API_KEY=your-key ./sandbin
+SANDBIN_API_KEY=your-key ./sandbin serve
 ```
 
+Every invocation names its verb: `serve` runs the server, `ip list`, `ip unblock <ip>` and
+`ip clear` inspect and lift the API key blocks (see Managing blocked addresses), and `help`
+prints the usage. A bare `sandbin` or an unknown verb prints that usage on stderr and exits 1.
+
 `--api-key` (default `$SANDBIN_API_KEY`), `--db` (default `sandbin.db`) and `--addr`
-(default `:8080`) are the core settings; `--trusted-proxy` and `--trusted-proxy-file`
+(default `:8080`) are `serve`'s core settings; `--trusted-proxy` and `--trusted-proxy-file`
 (defaults `$SANDBIN_TRUSTED_PROXIES` and `$SANDBIN_TRUSTED_PROXIES_FILE`, see Trusted
 proxies) optionally name the proxies the server believes. The server exits when no API key
 is configured or a trusted proxy value cannot be read.
@@ -154,7 +158,7 @@ socket and the real client only in `X-Forwarded-For`. `--trusted-proxy` (default
 believed the way loopback's is:
 
 ```sh
-./sandbin --api-key your-key --trusted-proxy 203.0.113.7,173.245.48.0/20
+./sandbin serve --api-key your-key --trusted-proxy 203.0.113.7,173.245.48.0/20
 ```
 
 `--trusted-proxy-file` (default `$SANDBIN_TRUSTED_PROXIES_FILE`) reads the same entries one per
@@ -168,7 +172,7 @@ cat > ~/.config/sandbin/proxies.txt <<'EOF'
 103.21.244.0/22
 103.22.200.0/22
 EOF
-./sandbin --api-key your-key --trusted-proxy-file ~/.config/sandbin/proxies.txt
+./sandbin serve --api-key your-key --trusted-proxy-file ~/.config/sandbin/proxies.txt
 ```
 
 A bad entry or an unreadable file makes the server refuse to start, naming the offending value,
@@ -197,14 +201,15 @@ image format drops that line. The probes below are the podman-native form, and p
 them. Add `--format docker` to the build instead if you want the image to carry it.
 
 Ad-hoc run, with a named volume holding the sqlite file, the key from a `0600` env file, and
-the health probe:
+the health probe. It needs no command of its own: the image's CMD is `serve --db
+/data/sandbin.db`.
 
 ```sh
 podman run -d --name sandbin -p 127.0.0.1:8080:8080 -v sandbin-data:/data \
   --env-file ~/.config/sandbin/sandbin.env \
   --health-cmd "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1" \
   --health-interval=30s --health-start-period=5s --health-retries=3 \
-  localhost/sandbin:latest
+  localhost/sandbin:latest   # runs serve --db /data/sandbin.db
 podman inspect --format '{{.State.Health.Status}}' sandbin   # probed every 30s, healthy on a healthy server
 ```
 
@@ -229,4 +234,44 @@ The published port is loopback-only (`PublishPort=127.0.0.1:8080:8080`) because 
 preview tool; edit the unit to `8080:8080` to expose it on the network. The API key never
 appears in the container command line, but it is visible in `podman inspect` output
 (`Config.Env`), so treat the env file like a password.
+
+## Managing blocked addresses
+
+`ip` commands read the sqlite file itself, so whoever owns that file can see and undo the
+lockout blocks. They make no network request and need no API key: whoever can read the `--db`
+file can lift blocks from it, and protecting that file is the control. Nothing about `serve`
+loosens — it still refuses to start without an API key, and an `ip` run never reaches the
+running server. Each verb takes `--db` (default `sandbin.db`, the same file `serve` opens):
+
+```sh
+./sandbin ip list                    # every row of the block table
+./sandbin ip list --json             # the same rows as a json array
+./sandbin ip unblock 203.0.113.7     # delete one address's block
+./sandbin ip clear                   # delete every block
+```
+
+Flags go before the address: `./sandbin ip unblock --db /data/sandbin.db 203.0.113.7`.
+
+`list` prints `IP`, `FAILURES`, `BLOCKED UNTIL`, `REMAINING` and `LAST FAILURE`. `REMAINING`
+is worked out while the command runs and reads `expired` once `blocked_until` is past; expired
+rows are listed on purpose, because their failure count still shapes the next penalty. An empty
+table prints `no blocked addresses` and exits 0. `--json` prints the same rows as an array of
+`ip`, `failures`, `blocked_until` and `updated_at` (`[]` when there is no row), and it belongs
+to `list` alone: `unblock` and `clear` refuse it.
+
+`unblock` deletes the whole row, so the failure count goes with it: the next wrong key from
+that address starts again at 30 minutes instead of resuming the escalation it had reached. Its
+argument is spelled the way the server spells an address it charges, so `::ffff:203.0.113.7`,
+`fe80::1%eth0` and `2001:0DB8::1` all reach the key the server stored. An address with no block
+is an error naming it (`no block for 203.0.113.7`, exit 1), which is how a typo shows up.
+`clear` deletes every row and prints `cleared N blocks`; `N=0` is fine.
+
+They are safe to run next to a live server: `openStore`'s `busy_timeout(5000)` queues the
+management write behind whatever transaction the server is in instead of failing with
+`SQLITE_BUSY`. In the container the sqlite file lives in the `sandbin-data` volume at
+`/data/sandbin.db`, so the same verbs run through the image:
+
+```sh
+podman run --rm localhost/sandbin ip list --db /data/sandbin.db
+```
 
