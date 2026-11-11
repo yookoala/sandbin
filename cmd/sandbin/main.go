@@ -28,5 +28,5 @@ func main() {
 
 	srv := &server{store: store, apiKey: []byte(*apiKey)}
 	log.Printf("sandbin listening on %s", *addr)
-	log.Fatal(http.ListenAndServe(*addr, srv.mux()))
+	log.Fatal(http.ListenAndServe(*addr, srv))
 }
