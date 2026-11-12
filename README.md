@@ -470,3 +470,7 @@ podman run --rm -v sandbin-data:/data localhost/sandbin ip list --db /data/sandb
 podman run --rm -w /data -v sandbin-data:/data localhost/sandbin ip list
 ```
 
+
+# License
+
+This software is licensed under the MIT License. You can find a copy of the license [here](LICENSE.md).
