@@ -293,7 +293,8 @@ it (`no block for 203.0.113.7`, exit 1), which is how a typo shows up.
 The socket speaks four requests and nothing else: `GET /ip` (every row), `GET /ip/{ip}` (one
 row), `DELETE /ip/{ip}` and `DELETE /ip`, answering `404` with `{"error":"no block for <ip>"}`
 for a key the table does not have and `{"unblocked":"<ip>"}` or `{"cleared":N}` when a delete
-did something; anything else is `404` or `405`. `curl --unix-socket` drives it the same way:
+did something; an unknown path is `404`, a wrong method is `405`, and `HEAD` answers like `GET`.
+`curl --unix-socket` drives it the same way:
 
 ```sh
 curl --unix-socket sandbin.db.sock http://localhost/ip
@@ -304,7 +305,8 @@ The two listeners share no routes: `/ip` on the public port is an unknown bin, a
 no bin, file or healthz route. The running server is now the only writer of the block table, so a
 management run cannot contend with it for the sqlite lock; `RecordFailure` keeps its bounded
 retry for the writers that remain — an old binary or a stray sqlite client can still open the db
-file — and a charge that outlives every retry is logged (`record auth failure`), never dropped.
+file — and a charge that outlives every retry is lost but logged (`record auth failure`), never
+silently dropped.
 `serve` refuses to start when the socket path is already answering (`another sandbin serve is
 already listening on sandbin.db.sock`), replaces the stale socket a killed server left behind, and
 refuses a path that holds a regular file or a symlink, leaving that file exactly where it is.

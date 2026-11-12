@@ -177,10 +177,10 @@ func (s *Store) IsBlocked(ip string, now time.Time) (time.Time, bool) {
 // up to blockMax. Rows idle past blockIdlePrune are deleted in the same call
 // so the table cannot grow without bound. The read, the upsert and the prune
 // run in one transaction so parallel failures cannot interleave and drop counts.
-// A management verb (ip unblock, ip clear) is a second writer, and sqlite answers
-// SQLITE_BUSY immediately when this deferred read transaction tries to upgrade,
-// so a refused charge is retried a bounded few times: dropping it silently would
-// under-count the penalty.
+// A second writer (an old binary's direct-db management, a stray sqlite client) makes
+// sqlite answer SQLITE_BUSY immediately when this deferred read transaction tries to
+// upgrade, so a refused charge is retried a bounded few times: dropping it silently
+// would under-count the penalty. The ip verbs no longer open the db file.
 func (s *Store) RecordFailure(ip string, now time.Time) (time.Time, error) {
 	until, err := s.recordFailureOnce(ip, now)
 	for attempt := 2; err != nil && isBusy(err) && attempt <= 4; attempt++ {
@@ -265,8 +265,7 @@ func (s *Store) ListBlocks() ([]IPBlock, error) {
 }
 
 // GetBlock returns the one row of ip_blocks whose ip is exactly ip, or reports that the
-// table has no such row. It reads only: an address can be inspected through a db file
-// that its owner may not write.
+// table has no such row. It reads only; the control socket's GET /ip/{ip} answers from it.
 func (s *Store) GetBlock(ip string) (IPBlock, bool, error) {
 	var b IPBlock
 	err := s.db.QueryRow(`SELECT ip, failures, blocked_until, updated_at FROM ip_blocks WHERE ip=?`, ip).
