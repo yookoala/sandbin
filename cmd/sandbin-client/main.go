@@ -134,7 +134,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	}
 
 	// A run with no upload targets is refused, unless it came to say what the bin holds:
-	// a metadata flag is a job of its own, and --archive brings its own target.
+	// a metadata flag is a job of its own, and --archive brings its own target — though
+	// piped stdin still needs a --name whichever run it is.
 	metaRun := titleGiven || descriptionGiven
 
 	var names []string
@@ -144,6 +145,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 		if err != nil {
 			return err
 		}
+	} else if archiveGiven && stdinCarriesUpload(stdin) {
+		// --archive brings its own upload target, but it does not make a piped stdin
+		// meaningless: what was piped in still needs a --name to say what it uploads,
+		// the same refusal a run without --archive gives. Silently dropping it is not.
+		return errors.New("stdin needs --name to say what it uploads")
 	}
 	// stdin is read before the bin is chosen, so an oversized stream makes no
 	// request and leaves no bin behind.
@@ -580,6 +586,13 @@ func isTerminal(stdin io.Reader) bool {
 	}
 	info, err := f.Stat()
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+// stdinCarriesUpload reports whether the run was handed something that could hold an
+// upload on stdin. A run handed no reader at all — which only the tests do, since main
+// always hands over os.Stdin — was handed nothing.
+func stdinCarriesUpload(stdin io.Reader) bool {
+	return stdin != nil && !isTerminal(stdin)
 }
 
 func envOr(name, fallback string) string {

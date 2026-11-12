@@ -198,9 +198,10 @@ files (`folder has over 1000 files`), more than 32 MiB of total content
 (`folder unpacks over 32 MiB`), entry names past the server's path limits, a folder holding no
 files at all (`folder contains no files`), and a built archive over 1 MiB
 (`archive is over 1 MiB`). The temp file is removed on every exit path. `--archive` combines
-with file arguments and `--name` stdin in one run — the archive uploads last — and with
-`--no-extract` the built archive itself is what lands in the bin, stored raw under its own
-name.
+with file arguments and `--name` stdin in one run — the archive uploads last — and piped stdin
+with no `--name` is refused in an `--archive` run exactly as it is in any other run, rather
+than quietly dropped. With `--no-extract` the built archive itself is what lands in the bin,
+stored raw under its own name.
 
 Hand-built archives need no client machinery: the server unpacks them from an ordinary upload.
 

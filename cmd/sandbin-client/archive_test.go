@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -272,18 +273,125 @@ func TestDescribeRefusedWithArchive(t *testing.T) {
 	}
 }
 
+// archiveTempLeftovers is the temp archive scan the cleanup tests use: nothing named
+// sandbin-archive-* may survive a run, whatever the run did.
+func archiveTempLeftovers(t *testing.T) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(os.TempDir(), "sandbin-archive-*"))
+	if err != nil {
+		t.Fatalf("scan temp dir: %v", err)
+	}
+	return matches
+}
+
+// TestArchiveRefusesPipedStdinWithoutAName keeps the stdin rule whole: --archive brings
+// its own upload target, but what was piped in still needs a --name, and the refusal is
+// the same sentence a run without --archive gives, with zero requests and no archive
+// built.
+func TestArchiveRefusesPipedStdinWithoutAName(t *testing.T) {
+	f := newFake(t, "test-key")
+	writeWorkDirFile(t, "hello/world.html", "x")
+
+	stdout, stderr, err := runClient(t, strings.NewReader("piped in\n"), "--archive", "hello")
+	if err == nil {
+		t.Fatalf("--archive with piped stdin and no --name succeeded, want a refusal")
+	}
+	if !strings.Contains(stderr, "stdin needs --name to say what it uploads") {
+		t.Errorf("stderr = %q, want the plain stdin refusal", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want nothing", stdout)
+	}
+	if n := f.requestsSeen(); n != 0 {
+		t.Errorf("requests = %d, want zero", n)
+	}
+	if n := f.binCount(); n != 0 {
+		t.Errorf("bins = %d, want none created", n)
+	}
+	if got := archiveTempLeftovers(t); len(got) != 0 {
+		t.Errorf("temp dir holds %v after the refusal, want nothing", got)
+	}
+
+	// The same run without --archive refuses with the same words, which is what
+	// "regardless of --archive" has to mean.
+	_, plainStderr, err := runClient(t, strings.NewReader("piped in\n"))
+	if err == nil || plainStderr != stderr {
+		t.Errorf("plain run stderr = %q, want the same refusal as the --archive run (%q)", plainStderr, stderr)
+	}
+
+	// With a --name, stdin and the folder both upload, stdin first.
+	f2 := newFake(t, "test-key")
+	f2.setUnpack(true)
+	writeWorkDirFile(t, "hello/world.html", "x")
+	if _, _, err := runClient(t, strings.NewReader("piped in\n"), "--archive", "hello", "--name", "piped.txt"); err != nil {
+		t.Fatalf("--archive with --name: %v", err)
+	}
+	want := []string{"/bin0001/piped.txt", "/bin0001/hello.tar.gz"}
+	if got := f2.putOrder(); !reflect.DeepEqual(got, want) {
+		t.Errorf("PUT order = %q, want %q", got, want)
+	}
+	if got := f2.stored("bin0001/piped.txt"); got != "piped in\n" {
+		t.Errorf("stored piped.txt = %q, want the piped bytes", got)
+	}
+	if got := f2.stored("bin0001/hello/world.html"); got != "x" {
+		t.Errorf("stored hello/world.html = %q, want the folder file", got)
+	}
+	if got := archiveTempLeftovers(t); len(got) != 0 {
+		t.Errorf("temp dir holds %v after the run, want nothing", got)
+	}
+}
+
+// TestArchiveOverOneMiBRefusesBeforeAnyRequest is the one client-side cap that can only be
+// measured after the archive exists: three files of incompressible random data, each under
+// the 1 MiB file cap and the folder under the 32 MiB total, so the preflight walk passes and
+// only the built archive is over the cap every PUT body obeys.
+func TestArchiveOverOneMiBRefusesBeforeAnyRequest(t *testing.T) {
+	f := newFake(t, "test-key")
+	if got := archiveTempLeftovers(t); len(got) != 0 {
+		t.Fatalf("temp dir already holds %v before the test", got)
+	}
+
+	if err := os.MkdirAll("fat", 0755); err != nil {
+		t.Fatalf("mkdir fat: %v", err)
+	}
+	for i := range 3 {
+		data := make([]byte, 600<<10) // under the 1 MiB per-file cap, and incompressible
+		if _, err := rand.Read(data); err != nil {
+			t.Fatalf("read random data: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join("fat", fmt.Sprintf("f%d.bin", i)), data, 0644); err != nil {
+			t.Fatalf("write fat/f%d.bin: %v", i, err)
+		}
+	}
+
+	stdout, stderr, err := runClient(t, nil, "--archive", "fat")
+	if err == nil {
+		t.Fatalf("--archive fat succeeded, want the built archive refused")
+	}
+	if !strings.Contains(err.Error(), "archive is over 1 MiB") {
+		t.Errorf("err = %v, want it to say the archive is over 1 MiB", err)
+	}
+	if !strings.Contains(stderr, "archive is over 1 MiB") {
+		t.Errorf("stderr = %q, want the refusal echoed", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want nothing", stdout)
+	}
+	if n := f.requestsSeen(); n != 0 {
+		t.Errorf("requests = %d, want zero", n)
+	}
+	if n := f.binCount(); n != 0 {
+		t.Errorf("bins = %d, want none created", n)
+	}
+	if got := archiveTempLeftovers(t); len(got) != 0 {
+		t.Errorf("temp dir holds %v after the refusal, want no sandbin-archive-* left", got)
+	}
+}
+
 // TestArchiveTempFileRemoved proves the temp archive never survives the run,
 // through a success and through a server failure.
 func TestArchiveTempFileRemoved(t *testing.T) {
-	leftovers := func(t *testing.T) []string {
-		t.Helper()
-		matches, err := filepath.Glob(filepath.Join(os.TempDir(), "sandbin-archive-*"))
-		if err != nil {
-			t.Fatalf("scan temp dir: %v", err)
-		}
-		return matches
-	}
-	if got := leftovers(t); len(got) != 0 {
+	if got := archiveTempLeftovers(t); len(got) != 0 {
 		t.Fatalf("temp dir already holds %v before the test", got)
 	}
 
@@ -293,7 +401,7 @@ func TestArchiveTempFileRemoved(t *testing.T) {
 	if _, _, err := runClient(t, nil, "--archive", "hello"); err != nil {
 		t.Fatalf("--archive hello: %v", err)
 	}
-	if got := leftovers(t); len(got) != 0 {
+	if got := archiveTempLeftovers(t); len(got) != 0 {
 		t.Errorf("temp dir holds %v after a success, want nothing", got)
 	}
 
@@ -303,7 +411,7 @@ func TestArchiveTempFileRemoved(t *testing.T) {
 	if _, _, err := runClient(t, nil, "--archive", "hello"); err == nil {
 		t.Fatalf("--archive hello against a 500 server succeeded, want the failure")
 	}
-	if got := leftovers(t); len(got) != 0 {
+	if got := archiveTempLeftovers(t); len(got) != 0 {
 		t.Errorf("temp dir holds %v after an upload failure, want nothing", got)
 	}
 }

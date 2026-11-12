@@ -1,6 +1,9 @@
 # Plan: upload a folder as an archive
 
-Status: draft. Decisions in `docs/decisions/0010-archive-upload.md`. Extends
+Status: implemented on `main` (`34f8e0f..7355eac`), with live end-to-end proof; reviewed as
+"ship with fixes", and both review fixes are on `main` — archive entry names are judged before
+they join (commit `5b34be9`), and `sandbin-client --archive` keeps its stdin and size refusals (the
+commit carrying this line). Decisions in `docs/decisions/0010-archive-upload.md`. Extends
 `docs/plans/0001-basic-implementation.md` (file routes) and sits beside
 `docs/plans/0009-bin-metadata.md`.
 
