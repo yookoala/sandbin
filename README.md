@@ -1,4 +1,4 @@
-# Review Bin
+# Sandbin
 
 A simple PUT/GET server for CLI agents in sandbox to submit HTML / ANSI mock up previews
 or simple prototyping.
