@@ -1,6 +1,6 @@
 # Sandbin
 
-[![CI status](https://github.com/yookoala/sandbin/actions/workflows/CI.yml/badge.svg?branch=main&event=push)](https://github.com/yookoala/sandbin/actions/workflows/CI.yml?query=branch%3Amain)
+[![CI status](https://github.com/yookoala/sandbin/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/yookoala/sandbin/actions/workflows/ci.yml?query=branch%3Amain)
 
 A simple PUT/GET server for CLI agents in sandbox to submit HTML / ANSI mock up previews
 or simple prototyping.
