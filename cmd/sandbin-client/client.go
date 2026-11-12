@@ -15,6 +15,8 @@ const (
 	binPasswordHeader    = "X-Bin-Password"
 	binTitleHeader       = "X-Bin-Title"
 	binDescriptionHeader = "X-Bin-Description"
+	extractHeader        = "X-Extract"
+	extractedCountHeader = "X-Extracted-Count"
 )
 
 // apiError is a non-2xx answer: the status, the plain-text body the server wrote,
@@ -52,10 +54,11 @@ func newAPIError(resp *http.Response, body []byte) *apiError {
 // a bad API key charges this address a 30 minute block that grows with every
 // failure, so a retrying client only digs its own hole deeper.
 type client struct {
-	http     *http.Client
-	base     *url.URL // the server's base URL, with no trailing slash
-	apiKey   string
-	password string // empty leaves the bin open
+	http      *http.Client
+	base      *url.URL // the server's base URL, with no trailing slash
+	apiKey    string
+	password  string // empty leaves the bin open
+	noExtract bool   // --no-extract: every PUT of the run carries the X-Extract opt-out header
 }
 
 // newClient checks the base URL once, so a bad --url fails before any request.
@@ -105,7 +108,7 @@ func (c *client) createBin(title, description string) (string, error) {
 	if description != "" {
 		req.Header.Set(binDescriptionHeader, description)
 	}
-	_, body, err := c.do(req)
+	_, _, body, err := c.do(req)
 	if err != nil {
 		return "", err
 	}
@@ -129,28 +132,38 @@ func binHashFromPath(body string) (string, error) {
 }
 
 // putFile PUTs one body under a bin and reports whether the server created the file
-// (201) or replaced it (200).
-func (c *client) putFile(bin, name string, body io.Reader) (bool, error) {
+// (201) or replaced it (200), plus the count the server extracted it into when the
+// answer carries X-Extracted-Count. --no-extract sends the opt-out header on every PUT.
+func (c *client) putFile(bin, name string, body io.Reader) (bool, int, error) {
 	req, err := http.NewRequest(http.MethodPut, c.fileURL(bin, name), body)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	req.Header.Set(apiKeyHeader, c.apiKey)
 	if c.password != "" {
 		// The server takes any user name; the bin hash is the one the README uses.
 		req.SetBasicAuth(bin, c.password)
 	}
-	status, _, err := c.do(req)
+	if c.noExtract {
+		req.Header.Set(extractHeader, "keep")
+	}
+	status, header, _, err := c.do(req)
 	if err != nil {
-		return false, err
+		return false, 0, err
+	}
+	extracted := 0
+	if raw := header.Get(extractedCountHeader); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil {
+			extracted = n
+		}
 	}
 	switch status {
 	case http.StatusCreated:
-		return true, nil
+		return true, extracted, nil
 	case http.StatusOK:
-		return false, nil
+		return false, extracted, nil
 	}
-	return false, fmt.Errorf("%s: unexpected status %d", req.URL, status)
+	return false, 0, fmt.Errorf("%s: unexpected status %d", req.URL, status)
 }
 
 // patchBinMeta PATCHes the bin base with the metadata headers it carries: a nil value says
@@ -171,7 +184,7 @@ func (c *client) patchBinMeta(bin string, title, description *string) error {
 	if description != nil {
 		req.Header.Set(binDescriptionHeader, *description)
 	}
-	status, _, err := c.do(req)
+	status, _, _, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -211,12 +224,12 @@ func (c *client) describeBin(bin string) (string, string, error) {
 	return resp.Header.Get(binTitleHeader), resp.Header.Get(binDescriptionHeader), nil
 }
 
-// do runs one request once and returns a 2xx status and body. Anything else comes
-// back as an *apiError carrying the server's own words.
-func (c *client) do(req *http.Request) (int, []byte, error) {
+// do runs one request once and returns a 2xx status, headers and body. Anything
+// else comes back as an *apiError carrying the server's own words.
+func (c *client) do(req *http.Request) (int, http.Header, []byte, error) {
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("%s %s: %v", req.Method, req.URL, err)
+		return 0, nil, nil, fmt.Errorf("%s %s: %v", req.Method, req.URL, err)
 	}
 	defer resp.Body.Close()
 
@@ -224,10 +237,10 @@ func (c *client) do(req *http.Request) (int, []byte, error) {
 	// broken server from spending the client's memory.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 	if err != nil {
-		return resp.StatusCode, nil, fmt.Errorf("%s %s: read response: %v", req.Method, req.URL, err)
+		return resp.StatusCode, nil, nil, fmt.Errorf("%s %s: read response: %v", req.Method, req.URL, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return resp.StatusCode, nil, newAPIError(resp, body)
+		return resp.StatusCode, nil, nil, newAPIError(resp, body)
 	}
-	return resp.StatusCode, body, nil
+	return resp.StatusCode, resp.Header, body, nil
 }

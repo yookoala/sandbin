@@ -3,14 +3,18 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 )
 
@@ -22,6 +26,9 @@ const (
 	// The same caps the server puts on the two metadata headers.
 	maxTitleBytes       = 200
 	maxDescriptionBytes = 2000
+	// The same caps the server puts on an extracted archive.
+	maxArchiveEntries = 1000
+	maxExtractTotal   = 32 << 20
 )
 
 func main() {
@@ -43,6 +50,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	titleFlag := fs.String("title", "", "single-line title to give the bin, sent as X-Bin-Title")
 	descriptionFlag := fs.String("description", "", "single-line description to give the bin, sent as X-Bin-Description")
 	describe := fs.Bool("describe", false, "print this bin's title and description instead of uploading")
+	archiveFlag := fs.String("archive", "", "upload this folder as one tar.gz the server unpacks into the bin")
+	noExtract := fs.Bool("no-extract", false, "send every upload with X-Extract, so archive bodies are stored raw")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			// The usage has already been printed; asking for it is not a failure.
@@ -69,13 +78,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	// value it carries is the empty string.
 	titleGiven := flagGiven(fs, "title")
 	descriptionGiven := flagGiven(fs, "description")
+	archiveGiven := flagGiven(fs, "archive")
 	// --describe reads one bin and writes nothing, so the flags that write have no place in it.
 	if *describe {
 		if *newBin {
 			return errors.New("--describe reads the bin this run would reuse: --new makes a fresh one")
 		}
-		if fs.NArg() > 0 || *nameFlag != "" {
-			return errors.New("--describe uploads nothing: pass no file arguments and no --name")
+		if fs.NArg() > 0 || *nameFlag != "" || archiveGiven {
+			return errors.New("--describe uploads nothing: pass no file arguments, no --name and no --archive")
 		}
 		if titleGiven || descriptionGiven {
 			return errors.New("--describe only reads: set --title and --description on a run that writes")
@@ -100,6 +110,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	if err != nil {
 		return err
 	}
+	c.noExtract = *noExtract
 
 	dir, err := os.Getwd()
 	if err != nil {
@@ -123,12 +134,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	}
 
 	// A run with no upload targets is refused, unless it came to say what the bin holds:
-	// a metadata flag is a job of its own.
+	// a metadata flag is a job of its own, and --archive brings its own target.
 	metaRun := titleGiven || descriptionGiven
 
 	var names []string
 	var stdinName string
-	if fs.NArg() > 0 || *nameFlag != "" || !metaRun {
+	if fs.NArg() > 0 || *nameFlag != "" || (!archiveGiven && !metaRun) {
 		names, stdinName, err = uploadTargets(fs.Args(), *nameFlag, stdin)
 		if err != nil {
 			return err
@@ -142,6 +153,23 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 		if err != nil {
 			return err
 		}
+	}
+
+	// --archive is checked and built before the bin is chosen too: a folder that
+	// cannot be uploaded makes no request and leaves no bin behind. The temp file
+	// is removed on every exit path, including an upload failure.
+	var archiveFile, archiveName string
+	if archiveGiven {
+		folder, err := cleanArchiveFolder(*archiveFlag)
+		if err != nil {
+			return err
+		}
+		archiveFile, err = buildArchive(folder)
+		if err != nil {
+			return err
+		}
+		defer os.Remove(archiveFile)
+		archiveName = path.Base(folder) + ".tar.gz"
 	}
 
 	bin, protected, justCreated, err := resolveBin(c, dir, *binFlag, *newBin, *titleFlag, *descriptionFlag)
@@ -172,18 +200,33 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 		lines = append(lines, "updated /"+bin+"/")
 	}
 	for _, name := range names {
-		created, err := uploadFile(c, bin, name)
+		created, extracted, err := uploadFile(c, bin, name)
 		if err != nil {
 			return err
 		}
-		lines = append(lines, resultLine(created, c.fileURL(bin, name)))
+		lines = append(lines, resultLine(created, extracted, c.fileURL(bin, name)))
 	}
 	if stdinName != "" {
-		created, err := c.putFile(bin, stdinName, bytes.NewReader(stdinBody))
+		created, extracted, err := c.putFile(bin, stdinName, bytes.NewReader(stdinBody))
 		if err != nil {
 			return err
 		}
-		lines = append(lines, resultLine(created, c.fileURL(bin, stdinName)))
+		lines = append(lines, resultLine(created, extracted, c.fileURL(bin, stdinName)))
+	}
+	if archiveFile != "" {
+		// The folder archive uploads last, after the file arguments and stdin of the
+		// same run. --no-extract sends the opt-out header, so there the archive
+		// itself is what lands in the bin.
+		f, err := os.Open(archiveFile)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		created, extracted, err := c.putFile(bin, archiveName, f)
+		if err != nil {
+			return err
+		}
+		lines = append(lines, resultLine(created, extracted, c.fileURL(bin, archiveName)))
 	}
 
 	lines = append(lines, c.binURL(bin))
@@ -377,11 +420,125 @@ func cleanBinHash(raw string) (string, error) {
 	return hash, nil
 }
 
+// cleanArchiveFolder cleans the --archive folder name the way an upload name is
+// cleaned and insists it names an existing directory relative to the current
+// directory: the base path of a bin must name a folder, so "." and "./" and
+// absolute paths are refused.
+func cleanArchiveFolder(raw string) (string, error) {
+	if raw == "" || strings.HasPrefix(raw, "/") || path.Clean(raw) == "." {
+		return "", errors.New("--archive names a folder")
+	}
+	name, err := cleanUploadName(raw)
+	if err != nil {
+		return "", fmt.Errorf("--archive %q: %v", raw, err)
+	}
+	info, err := os.Stat(name)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s is not a directory", name)
+	}
+	return name, nil
+}
+
+// buildArchive walks the folder with filepath.WalkDir, which is lexicographic so
+// runs are deterministic, and refuses everything the server would refuse anyway:
+// non-regular entries, files over the 1 MiB body cap, more than the 1000 entries
+// an archive may hold, more total bytes than an extraction may unpack, entry
+// paths the server's cleanPath would refuse, and a folder that holds no files at
+// all. What survives goes into a fresh os.CreateTemp .tar.gz whose entries carry
+// the folder's relative path verbatim, so the bin's paths come out exactly
+// folder-relative. The archive file itself is capped at 1 MiB, the cap every PUT
+// body obeys. On any failure the temp file is already removed; the caller removes
+// it on success.
+func buildArchive(folder string) (name string, err error) {
+	tmp, err := os.CreateTemp("", "sandbin-archive-*.tar.gz")
+	if err != nil {
+		return "", err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if err != nil || name != tmpName {
+			os.Remove(tmpName)
+		}
+	}()
+
+	var files, total int64
+	gz := gzip.NewWriter(tmp)
+	tw := tar.NewWriter(gz)
+	err = filepath.WalkDir(folder, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil // a bin's directories are path prefixes, not stored entries
+		}
+		entry := filepath.ToSlash(p)
+		if !d.Type().IsRegular() {
+			return fmt.Errorf("%s is not a regular file", entry)
+		}
+		if _, err := cleanUploadName(entry); err != nil {
+			return fmt.Errorf("%s: %v", entry, err)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Size() > maxBodyBytes {
+			return fmt.Errorf("%s is over 1 MiB", entry)
+		}
+		files++
+		if files > maxArchiveEntries {
+			return errors.New("folder has over 1000 files")
+		}
+		total += info.Size()
+		if total > maxExtractTotal {
+			return errors.New("folder unpacks over 32 MiB")
+		}
+		hdr := &tar.Header{Name: entry, Typeflag: tar.TypeReg, Mode: int64(info.Mode().Perm()), Size: info.Size(), ModTime: info.ModTime()}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(tw, f)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	if files == 0 {
+		return "", errors.New("folder contains no files")
+	}
+	if err := tw.Close(); err != nil {
+		return "", err
+	}
+	if err := gz.Close(); err != nil {
+		return "", err
+	}
+	info, err := tmp.Stat()
+	if err != nil {
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	if info.Size() > maxBodyBytes {
+		return "", errors.New("archive is over 1 MiB")
+	}
+	name = tmpName
+	return name, nil
+}
+
 // uploadFile PUTs one local file under the bin.
-func uploadFile(c *client, bin, name string) (bool, error) {
+func uploadFile(c *client, bin, name string) (bool, int, error) {
 	f, err := os.Open(name)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	defer f.Close()
 	return c.putFile(bin, name, f)
@@ -399,7 +556,14 @@ func readStdin(stdin io.Reader) ([]byte, error) {
 	return body, nil
 }
 
-func resultLine(created bool, url string) string {
+// resultLine is what one upload adds to stdout. An answer that carried
+// X-Extracted-Count says how many files the server unpacked and where they live;
+// the file URL it names is the archive's, and the extracted files sit under the
+// archive name's directory in the bin.
+func resultLine(created bool, extracted int, url string) string {
+	if extracted > 0 {
+		return fmt.Sprintf("extracted %d files into %s", extracted, url)
+	}
 	if created {
 		return "created " + url
 	}

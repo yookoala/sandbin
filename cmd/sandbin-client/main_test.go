@@ -1,14 +1,18 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -32,13 +36,21 @@ type fakeServer struct {
 	log        io.Writer // optional sink that notes each arriving request
 	createBody string    // when set, POST answers with this instead of "/abc1234/"
 
-	mu       sync.Mutex
-	requests int
-	puts     int
-	patches  int
-	failures int
-	bins     map[string]fakeBin // bin hash -> its password and metadata
-	files    map[string]string  // "bin/path" -> stored body
+	// Archive knobs for the archive tests: unpack makes a PUT without X-Extract
+	// extract a gzipped tar body the way the real server does, and putFail, when
+	// non-zero, answers every PUT with that status.
+	unpack  bool
+	putFail int
+
+	mu          sync.Mutex
+	requests    int
+	puts        int
+	patches     int
+	failures    int
+	extractSeen []string           // each PUT's X-Extract value, in arrival order
+	putPaths    []string           // each PUT's URL path, in arrival order
+	bins        map[string]fakeBin // bin hash -> its password and metadata
+	files       map[string]string  // "bin/path" -> stored body
 }
 
 // newFake starts a fake server, exports its url and key as the client's env, and
@@ -62,6 +74,8 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.requests++
 	if r.Method == http.MethodPut {
 		f.puts++
+		f.extractSeen = append(f.extractSeen, r.Header.Get("X-Extract"))
+		f.putPaths = append(f.putPaths, r.URL.Path)
 	}
 	if r.Method == http.MethodPatch {
 		f.patches++
@@ -175,6 +189,33 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The archive branch mirrors the real server's contract: presence of X-Extract
+	// stores the body raw, and otherwise a gzipped tar body is unpacked into files
+	// whose names carry the archive name's directory prefix — the archive name
+	// itself is never stored. putFail answers every PUT with its status.
+	if f.putFail != 0 {
+		http.Error(w, "injected failure", f.putFail)
+		return
+	}
+	if f.unpack && r.Header.Get("X-Extract") == "" && len(body) > 0 && body[0] == 0x1f && body[1] == 0x8b {
+		names, created, err := f.unpackTarGz(first, rest, body)
+		if err != nil {
+			http.Error(w, "corrupt tar.gz archive", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("X-Extracted-Count", strconv.Itoa(len(names)))
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if created {
+			w.WriteHeader(http.StatusCreated)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+		for _, name := range names {
+			fmt.Fprintf(w, "/%s/%s\n", first, name)
+		}
+		return
+	}
+
 	key := first + "/" + rest
 	replaced := f.files[key] != ""
 	f.files[key] = string(body)
@@ -246,6 +287,77 @@ func (f *fakeServer) setBodyLimit(limit int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.bodyLimit = limit
+}
+
+// setUnpack turns the fake's archive branch on, and setPutFail answers every PUT
+// with the given status. Both change from the test goroutine under the handler's lock.
+func (f *fakeServer) setUnpack(on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unpack = on
+}
+
+func (f *fakeServer) setPutFail(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.putFail = status
+}
+
+// extractValues is each PUT's X-Extract value in arrival order, "" when the header
+// was absent, which is how the archive tests assert the opt-out header is sent.
+func (f *fakeServer) extractValues() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.extractSeen...)
+}
+
+// putOrder is each PUT's URL path in arrival order, which is how the archive tests
+// assert the upload order of a combined run.
+func (f *fakeServer) putOrder() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.putPaths...)
+}
+
+// unpackTarGz runs under ServeHTTP's lock. Entries land under the upload name's
+// parent directory like the real server puts them, and the returned names are the
+// bin paths the fake now holds.
+func (f *fakeServer) unpackTarGz(bin, sub string, body []byte) ([]string, bool, error) {
+	gz, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return nil, false, err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	prefix := path.Dir(sub) // "." for an archive at the bin root
+	var names []string
+	created := false
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return names, created, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		if hdr.Typeflag == tar.TypeDir {
+			continue
+		}
+		name := hdr.Name
+		if prefix != "." {
+			name = path.Join(prefix, name)
+		}
+		content, err := io.ReadAll(tr)
+		if err != nil {
+			return nil, false, err
+		}
+		key := bin + "/" + name
+		if _, seen := f.files[key]; !seen {
+			created = true
+		}
+		f.files[key] = string(content)
+		names = append(names, name)
+	}
 }
 
 func (f *fakeServer) setLog(w io.Writer) {
