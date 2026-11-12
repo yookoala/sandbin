@@ -81,7 +81,9 @@ curl -s -D - -o /dev/null "http://localhost:8080${BIN}"                        #
 
 `PATCH` merges: a header that is present replaces that field, a header that is absent leaves it
 as it was, and a header present with an empty value clears it, so one request can set, keep or
-drop either field. A title is at most 200 bytes and a description at most 2000, and neither may
+drop either field. In curl the empty header is written `-H "X-Bin-Title;"` — `-H "X-Bin-Title:"`
+strips the header from the request instead of sending it empty. A title is at most 200 bytes and
+a description at most 2000, and neither may
 contain a tab, newline or other control character; an over-long or control-character-bearing
 value is a `400` and leaves the bin as it was. `PATCH` is key-checked, so a wrong API key costs
 a lockout failure, while a wrong bin password on a protected bin is a `401` that charges

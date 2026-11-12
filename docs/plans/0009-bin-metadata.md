@@ -1,7 +1,10 @@
 # Plan: bin title and description
 
-Status: draft. Decisions in `docs/decisions/0009-bin-metadata.md`. Extends
-`docs/plans/0001-basic-implementation.md` (bins) and sits beside `docs/plans/0008-ip-control-socket.md`.
+Status: implemented on `main` (`fe8116d`, `49f6c31`, `190a4e7`), reviewed as "ship with fixes";
+the review's blocker was this plan's own listing wording, amended below and in
+`docs/decisions/0009-bin-metadata.md`. Decisions in `docs/decisions/0009-bin-metadata.md`.
+Extends `docs/plans/0001-basic-implementation.md` (bins) and sits beside
+`docs/plans/0008-ip-control-socket.md`.
 
 ## What it is
 
@@ -25,16 +28,19 @@ sandbin-client --describe                          print the current title and d
   `UPDATE bins SET title=COALESCE(?,title), description=COALESCE(?,description) WHERE hash=?`
   reporting whether the bin exists.
 - `binRoutes` gains `case http.MethodPatch` → bin base only (`sub != ""` is 405): block guard,
-  key guard with the same charging as `putFile`, `GetBin` 404, `binAuthorized` 401 (uncharged),
-  length/control validation 400, then `UpdateBinMeta`; the answer is `200`
+  key guard with the same charging as `putFile`, length/control validation `400`, `GetBin` 404,
+  `binAuthorized` 401 (uncharged), then `UpdateBinMeta`; the answer is `200`
   `{"title":...,"description":...}` json of the resulting row. A PATCH body is ignored.
 - Length caps: title 200 bytes, description 2000 bytes (UTF-8 bytes); control characters
   (< 0x20 or 0x7f) refused with `400` — belt and braces over what the transport already frames.
 - `getFile` at the bin base sets the two response headers when the stored value is non-empty,
   before either the raw-index or the listing branch; sub-path GETs carry no metadata headers.
-  `renderListing` puts the title in `<title>`/`<h1>` (falling back to today's `/<hash>/` when
-  empty) and a non-empty description in an escaped `<p>`; with no metadata the output stays
-  byte-identical to today.
+  `renderListing` keeps `/<hash>/` in `<title>`/`<h1>` — the browser tab stays the bin path, the
+  identifier everything else addresses bins by — and when metadata exists appends one escaped
+  block above the file list, `<p class="bin-meta"><strong>title</strong><br>description</p>` with
+  a one-line `<style>` that appears only together with it; with no metadata the output stays
+  byte-identical to today. (Amended after review; this line originally asked for the title inside
+  `<title>`/`<h1>` — see the Outcome.)
 - Nothing about the control socket, the ip verbs, the lockout rules or the file routes changes.
 
 ## Client behaviour
@@ -146,3 +152,60 @@ sandbin-client --describe                          print the current title and d
 Multi-line descriptions, a json bin API, per-file metadata, listing/searching metadata across all
 bins, metadata on the control socket, HEAD support on bin paths (still 405), storing metadata in
 the client state file, and changing anything about creation auth or bin passwords.
+
+## Outcome
+
+Tests went 145 to 170 top-level (123 + 2 subtests in `cmd/sandbin`, 47 in `cmd/sandbin-client`);
+`gofmt`, `go vet`, `go test -count=1` and `go test -race` green at HEAD, verified again by the
+review, which also confirmed zero rewritten pre-existing assertions (only `CreateBin` arity call
+sites and a fakeServer harness extension).
+
+The review verdict was **ship with fixes**, with the one blocker in the docs, not the code: this
+plan and the decisions' Visibility row said the listing puts the title in `<title>`/`<h1>`, while
+the shipped `renderListing` keeps `/<hash>/` there and renders metadata as the escaped
+`<p class="bin-meta">` block the README describes. The review judged — and this plan now agrees —
+that the docs should follow the code: the browser tab keeps the bin path, the stable identifier
+everything addresses bins by, the page body still carries title and description, and the code,
+tests and README already assert that shape consistently. Both docs were amended (this commit).
+The implementer had justified the deviation with a quote about "a small CSS rule in `layout.go`"
+— there is no `layout.go` in the repo, before or after this plan, and the decisions file contains
+no such sentence: the citation was unfounded, and the rationale recorded here is the review's, not
+the implementer's. Other implementer-supplied citations from this plan were spot-checked and are
+unreliable except where they reproduce against the code.
+
+Verified live by the review against a 18223 server and the `3476383`-era binary side by side:
+migration both directions on real dbs (old writes → new opens: columns added, six GET shapes
+byte-identical, zero metadata headers, PATCH works; new migrates → old binary POSTs, PUTs, lists
+and renders ANSI unchanged with the metadata rows intact; half-migrated table completes on the
+next open; four reopens leave db md5 and rows unchanged); all nine PATCH present/absent/empty
+combinations with the answer equal to the stored row every time, PATCH body ignored (even over
+the PUT cap), 405 on sub paths and root, 404 unknown bin; charging correct throughout (wrong-key
+PATCH `403→429` with `Retry-After` 1799 then 3599, blocked POST charged, wrong bin password 401
+uncharged, GET and `--describe` charge nothing); the full byte-identity sweep of untouched paths
+including the whole ip verb family and the control socket, and the flagless client reproducing the
+old client word for word; injection discipline (a listing parsed with `html.parser` after
+`<script>alert(1)</script>` and `x" onload="y` metadata holds 0 script elements and 0 onload
+attributes; unicode round-trips in headers and listing); limits enforced in all three places with
+byte-exact boundaries (100×é accepted, 200×é refused; 666×漢 accepted, 667 refused) and client
+refusals making zero requests against a dead port; `--describe` keyless on open bins, one request
+through a counting proxy, zero side effects, protected-bin 401 with the key-hint line, all
+refusals verbatim, `--title ''` clearing via flag-given semantics; every README example run
+verbatim; container build, metadata create/patch/persist-through-restart on a fresh volume, and
+the quadlet unit generated unchanged.
+
+Corrections that came out of the review: this plan's PATCH guard-order wording now matches the
+code (validation `400` before `GetBin` 404 — an unknown bin with an over-long title answers 400,
+harmless and charging-neutral either way), and the README shows the curl empty-header syntax
+`-H "X-Bin-Title;"`, because `-H "X-Bin-Title:"` silently strips the header — the clearing feature
+was unusable via curl without that line.
+
+Accepted as they are: a control character in a header can also be bounced by Go's own transport
+with a bare `400 Bad Request` (DEL) before reaching our wording (a tab reaches it) — right
+outcome, inconsistent text; the metadata stdout line `updated /<hash>/` is relative while upload
+lines are absolute (plan-internal inconsistency, tidied wording deferred); the client's local
+refusals mirror the server's wording exactly, which is deliberate; and a batch of defensive error
+arms stays untested by Go (`patchBin`'s store-failure and marshal arms, the concurrent-PATCH
+`!updated` 404 — not deterministically triggerable, code inspection only, the `store.go`
+ALTER-failure arm, client transport-error paths) — proven by hand or accepted, as in earlier
+plans. Left unproven here: quadlet unit execution (dryrun only) and a genuinely untrusted public
+socket, both standing sandbox limits.
