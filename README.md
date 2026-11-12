@@ -12,7 +12,11 @@ Client may specify additional password protections (Basic Auth) to the bin it cr
 The base path of the bin, if not specified with an index.html, will automatically has
 directory listing for the items in it.
 
-All contents are stored in a single sqlite file.
+A bin can also say what it holds: a one-line title and description, set when it is created,
+edited afterwards with PATCH, and read back at the bin base.
+
+All contents are stored in a single sqlite file. A db written before metadata existed gains the
+columns for it the next time a `serve` opens it, so upgrading needs no manual step.
 
 ## Usage
 
@@ -63,8 +67,32 @@ PBIN=$(curl -s -X POST -H "X-API-Key: your-key" -H "X-Bin-Password: sesame" http
 curl -u "${PBIN//\//}:sesame" http://localhost:8080${PBIN}notes.md
 ```
 
+Say what a bin holds. `X-Bin-Title` and `X-Bin-Description` on the create store a one-line
+title and description with the bin, `PATCH /{hash}/` edits them afterwards, and every `GET` on
+the bin base answers with both as response headers:
+
+```sh
+BIN=$(curl -s -X POST -H "X-API-Key: your-key" -H "X-Bin-Title: Button grid" \
+  -H "X-Bin-Description: A grid of pressable buttons" http://localhost:8080/)   # -> /abc1234/
+curl -s -X PATCH -H "X-API-Key: your-key" -H "X-Bin-Description: A grid, keyboard, and pointer" \
+  "http://localhost:8080${BIN}"                                                 # -> {"title":"Button grid","description":"A grid, keyboard, and pointer"}
+curl -s -D - -o /dev/null "http://localhost:8080${BIN}"                        # -> … X-Bin-Title / X-Bin-Description
+```
+
+`PATCH` merges: a header that is present replaces that field, a header that is absent leaves it
+as it was, and a header present with an empty value clears it, so one request can set, keep or
+drop either field. A title is at most 200 bytes and a description at most 2000, and neither may
+contain a tab, newline or other control character; an over-long or control-character-bearing
+value is a `400` and leaves the bin as it was. `PATCH` is key-checked, so a wrong API key costs
+a lockout failure, while a wrong bin password on a protected bin is a `401` that charges
+nothing. Metadata travels on headers, which keeps the stored bytes untouched: the bin base still
+serves a raw `index.html` byte for byte (metadata visible in the response headers, not in the
+document), and only the directory listing page carries it, as a `<p class="bin-meta">` line
+above the file list. A public bin's metadata is public: anyone who can read the bin can read
+what it says it holds.
+
 PUT bodies are capped at 1 MiB. `403` is a bad API key, `401` a missing bin password,
-`404` an unknown bin or path, `405` an unsupported method, `400` a rejected path,
+`404` an unknown bin or path, `405` an unsupported method, `400` a rejected path or metadata,
 `413` an oversized body, `429` an address blocked for bad API keys. A `HEAD` answers `405`:
 read the headers of a `GET` with `curl -s -D - -o /dev/null <url>`.
 
@@ -80,7 +108,8 @@ go build -o sandbin-client ./cmd/sandbin-client
 
 `SANDBIN_URL` (default `http://localhost:8080`), `SANDBIN_API_KEY` and
 `SANDBIN_BIN_PASSWORD` are the settings; `--url` and `--api-key` override their variables,
-and a missing key is a startup error that makes no request at all. `SANDBIN_BIN_PASSWORD`
+and a missing key is a startup error that makes no request at all — `--describe` is the one run
+that asks for no key. `SANDBIN_BIN_PASSWORD`
 has no flag on purpose, so a bin password never lands on a command line: when it is set it
 goes out as `X-Bin-Password` on the create and as Basic Auth (user name = bin hash) on every
 upload. `--bin <hash>` uploads into a bin you already have, `--new` forces a fresh one, and
@@ -98,6 +127,32 @@ sandbin-client prototype/index.html prototype/app.js prototype/style.css
 make 2>&1 | sandbin-client --name build.ansi
 # updated http://localhost:8080/abc1234/build.ansi
 ```
+
+`--title <text>` and `--description <text>` say what the bin holds. They go out as
+`X-Bin-Title` and `X-Bin-Description`: on the `POST` when the run creates the bin, and on a
+`PATCH /abc1234/` when it already exists. A run with metadata flags and no files or stdin is a
+run of its own — it describes the bin and uploads nothing — so notes can follow the uploads or
+come before them, and giving a flag an empty value clears that field instead of leaving it
+alone. `--describe` uploads nothing at all and prints what the bin already says about itself,
+read from the bin base; it needs no API key, because a public bin's metadata is public, and a
+protected bin is read with `SANDBIN_BIN_PASSWORD` as the bin password. A title is at most 200
+bytes and a description at most 2000, neither may span lines or carry control characters, and
+`sandbin-client` refuses one that is too long locally rather than spending a request on it.
+`--describe` takes no file arguments and no stdin, so it can only ever read.
+
+```sh
+sandbin-client --title 'Button grid' --description 'A grid of pressable buttons'
+# updated /abc1234/
+# http://localhost:8080/abc1234/
+sandbin-client --describe
+# title: Button grid
+# description: A grid of pressable buttons
+```
+
+The two fields show up wherever the bin is read: as `X-Bin-Title` and `X-Bin-Description` on any
+`GET` of the bin base, and as a line above the file list on the directory listing the bin base
+serves when the bin has no `index.html`. A bin with no metadata listed is listed exactly as it
+was before metadata existed.
 
 The bin is remembered in `.sandbin.json` in the working directory:
 
