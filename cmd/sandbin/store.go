@@ -186,6 +186,46 @@ ON CONFLICT (bin_hash, path) DO UPDATE SET content=excluded.content, size=exclud
 	return replaced, err
 }
 
+// FilePut is one file of a PutFiles batch: a validated path and its bytes.
+type FilePut struct {
+	Path    string
+	Content []byte
+}
+
+// PutFiles stores an archive's whole batch in one transaction, each path with the
+// same SELECT-then-upsert PutFile does so created and replaced are exact. Any
+// error rolls the whole batch back: extraction stores all entries or none.
+func (s *Store) PutFiles(binHash string, files []FilePut) (created, replaced int, err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+
+	for _, f := range files {
+		var existing int
+		err := tx.QueryRow(`SELECT 1 FROM files WHERE bin_hash=? AND path=?`, binHash, f.Path).Scan(&existing)
+		switch {
+		case err == nil:
+			replaced++
+		case errors.Is(err, sql.ErrNoRows):
+			created++
+		default:
+			return 0, 0, err
+		}
+		if _, err := tx.Exec(`
+INSERT INTO files (bin_hash, path, content, size, updated_at) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (bin_hash, path) DO UPDATE SET content=excluded.content, size=excluded.size, updated_at=excluded.updated_at`,
+			binHash, f.Path, f.Content, int64(len(f.Content)), time.Now().UTC().Format(time.RFC3339)); err != nil {
+			return 0, 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	return created, replaced, nil
+}
+
 func (s *Store) GetFile(binHash, path string) ([]byte, bool, error) {
 	var content []byte
 	err := s.db.QueryRow(`SELECT content FROM files WHERE bin_hash=? AND path=?`, binHash, path).Scan(&content)

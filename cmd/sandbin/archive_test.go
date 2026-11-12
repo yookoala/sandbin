@@ -1,0 +1,781 @@
+package main
+
+import (
+	"archive/tar"
+	"archive/zip"
+	"bytes"
+	"compress/gzip"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+// zipEntry is one archive/zip entry for the test builders. header tweaks the
+// FileHeader before it is written, which is how symlink external attributes and
+// other shapes a plain zip tool would never name get built.
+type zipEntry struct {
+	name   string
+	body   string
+	header func(*zip.FileHeader)
+}
+
+// makeZip builds a zip from entries; a name ending in "/" is a directory entry.
+func makeZip(t *testing.T, entries ...zipEntry) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, e := range entries {
+		hdr := &zip.FileHeader{Name: e.name, Method: zip.Deflate}
+		if e.header != nil {
+			e.header(hdr)
+		}
+		w, err := zw.CreateHeader(hdr)
+		if err != nil {
+			t.Fatalf("zip CreateHeader %q: %v", e.name, err)
+		}
+		if _, err := io.WriteString(w, e.body); err != nil {
+			t.Fatalf("zip write %q: %v", e.name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// makeZipWithEncryption flips general purpose bit 0 (encrypted) on every entry's local
+// and central header. Go's zip writer cannot write an encrypted entry, so the flag is
+// what a foreign zip would carry; the bytes behind it stay plain.
+func makeZipWithEncryption(t *testing.T, entries ...zipEntry) []byte {
+	t.Helper()
+	out := makeZip(t, entries...)
+	for _, sig := range [][]byte{[]byte("PK\x03\x04"), []byte("PK\x01\x02")} {
+		flagOffset := 6
+		if sig[3] == 0x02 {
+			flagOffset = 8 // the central directory header, which is what readers trust
+		}
+		for start := 0; start < len(out); {
+			i := bytes.Index(out[start:], sig)
+			if i < 0 {
+				break
+			}
+			i += start
+			out[i+flagOffset] |= 0x1
+			start = i + 1
+		}
+	}
+	return out
+}
+
+// tarEntry is one archive/tar entry for the test builders.
+type tarEntry struct {
+	hdr  tar.Header
+	body string
+}
+
+// makeTar builds a USTAR tar, gzipped when gz is true. ModTime is fixed so runs are
+// deterministic, and an entry may name its own Format when USTAR cannot hold it.
+func makeTar(t *testing.T, gz bool, entries ...tarEntry) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	var sink io.Writer = &buf
+	var gw *gzip.Writer
+	if gz {
+		gw = gzip.NewWriter(&buf)
+		sink = gw
+	}
+	tw := tar.NewWriter(sink)
+	for i := range entries {
+		hdr := entries[i].hdr
+		if hdr.Typeflag != tar.TypeXGlobalHeader {
+			hdr.ModTime = time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+			if hdr.Format == 0 {
+				hdr.Format = tar.FormatUSTAR
+			}
+		}
+		if hdr.Size == 0 && entries[i].body != "" {
+			hdr.Size = int64(len(entries[i].body))
+		}
+		if err := tw.WriteHeader(&hdr); err != nil {
+			t.Fatalf("tar WriteHeader %q: %v", hdr.Name, err)
+		}
+		if entries[i].body != "" {
+			if _, err := io.WriteString(tw, entries[i].body); err != nil {
+				t.Fatalf("tar write %q: %v", hdr.Name, err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
+	if gw != nil {
+		if err := gw.Close(); err != nil {
+			t.Fatalf("gzip close: %v", err)
+		}
+	}
+	return buf.Bytes()
+}
+
+func tarFile(name, body string) tarEntry {
+	return tarEntry{hdr: tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0644, Size: int64(len(body))}, body: body}
+}
+
+func tarDir(name string) tarEntry {
+	return tarEntry{hdr: tar.Header{Name: name, Typeflag: tar.TypeDir, Mode: 0755}}
+}
+
+// bombZipBody builds a highly compressible bomb: count entries of 1 MiB of zeros each,
+// a body far under 1 MiB that unpacks past the 32 MiB total cap.
+func bombZipBody(t *testing.T, count int) []byte {
+	t.Helper()
+	zeros := strings.Repeat("\x00", 1<<20)
+	var entries []zipEntry
+	for i := range count {
+		entries = append(entries, zipEntry{name: fmt.Sprintf("z%03d.txt", i), body: zeros})
+	}
+	return makeZip(t, entries...)
+}
+
+// listingPaths reads the bin's stored paths straight from the store, which is how
+// these tests say exactly what an upload left behind.
+func listingPaths(t *testing.T, s *server, hash string) []string {
+	t.Helper()
+	files, err := s.store.ListFiles(hash)
+	if err != nil {
+		t.Fatalf("ListFiles(%q): %v", hash, err)
+	}
+	var paths []string
+	for _, f := range files {
+		paths = append(paths, f.Path)
+	}
+	return paths
+}
+
+func TestDetectArchive(t *testing.T) {
+	zipBody := makeZip(t, zipEntry{name: "a.txt", body: "a"})
+	tarBody := makeTar(t, false, tarFile("a.txt", "a"))
+	tgzBody := makeTar(t, true, tarFile("a.txt", "a"))
+
+	for _, tc := range []struct {
+		name string
+		body []byte
+		want archiveKind
+		err  string
+	}{
+		{"bundle.zip", zipBody, archiveZip, ""},
+		{"BUNDLE.ZIP", zipBody, archiveZip, ""},
+		{"bundle.tar", tarBody, archiveTar, ""},
+		{"bundle.tar.gz", tgzBody, archiveTarGz, ""},
+		{"bundle.tgz", tgzBody, archiveTarGz, ""},
+		// The magic decides: a .tgz name holding a zip is unzipped, a .zip name
+		// holding gzipped tar is gunzipped, a .tar.gz name holding a plain tar is untarred.
+		{"bundle.tgz", zipBody, archiveZip, ""},
+		{"bundle.zip", tgzBody, archiveTarGz, ""},
+		{"bundle.tar.gz", tarBody, archiveTar, ""},
+		// An empty zip is still a zip.
+		{"bundle.zip", makeZip(t), archiveZip, ""},
+		// Ordinary names are never sniffed, not even when they hold a real archive.
+		{"notes.txt", zipBody, archiveNone, ""},
+		{"bundle.bin", tarBody, archiveNone, ""},
+		// An archive-looking name holding no magic is the one refusal.
+		{"notes.zip", []byte("just text\n"), archiveNone, "not a zip, tar or tar.gz archive"},
+		{"notes.tgz", zipBody[:3], archiveNone, "not a zip, tar or tar.gz archive"},
+	} {
+		kind, err := detectArchive(tc.name, tc.body)
+		if kind != tc.want {
+			t.Errorf("detectArchive(%q) = %d, want %d", tc.name, kind, tc.want)
+		}
+		switch {
+		case tc.err == "" && err != nil:
+			t.Errorf("detectArchive(%q) err = %v, want none", tc.name, err)
+		case tc.err != "" && (err == nil || err.Error() != tc.err):
+			t.Errorf("detectArchive(%q) err = %v, want %q", tc.name, err, tc.err)
+		}
+	}
+}
+
+// TestZipUploadExtractsIntoParentDir is the destination rule end to end: the entries
+// land under site/, the archive name itself is absent from the listing, and extracted
+// entries serve and list like normal files.
+func TestZipUploadExtractsIntoParentDir(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	body := makeZip(t,
+		zipEntry{name: "index.html", body: "<h1>Bundle</h1>"},
+		zipEntry{name: "css/", body: ""},
+		zipEntry{name: "css/app.css", body: "body { color: red }\n"},
+		zipEntry{name: "report.ansi", body: "\x1b[1mReport\x1b[0m done\n"},
+	)
+	rec := put(t, s, base+"site/bundle.zip", "test-key", string(body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("PUT bundle.zip = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", ct)
+	}
+	if got := rec.Header().Get("X-Extracted-Count"); got != "3" {
+		t.Errorf("X-Extracted-Count = %q, want 3", got)
+	}
+	wantBody := "/" + hash + "/site/index.html\n/" + hash + "/site/css/app.css\n/" + hash + "/site/report.ansi"
+	if rec.Body.String() != wantBody {
+		t.Errorf("PUT body =\n%q\nwant\n%q", rec.Body.String(), wantBody)
+	}
+
+	got := listingPaths(t, s, hash)
+	if strings.Join(got, ",") != "site/css/app.css,site/index.html,site/report.ansi" {
+		t.Errorf("listing = %v, want the extracted paths with bundle.zip absent", got)
+	}
+
+	rec = get(t, s, base+"site/css/app.css")
+	if rec.Code != http.StatusOK || rec.Body.String() != "body { color: red }\n" {
+		t.Errorf("GET site/css/app.css = %d, body %q", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/css; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/css; charset=utf-8", ct)
+	}
+
+	rec = get(t, s, base+"site/report.ansi")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET site/report.ansi = %d, want %d", rec.Code, http.StatusOK)
+	}
+	wantANSI := `<pre class="ansi"><span style="font-weight:bold">Report</span> done` + "\n</pre>"
+	if rec.Body.String() != wantANSI {
+		t.Errorf("rendered ANSI = %q, want %q", rec.Body.String(), wantANSI)
+	}
+}
+
+// TestExtractedIndexHTMLBecomesCoverPage is the after-extraction rule: an index.html
+// entry at the bin root takes over the bin base exactly like a plain PUT of it.
+func TestExtractedIndexHTMLBecomesCoverPage(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+
+	body := makeTar(t, true, tarFile("index.html", "<h1>From the archive</h1>"))
+	if rec := put(t, s, base+"site.tar.gz", "test-key", string(body)); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT site.tar.gz = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	rec := get(t, s, base)
+	if rec.Code != http.StatusOK || rec.Body.String() != "<h1>From the archive</h1>" {
+		t.Errorf("GET bin base = %d, body %q, want the extracted index.html served raw", rec.Code, rec.Body.String())
+	}
+}
+
+// TestTarAndTarGzUploadsExtract covers the two tar shapes, including the "./" entry
+// names a -C pack gives its files and a pax global header record, which describes the
+// archive and is skipped rather than stored or refused.
+func TestTarAndTarGzUploadsExtract(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	body := makeTar(t, false,
+		tarDir("site/"),
+		tarFile("site/./index.html", "<p>dot slash</p>"),
+		tarFile("site/css/app.css", "p { margin: 0 }\n"),
+	)
+	if rec := put(t, s, base+"plain.tar", "test-key", string(body)); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT plain.tar = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	got := listingPaths(t, s, hash)
+	if strings.Join(got, ",") != "site/css/app.css,site/index.html" {
+		t.Errorf("tar listing = %v, want the validated entries at the parent dir", got)
+	}
+
+	pax := makeTar(t, true,
+		tarEntry{hdr: tar.Header{Typeflag: tar.TypeXGlobalHeader, Format: tar.FormatPAX,
+			PAXRecords: map[string]string{"comment": "a global record"}}},
+		tarFile("notes.md", "# Tgz\n"),
+	)
+	if rec := put(t, s, base+"gz.tgz", "test-key", string(pax)); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT gz.tgz = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if rec := get(t, s, base+"notes.md"); rec.Body.String() != "# Tgz\n" {
+		t.Errorf("GET notes.md body = %q", rec.Body.String())
+	}
+	got = listingPaths(t, s, hash)
+	if !strings.Contains(strings.Join(got, ","), "notes.md") || strings.Contains(strings.Join(got, ","), "PaxHeaders") {
+		t.Errorf("listing = %v, want notes.md with the pax record left out", got)
+	}
+}
+
+// TestXExtractStoresRaw is the opt-out in all three curl shapes: present at all, any
+// value including empty, the archive body is stored and served byte for byte.
+func TestXExtractStoresRaw(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+	body := makeZip(t, zipEntry{name: "a.txt", body: "a"})
+
+	for _, shape := range []struct {
+		name  string
+		file  string
+		setup func(req *http.Request)
+	}{
+		{"bare", "notes-bare.zip", func(req *http.Request) { req.Header["X-Extract"] = []string{} }},
+		{"empty value", "notes-empty.zip", func(req *http.Request) { req.Header.Set("X-Extract", "") }},
+		{"keep", "notes-keep.zip", func(req *http.Request) { req.Header.Set("X-Extract", "keep") }},
+	} {
+		req := httptest.NewRequest(http.MethodPut, base+shape.file, strings.NewReader(string(body)))
+		req.Header.Set("X-API-Key", "test-key")
+		shape.setup(req)
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("PUT X-Extract %s = %d, want %d; body %q", shape.name, rec.Code, http.StatusCreated, rec.Body.String())
+		}
+		if rec.Body.String() != "/"+hash+"/"+shape.file {
+			t.Errorf("X-Extract %s body = %q, want the plain PUT line", shape.name, rec.Body.String())
+		}
+		if got := rec.Header().Get("X-Extracted-Count"); got != "" {
+			t.Errorf("X-Extract %s carried X-Extracted-Count %q, want none", shape.name, got)
+		}
+		rec = get(t, s, base+shape.file)
+		if rec.Body.String() != string(body) {
+			t.Errorf("GET after X-Extract %s did not return the archive bytes unchanged", shape.name)
+		}
+	}
+	if got := listingPaths(t, s, hash); strings.Join(got, ",") != "notes-bare.zip,notes-empty.zip,notes-keep.zip" {
+		t.Errorf("listing = %v, want the three raw archives", got)
+	}
+}
+
+// TestZipSlipRefusedTheWholeArchive is the headline: every hostile entry name refuses
+// the whole archive with cleanPath's own words and stores nothing at all.
+func TestZipSlipRefusedTheWholeArchive(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	for _, bad := range []struct {
+		entry string
+		want  string
+	}{
+		{"../escape", "path must not escape the bin"},
+		{"a/../../x", "path must not escape the bin"},
+		{"/etc/passwd", "path must be relative"},
+		{strings.Repeat("a/", 16) + "x", "path has too many segments"},
+		{"bad\nname.txt", "path may not contain control characters"},
+		{"bad\x00name.txt", "path may not contain control characters"},
+		{"..\x7f..\\x", "path may not contain control characters"},
+		{"..\\..\\x", "path must not escape the bin"}, // the backslashes become slashes first
+	} {
+		body := makeZip(t,
+			zipEntry{name: "fine.txt", body: "fine"},
+			zipEntry{name: bad.entry, body: "hostile"},
+		)
+		rec := put(t, s, base+"bundle.zip", "test-key", string(body))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("PUT zip with entry %q = %d, want %d; body %q", bad.entry, rec.Code, http.StatusBadRequest, rec.Body.String())
+			continue
+		}
+		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != bad.want {
+			t.Errorf("zip entry %q body = %q, want %q", bad.entry, got, bad.want)
+		}
+		if got := listingPaths(t, s, hash); len(got) != 0 {
+			t.Errorf("zip entry %q stored %v, want the whole archive refused", bad.entry, got)
+		}
+	}
+
+	// A PC zip's ordinary backslash separator is converted and lands as a normal path.
+	body := makeZip(t, zipEntry{name: `sub\page.html`, body: "<p>backslash</p>"})
+	if rec := put(t, s, base+"pc.zip", "test-key", string(body)); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT pc.zip = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if got := listingPaths(t, s, hash); strings.Join(got, ",") != "sub/page.html" {
+		t.Errorf("listing = %v, want sub/page.html", got)
+	}
+}
+
+// TestTarHostileEntriesRefused keeps the same refusal for tar entry names, where
+// backslashes stay backslashes and land on cleanPath's own rule.
+func TestTarHostileEntriesRefused(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	for _, bad := range []struct {
+		entry string
+		want  string
+	}{
+		{"../escape", "path must not escape the bin"},
+		{"/etc/passwd", "path must be relative"},
+		{`a\b`, "path may not contain backslashes"},
+	} {
+		body := makeTar(t, true, tarFile("fine.txt", "fine"), tarFile(bad.entry, "hostile"))
+		rec := put(t, s, base+"bundle.tar.gz", "test-key", string(body))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("PUT tar.gz with entry %q = %d, want %d; body %q", bad.entry, rec.Code, http.StatusBadRequest, rec.Body.String())
+			continue
+		}
+		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != bad.want {
+			t.Errorf("tar entry %q body = %q, want %q", bad.entry, got, bad.want)
+		}
+		if got := listingPaths(t, s, hash); len(got) != 0 {
+			t.Errorf("tar entry %q stored %v, want the whole archive refused", bad.entry, got)
+		}
+	}
+}
+
+// TestNonRegularEntriesRefused names the entry: a bin holds blobs, not a filesystem.
+func TestNonRegularEntriesRefused(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	symlink := makeTar(t, true, tarFile("ok.txt", "ok"),
+		tarEntry{hdr: tar.Header{Name: "link", Typeflag: tar.TypeSymlink, Linkname: "ok.txt", Mode: 0777}})
+	hardlink := makeTar(t, true, tarEntry{hdr: tar.Header{Name: "hard", Typeflag: tar.TypeLink, Linkname: "ok.txt", Mode: 0644}})
+	charDev := makeTar(t, true, tarEntry{hdr: tar.Header{Name: "tty", Typeflag: tar.TypeChar, Mode: 0660}})
+	blockDev := makeTar(t, true, tarEntry{hdr: tar.Header{Name: "disk", Typeflag: tar.TypeBlock, Mode: 0660}})
+	fifo := makeTar(t, true, tarEntry{hdr: tar.Header{Name: "pipe", Typeflag: tar.TypeFifo, Mode: 0644}})
+
+	for _, tc := range []struct {
+		body []byte
+		want string
+	}{
+		{symlink, "archive contains a symlink link"},
+		{hardlink, "archive contains a hardlink hard"},
+		{charDev, "archive contains a device tty"},
+		{blockDev, "archive contains a device disk"},
+		{fifo, "archive contains a fifo pipe"},
+	} {
+		rec := put(t, s, base+"bundle.tar.gz", "test-key", string(tc.body))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("PUT = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+			continue
+		}
+		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != tc.want {
+			t.Errorf("body = %q, want %q", got, tc.want)
+		}
+		if got := listingPaths(t, s, hash); len(got) != 0 {
+			t.Errorf("refused tar stored %v, want nothing", got)
+		}
+	}
+
+	// A zip names a symlink through its external attributes.
+	zipSymlink := makeZip(t, zipEntry{name: "ok.txt", body: "ok"},
+		zipEntry{name: "link", body: "ok.txt", header: func(h *zip.FileHeader) {
+			h.CreatorVersion = 3<<8 | 20 // creatorUnix<<8 | zipVersion20
+			h.ExternalAttrs = 0o120777 << 16
+		}})
+	rec := put(t, s, base+"bundle.zip", "test-key", string(zipSymlink))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PUT zip symlink = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "archive contains a symlink link" {
+		t.Errorf("body = %q, want %q", got, "archive contains a symlink link")
+	}
+
+	// An entry zip tools claim to have encrypted is refused before its bytes are read.
+	encrypted := makeZipWithEncryption(t, zipEntry{name: "secret.txt", body: "plain behind a claimed flag"})
+	rec = put(t, s, base+"bundle.zip", "test-key", string(encrypted))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PUT encrypted zip = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "archive contains an encrypted entry secret.txt" {
+		t.Errorf("body = %q, want %q", got, "archive contains an encrypted entry secret.txt")
+	}
+}
+
+func TestDuplicateAndEmptyArchivesRefused(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	dup := makeZip(t, zipEntry{name: "dup.txt", body: "first"}, zipEntry{name: "dup.txt", body: "second"})
+	rec := put(t, s, base+"dup.zip", "test-key", string(dup))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PUT duplicate zip = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "archive contains duplicate path dup.txt" {
+		t.Errorf("body = %q, want %q", got, "archive contains duplicate path dup.txt")
+	}
+
+	for _, empty := range [][]byte{
+		makeZip(t), // an empty zip
+		makeTar(t, true, tarDir("only/"), tarDir("only/dirs/")), // directories only
+		makeTar(t, false), // an empty tar
+	} {
+		rec := put(t, s, base+"empty.zip", "test-key", string(empty))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("PUT empty archive = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+			continue
+		}
+		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "archive contains no files" {
+			t.Errorf("body = %q, want %q", got, "archive contains no files")
+		}
+	}
+	if got := listingPaths(t, s, hash); len(got) != 0 {
+		t.Errorf("refused archives left %v behind, want nothing", got)
+	}
+}
+
+// TestArchiveCapRefusals proves each cap aborts while streaming: every body here is
+// far under 1 MiB while the unpacked shape is over it, and nothing is stored.
+func TestArchiveCapRefusals(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	overOne := makeZip(t, zipEntry{name: "big.txt", body: strings.Repeat("x", maxBodyBytes+1)})
+	rec := put(t, s, base+"over.zip", "test-key", string(overOne))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("PUT entry over 1 MiB = %d, want %d; body %q", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
+	}
+	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "extracted file over 1 MiB" {
+		t.Errorf("body = %q, want %q", got, "extracted file over 1 MiB")
+	}
+
+	var many []zipEntry
+	for i := range maxArchiveEntries + 1 {
+		many = append(many, zipEntry{name: fmt.Sprintf("e/%04d.txt", i), body: "x"})
+	}
+	manyBody := makeZip(t, many...)
+	if len(manyBody) >= maxBodyBytes {
+		t.Fatalf("the 1001-entry zip body is %d bytes, want it well under 1 MiB", len(manyBody))
+	}
+	rec = put(t, s, base+"many.zip", "test-key", string(manyBody))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("PUT 1001-entry zip = %d, want %d; body %q", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
+	}
+	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "archive has over 1000 files" {
+		t.Errorf("body = %q, want %q", got, "archive has over 1000 files")
+	}
+
+	bombBody := bombZipBody(t, maxExtractTotal/(1<<20)+2)
+	if len(bombBody) >= maxBodyBytes {
+		t.Fatalf("the bomb body is %d bytes, want it under 1 MiB", len(bombBody))
+	}
+	rec = put(t, s, base+"bomb.zip", "test-key", string(bombBody))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("PUT bomb = %d, want %d; body %q", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
+	}
+	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "archive unpacks over 32 MiB" {
+		t.Errorf("body = %q, want %q", got, "archive unpacks over 32 MiB")
+	}
+
+	if got := listingPaths(t, s, hash); len(got) != 0 {
+		t.Errorf("cap refusals stored %v, want nothing", got)
+	}
+}
+
+// TestBombTarStopsAtTheCap is the same discipline for a tar bomb read mid-stream.
+func TestBombTarStopsAtTheCap(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	zeros := strings.Repeat("\x00", 1<<20)
+	var entries []tarEntry
+	for i := range maxExtractTotal/(1<<20) + 2 {
+		entries = append(entries, tarFile(fmt.Sprintf("z%03d.txt", i), zeros))
+	}
+	body := makeTar(t, true, entries...)
+	if len(body) >= maxBodyBytes {
+		t.Fatalf("the tar bomb body is %d bytes, want it under 1 MiB", len(body))
+	}
+	rec := put(t, s, base+"bomb.tgz", "test-key", string(body))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("PUT tar bomb = %d, want %d; body %q", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
+	}
+	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "archive unpacks over 32 MiB" {
+		t.Errorf("body = %q, want %q", got, "archive unpacks over 32 MiB")
+	}
+	if got := listingPaths(t, s, hash); len(got) != 0 {
+		t.Errorf("the tar bomb stored %v, want nothing", got)
+	}
+}
+
+func TestCorruptArchivesRefused(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	goodZip := makeZip(t, zipEntry{name: "a.txt", body: strings.Repeat("abcdefgh", 100)})
+	goodTar := makeTar(t, false, tarFile("a.txt", strings.Repeat("abcdefgh", 200)))
+	goodTgz := makeTar(t, true, tarFile("a.txt", strings.Repeat("abcdefgh", 400)))
+
+	for _, tc := range []struct {
+		name string
+		body []byte
+		want string
+	}{
+		{"junk.zip", []byte("PK\x03\x04then nothing at all"), "corrupt zip archive"},
+		{"cut.zip", goodZip[:len(goodZip)/2], "corrupt zip archive"},
+		{"cut.tar", goodTar[:len(goodTar)/2], "corrupt tar archive"},
+		{"junk.tar.gz", []byte("\x1f\x8bnot gzip at all"), "corrupt tar.gz archive"},
+		{"cut.tar.gz", goodTgz[:len(goodTgz)/2], "corrupt tar.gz archive"},
+	} {
+		rec := put(t, s, base+tc.name, "test-key", string(tc.body))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("PUT %s = %d, want %d; body %q", tc.name, rec.Code, http.StatusBadRequest, rec.Body.String())
+			continue
+		}
+		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != tc.want {
+			t.Errorf("PUT %s body = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if got := listingPaths(t, s, hash); len(got) != 0 {
+		t.Errorf("corrupt archives left %v behind, want nothing", got)
+	}
+}
+
+// TestArchiveBodyUnderAPlainNameStoredRaw is the name rule: only archive names are
+// looked at, so an archive under an ordinary name is just a file.
+func TestArchiveBodyUnderAPlainNameStoredRaw(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	body := makeZip(t, zipEntry{name: "a.txt", body: "a"})
+	rec := put(t, s, base+"bundle.bin", "test-key", string(body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("PUT bundle.bin = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if got := rec.Header().Get("X-Extracted-Count"); got != "" {
+		t.Errorf("X-Extracted-Count = %q, want none for a non-archive name", got)
+	}
+	if rec.Body.String() != "/"+hash+"/bundle.bin" {
+		t.Errorf("body = %q, want the plain PUT line", rec.Body.String())
+	}
+	got := listingPaths(t, s, hash)
+	if strings.Join(got, ",") != "bundle.bin" {
+		t.Errorf("listing = %v, want only bundle.bin", got)
+	}
+}
+
+// TestArchiveBodyOverTheBodyCap keeps the unchanged 1 MiB MaxBytesReader answer for an
+// archive-named upload too: the body cap comes before any extraction.
+func TestArchiveBodyOverTheBodyCap(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+
+	// Stored, not deflated: the 1 MiB entry body stays 1 MiB of request body.
+	oversize := makeZip(t, zipEntry{name: "a.txt", body: strings.Repeat("x", maxBodyBytes),
+		header: func(h *zip.FileHeader) { h.Method = zip.Store }})
+	rec := put(t, s, base+"big.zip", "test-key", string(oversize))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("PUT oversized .zip = %d, want %d; body %q", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "body over 1 MiB") {
+		t.Errorf("body = %q, want the plain body over 1 MiB refusal", rec.Body.String())
+	}
+}
+
+// TestArchiveChargingUnchanged is the charging rule with archive bodies: only API key
+// failures charge, a bad archive after a good key charges nothing.
+func TestArchiveChargingUnchanged(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+
+	slip := makeZip(t, zipEntry{name: "../escape", body: "hostile"})
+
+	rec := putFrom(t, s, "198.51.100.41:1234", base+"slip.zip", "wrong", string(slip))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("archive with a wrong key = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if failures, dur := storedBlock(t, s, "198.51.100.41"); failures != 1 || dur != blockStep {
+		t.Errorf("archive with a wrong key = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
+	}
+
+	rec = putFrom(t, s, "198.51.100.42:1234", base+"slip.zip", "test-key", string(slip))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad archive with the good key = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if _, ok := ipBlockRow(t, s.store, "198.51.100.42"); ok {
+		t.Errorf("a refused archive charged 198.51.100.42, want no row in ip_blocks")
+	}
+
+	body := makeZip(t, zipEntry{name: "a.txt", body: "a"})
+	rec = putFrom(t, s, "198.51.100.43:1234", base+"bundle.zip", "test-key", string(body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("good archive = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if _, ok := ipBlockRow(t, s.store, "198.51.100.43"); ok {
+		t.Errorf("a successful upload charged 198.51.100.43, want no row in ip_blocks")
+	}
+}
+
+// TestExtractionUpsertsAtomically is all-or-nothing per upload and upsert-not-sync
+// across uploads: a good archive replaces what it names and leaves every other file
+// alone, a failing one afterwards changes nothing.
+func TestExtractionUpsertsAtomically(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	for _, seed := range []struct{ path, body string }{
+		{"a.txt", "the old a"},
+		{"keep.txt", "leave me alone"},
+	} {
+		if rec := put(t, s, base+seed.path, "test-key", seed.body); rec.Code != http.StatusCreated {
+			t.Fatalf("PUT %s = %d, want %d", seed.path, rec.Code, http.StatusCreated)
+		}
+	}
+
+	body := makeZip(t,
+		zipEntry{name: "a.txt", body: "the new a"},
+		zipEntry{name: "sub/new.txt", body: "new"},
+	)
+	rec := put(t, s, base+"update.zip", "test-key", string(body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("PUT update.zip = %d, want 201 (a.txt replaced, sub/new.txt created); body %q", rec.Code, rec.Body.String())
+	}
+	if got := listingPaths(t, s, hash); strings.Join(got, ",") != "a.txt,keep.txt,sub/new.txt" {
+		t.Errorf("listing = %v, want a.txt,keep.txt,sub/new.txt", got)
+	}
+	if rec := get(t, s, base+"a.txt"); rec.Body.String() != "the new a" {
+		t.Errorf("a.txt = %q, want the extracted replacement", rec.Body.String())
+	}
+	if rec := get(t, s, base+"keep.txt"); rec.Body.String() != "leave me alone" {
+		t.Errorf("keep.txt = %q, want it untouched", rec.Body.String())
+	}
+
+	// The same archive again: every path is a replacement, so the answer is 200.
+	rec = put(t, s, base+"update.zip", "test-key", string(body))
+	if rec.Code != http.StatusOK {
+		t.Errorf("second PUT update.zip = %d, want 200 (all replaced); body %q", rec.Code, rec.Body.String())
+	}
+
+	// A bomb mid-upload leaves the bin exactly as the good upload left it.
+	rec = put(t, s, base+"bomb.zip", "test-key", string(bombZipBody(t, maxExtractTotal/(1<<20)+2)))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("PUT bomb = %d, want 413", rec.Code)
+	}
+	if got := listingPaths(t, s, hash); strings.Join(got, ",") != "a.txt,keep.txt,sub/new.txt" {
+		t.Errorf("listing after the bomb = %v, want the listing unchanged", got)
+	}
+	if rec := get(t, s, base+"a.txt"); rec.Body.String() != "the new a" {
+		t.Errorf("a.txt after the bomb = %q, want it unchanged", rec.Body.String())
+	}
+}
+
+// TestExtractionAnswersWithCountAndLines is the response contract itself.
+func TestExtractionAnswersWithCountAndLines(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	body := makeTar(t, true, tarFile("one.txt", "1"), tarFile("dir/two.txt", "2"))
+	rec := put(t, s, base+"two.tar.gz", "test-key", string(body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("PUT = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", ct)
+	}
+	if got := rec.Header().Get("X-Extracted-Count"); got != "2" {
+		t.Errorf("X-Extracted-Count = %q, want 2", got)
+	}
+	want := "/" + hash + "/one.txt\n/" + hash + "/dir/two.txt" // archive order
+	if rec.Body.String() != want {
+		t.Errorf("body = %q, want %q", rec.Body.String(), want)
+	}
+}

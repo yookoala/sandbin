@@ -204,6 +204,112 @@ func TestPutGetFile(t *testing.T) {
 	}
 }
 
+func TestPutFiles(t *testing.T) {
+	store := newTestStore(t)
+	hash, err := store.CreateBin("", "", "")
+	if err != nil {
+		t.Fatalf("CreateBin: %v", err)
+	}
+
+	// One path in the batch already exists, so created and replaced must count apart.
+	if replaced, err := store.PutFile(hash, "a.txt", []byte("the old a")); err != nil || replaced {
+		t.Fatalf("PutFile seed: replaced %v, err %v", replaced, err)
+	}
+	if replaced, err := store.PutFile(hash, "keep.txt", []byte("leave me alone")); err != nil || replaced {
+		t.Fatalf("PutFile seed: replaced %v, err %v", replaced, err)
+	}
+
+	created, replaced, err := store.PutFiles(hash, []FilePut{
+		{Path: "a.txt", Content: []byte("the new a")},
+		{Path: "sub/new.txt", Content: []byte("new")},
+	})
+	if err != nil {
+		t.Fatalf("PutFiles: %v", err)
+	}
+	if created != 1 || replaced != 1 {
+		t.Errorf("PutFiles counts = created %d, replaced %d; want 1, 1", created, replaced)
+	}
+	for _, want := range []struct{ path, content string }{
+		{"a.txt", "the new a"},
+		{"sub/new.txt", "new"},
+		{"keep.txt", "leave me alone"}, // untouched by the batch
+	} {
+		content, ok, err := store.GetFile(hash, want.path)
+		if err != nil || !ok {
+			t.Fatalf("GetFile(%q): ok %v, err %v", want.path, ok, err)
+		}
+		if string(content) != want.content {
+			t.Errorf("%q = %q, want %q", want.path, content, want.content)
+		}
+	}
+
+	// The same batch again: every path is now a replacement.
+	if created, replaced, err := store.PutFiles(hash, []FilePut{
+		{Path: "a.txt", Content: []byte("third")},
+		{Path: "sub/new.txt", Content: []byte("third")},
+	}); err != nil || created != 0 || replaced != 2 {
+		t.Errorf("second PutFiles = created %d, replaced %d, err %v; want 0, 2, nil", created, replaced, err)
+	}
+
+	// An empty batch is a no-op.
+	if created, replaced, err := store.PutFiles(hash, nil); err != nil || created != 0 || replaced != 0 {
+		t.Errorf("empty PutFiles = created %d, replaced %d, err %v; want 0, 0, nil", created, replaced, err)
+	}
+}
+
+// TestPutFilesRollback is the all-or-nothing rule the extractor depends on: a
+// failure on the second of three files leaves the bin exactly as it was.
+func TestPutFilesRollback(t *testing.T) {
+	store := newTestStore(t)
+	hash, err := store.CreateBin("", "", "")
+	if err != nil {
+		t.Fatalf("CreateBin: %v", err)
+	}
+	if _, err := store.PutFile(hash, "seed.txt", []byte("seed")); err != nil {
+		t.Fatalf("PutFile seed: %v", err)
+	}
+
+	// files.content is NOT NULL, so a nil Content fails the INSERT mid-batch.
+	created, replaced, err := store.PutFiles(hash, []FilePut{
+		{Path: "one.txt", Content: []byte("one")},
+		{Path: "bad.txt", Content: nil},
+		{Path: "two.txt", Content: []byte("two")},
+	})
+	if err == nil {
+		t.Fatalf("PutFiles with a nil Content succeeded, want an error")
+	}
+	if created != 0 || replaced != 0 {
+		t.Errorf("failed PutFiles counts = created %d, replaced %d; want 0, 0", created, replaced)
+	}
+	for _, path := range []string{"one.txt", "bad.txt", "two.txt"} {
+		if _, ok, err := store.GetFile(hash, path); err != nil || ok {
+			t.Errorf("GetFile(%q) after rollback = ok %v, err %v; want rolled back", path, ok, err)
+		}
+	}
+	if content, ok, err := store.GetFile(hash, "seed.txt"); err != nil || !ok || string(content) != "seed" {
+		t.Errorf("seed.txt after rollback = ok %v, err %v, content %q; want untouched", ok, err, content)
+	}
+}
+
+// TestPutFilesOnClosedStore is the Begin failure answer: no counts, an error.
+func TestPutFilesOnClosedStore(t *testing.T) {
+	store := newTestStore(t)
+	hash, err := store.CreateBin("", "", "")
+	if err != nil {
+		t.Fatalf("CreateBin: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	created, replaced, err := store.PutFiles(hash, []FilePut{{Path: "a.txt", Content: []byte("a")}})
+	if err == nil {
+		t.Fatalf("PutFiles on a closed store succeeded, want an error")
+	}
+	if created != 0 || replaced != 0 {
+		t.Errorf("counts = created %d, replaced %d; want 0, 0", created, replaced)
+	}
+}
+
 func TestListFiles(t *testing.T) {
 	store := newTestStore(t)
 	hash, err := store.CreateBin("", "", "")

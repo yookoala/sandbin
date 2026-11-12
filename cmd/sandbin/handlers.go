@@ -24,6 +24,7 @@ const (
 	binPasswordHeader    = "X-Bin-Password"
 	binTitleHeader       = "X-Bin-Title"
 	binDescriptionHeader = "X-Bin-Description"
+	extractHeader        = "X-Extract"
 	maxBodyBytes         = 1 << 20 // 1 MiB per PUT
 	maxPathLen           = 256
 	maxPathSegs          = 16
@@ -297,6 +298,20 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 		return
 	}
 
+	// X-Extract present at all, any value, is the opt-out: store and serve the body
+	// raw, no inspection. Otherwise an archive name plus archive magic is extracted.
+	if _, keep := r.Header[extractHeader]; !keep {
+		kind, err := detectArchive(sub, content)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if kind != archiveNone {
+			s.putArchive(w, hash, sub, kind, content)
+			return
+		}
+	}
+
 	replaced, err := s.store.PutFile(hash, sub, content)
 	if err != nil {
 		log.Printf("put %q in bin %q: %v", sub, hash, err)
@@ -311,6 +326,42 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 		w.WriteHeader(http.StatusCreated)
 	}
 	io.WriteString(w, "/"+hash+"/"+sub)
+}
+
+// putArchive answers an extraction upload: the entries land under the upload name's
+// parent directory in one transaction, the archive name itself is not stored, and the
+// answer is the plain-PUT line pluralized, one per extracted file.
+func (s *server) putArchive(w http.ResponseWriter, hash, sub string, kind archiveKind, body []byte) {
+	files, err := extractArchive(kind, sub, body)
+	if err != nil {
+		if status := archiveErrStatus(err); status != http.StatusInternalServerError {
+			http.Error(w, err.Error(), status)
+			return
+		}
+		log.Printf("extract %q in bin %q: %v", sub, hash, err)
+		http.Error(w, "could not extract archive", http.StatusInternalServerError)
+		return
+	}
+
+	created, _, err := s.store.PutFiles(hash, files)
+	if err != nil {
+		log.Printf("put %d extracted files in bin %q: %v", len(files), hash, err)
+		http.Error(w, "could not store file", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Extracted-Count", strconv.Itoa(len(files)))
+	if created >= 1 {
+		w.WriteHeader(http.StatusCreated)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+	lines := make([]string, 0, len(files))
+	for _, f := range files {
+		lines = append(lines, "/"+hash+"/"+f.Path)
+	}
+	io.WriteString(w, strings.Join(lines, "\n"))
 }
 
 // binMetaBody is the PATCH answer: the bin's metadata as its row now holds it.
