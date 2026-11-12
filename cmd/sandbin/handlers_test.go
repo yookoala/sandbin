@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -51,6 +52,30 @@ func createTestBinWithPassword(t *testing.T, h http.Handler, password string) st
 		t.Fatalf("POST with a bin password = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
 	}
 	return rec.Body.String()
+}
+
+// createTestBinWithMetadata POSTs a bin carrying the two metadata headers and returns its
+// "/abc1234/" path. An empty argument sends no header at all, which is a bin without metadata.
+func createTestBinWithMetadata(t *testing.T, h http.Handler, apiKey, title, description string) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	if title != "" {
+		req.Header.Set("X-Bin-Title", title)
+	}
+	if description != "" {
+		req.Header.Set("X-Bin-Description", description)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST with bin metadata = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !regexp.MustCompile(`^/[0-9a-f]{8}/$`).MatchString(body) {
+		t.Fatalf("POST with bin metadata body %q is not a bin path", body)
+	}
+	return body
 }
 
 // put writes a file with the API key and returns the recorder.
@@ -567,6 +592,24 @@ func getFrom(t *testing.T, h http.Handler, remoteAddr, path, apiKey string) *htt
 	return rec
 }
 
+// patchFrom PATCHes a path from a fixed socket address; an empty apiKey omits the header.
+// headers names which metadata headers to send, so a field that should stay absent is simply
+// not in the map, and an empty value in it clears that field. The body is what a PATCH ignores.
+func patchFrom(t *testing.T, h http.Handler, remoteAddr, path, apiKey string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPatch, path, strings.NewReader("a body a PATCH ignores"))
+	req.RemoteAddr = remoteAddr
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
 // retryAfter parses the recorder's Retry-After header.
 func retryAfter(t *testing.T, rec *httptest.ResponseRecorder) int {
 	t.Helper()
@@ -917,4 +960,411 @@ func TestUntrustedPublicSocketChargesSocket(t *testing.T) {
 		t.Fatalf("second POST from the same socket = %d, want %d", rec.Code, http.StatusTooManyRequests)
 	}
 	retryAfter(t, rec)
+}
+
+// storedBinCount counts the rows of bins, which is how the refused-creation tests prove no
+// bin was made behind the refusal.
+func storedBinCount(t *testing.T, s *server) int {
+	t.Helper()
+	var count int
+	if err := s.store.db.QueryRow(`SELECT COUNT(*) FROM bins`).Scan(&count); err != nil {
+		t.Fatalf("count bins: %v", err)
+	}
+	return count
+}
+
+// storedMeta reads back the metadata a bin holds, so every metadata test can say what the
+// row actually says after the request it just made.
+func storedMeta(t *testing.T, s *server, base string) (string, string) {
+	t.Helper()
+	bin, ok, err := s.store.GetBin(strings.Trim(base, "/"))
+	if err != nil || !ok {
+		t.Fatalf("GetBin(%q) = ok %v, err %v", base, ok, err)
+	}
+	return bin.Title, bin.Description
+}
+
+func TestPostBinMetadata(t *testing.T) {
+	s := newTestServer(t, "test-key")
+
+	base := createTestBinWithMetadata(t, s, "test-key", "Test report", "findings of the audit")
+	if title, description := storedMeta(t, s, base); title != "Test report" || description != "findings of the audit" {
+		t.Errorf("stored metadata = %q / %q, want the headers the POST carried", title, description)
+	}
+
+	// A bin made without the headers is the same bin as ever: empty metadata.
+	plain := createTestBin(t, s, "test-key")
+	if title, description := storedMeta(t, s, plain); title != "" || description != "" {
+		t.Errorf("metadata of a header-less bin = %q / %q, want both empty", title, description)
+	}
+}
+
+// TestPostRefusesBadMetadata is the cap and the single-line rule at creation: a refusal
+// answers 400 with the wording the README carries, and no bin is created.
+func TestPostRefusesBadMetadata(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	before := storedBinCount(t, s)
+
+	for _, bad := range []struct {
+		title, description, want string
+	}{
+		{strings.Repeat("t", maxTitleBytes+1), "", "title over 200 bytes\n"},
+		// 101 two-byte characters are 202 bytes, so the cap counts bytes and not characters.
+		{strings.Repeat("é", maxTitleBytes/2+1), "", "title over 200 bytes\n"},
+		{"", strings.Repeat("d", maxDescriptionBytes+1), "description over 2000 bytes\n"},
+		{"a\nb", "", "title may not contain control characters\n"},
+		{"a\tb", "", "title may not contain control characters\n"},
+		{"a\x7fb", "", "title may not contain control characters\n"},
+		{"fine title", "a\nb", "description may not contain control characters\n"},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req.Header.Set("X-API-Key", "test-key")
+		req.Header.Set("X-Bin-Title", bad.title)
+		req.Header.Set("X-Bin-Description", bad.description)
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("POST with title %q / description %q = %d, want %d; body %q",
+				bad.title, bad.description, rec.Code, http.StatusBadRequest, rec.Body.String())
+			continue
+		}
+		if got := rec.Body.String(); got != bad.want {
+			t.Errorf("POST with title %q body = %q, want %q", bad.title, got, bad.want)
+		}
+	}
+
+	if after := storedBinCount(t, s); after != before {
+		t.Errorf("bins after the refusals = %d, want the same %d as before", after, before)
+	}
+
+	// Exactly at the cap is accepted.
+	if base := createTestBinWithMetadata(t, s, "test-key",
+		strings.Repeat("t", maxTitleBytes), strings.Repeat("d", maxDescriptionBytes)); storedBinCount(t, s) != before+1 {
+		t.Errorf("bins after a bin at the cap = %d, want %d", storedBinCount(t, s), before+1)
+	} else if title, description := storedMeta(t, s, base); title == "" || description == "" {
+		t.Errorf("metadata at the cap = %d / %d bytes, want both stored", len(title), len(description))
+	}
+}
+
+// TestPatchBinMetadataCombinations is the semantics table: for each header on its own, a
+// present header replaces, an absent one leaves, an empty value clears. The json answer is
+// the row as it now stands, read back after every PATCH.
+func TestPatchBinMetadataCombinations(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBinWithMetadata(t, s, "test-key", "first title", "first description")
+	const addr = "198.51.100.11:1234"
+
+	for i, tc := range []struct {
+		headers                              map[string]string
+		wantTitle, wantDescription, wantBody string
+	}{
+		// Neither header sent: nothing changes.
+		{nil, "first title", "first description", `{"title":"first title","description":"first description"}`},
+		// One header replaces its field and says nothing about the other.
+		{map[string]string{"X-Bin-Title": "second title"}, "second title", "first description", `{"title":"second title","description":"first description"}`},
+		{map[string]string{"X-Bin-Description": "second description"}, "second title", "second description", `{"title":"second title","description":"second description"}`},
+		{map[string]string{"X-Bin-Title": "third title", "X-Bin-Description": "third description"}, "third title", "third description", `{"title":"third title","description":"third description"}`},
+		// An empty value clears its field and leaves the other alone.
+		{map[string]string{"X-Bin-Title": ""}, "", "third description", `{"title":"","description":"third description"}`},
+		{map[string]string{"X-Bin-Description": ""}, "", "", `{"title":"","description":""}`},
+		// A cleared field stays cleared when the next PATCH does not mention it.
+		{map[string]string{"X-Bin-Title": "fourth title"}, "fourth title", "", `{"title":"fourth title","description":""}`},
+	} {
+		rec := patchFrom(t, s, addr, base, "test-key", tc.headers)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PATCH #%d = %d, want %d; body %q", i+1, rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("PATCH #%d Content-Type = %q, want application/json", i+1, ct)
+		}
+		if want := tc.wantBody + "\n"; rec.Body.String() != want {
+			t.Errorf("PATCH #%d body = %q, want %q", i+1, rec.Body.String(), want)
+		}
+		if title, description := storedMeta(t, s, base); title != tc.wantTitle || description != tc.wantDescription {
+			t.Errorf("after PATCH #%d: stored metadata = %q / %q, want %q / %q",
+				i+1, title, description, tc.wantTitle, tc.wantDescription)
+		}
+	}
+}
+
+func TestPatchUnknownBinAndSubPath(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+
+	rec := patchFrom(t, s, "198.51.100.12:1234", "/deadbeef/", "test-key", map[string]string{"X-Bin-Title": "x"})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("PATCH unknown bin = %d, want %d; body %q", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	// Only the bin base takes a PATCH: a sub path keeps answering 405.
+	if rec := patchFrom(t, s, "198.51.100.12:1234", base+"page.html", "test-key", nil); rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("PATCH a sub path = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+
+	// The body is ignored: a PATCH stores no file and leaves the bin's files as they were.
+	if rec := patchFrom(t, s, "198.51.100.12:1234", base, "test-key", map[string]string{"X-Bin-Title": "a title"}); rec.Code != http.StatusOK {
+		t.Fatalf("PATCH with a body = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	files, err := s.store.ListFiles(strings.Trim(base, "/"))
+	if err != nil {
+		t.Fatalf("ListFiles: %v", err)
+	}
+	if len(files) != 0 {
+		t.Errorf("the PATCH body left %d files behind, want none", len(files))
+	}
+}
+
+// TestPatchOverLongMetadataChangesNothing is the PATCH half of the cap: the refusal is a 400
+// and the row keeps what it already held.
+func TestPatchOverLongMetadataChangesNothing(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBinWithMetadata(t, s, "test-key", "kept title", "kept description")
+
+	rec := patchFrom(t, s, "198.51.100.14:1234", base, "test-key", map[string]string{
+		"X-Bin-Title":       strings.Repeat("t", maxTitleBytes+1),
+		"X-Bin-Description": strings.Repeat("d", maxDescriptionBytes+1),
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PATCH with over-long metadata = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "title over 200 bytes\n" {
+		t.Errorf("body = %q, want the title refusal", got)
+	}
+
+	rec = patchFrom(t, s, "198.51.100.14:1234", base, "test-key", map[string]string{"X-Bin-Title": "a\nnewline"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PATCH with a control character = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "title may not contain control characters\n" {
+		t.Errorf("body = %q, want the control character refusal", got)
+	}
+
+	if title, description := storedMeta(t, s, base); title != "kept title" || description != "kept description" {
+		t.Errorf("stored metadata after the refusals = %q / %q, want the stored values unchanged", title, description)
+	}
+}
+
+// TestPatchWrongKeyChargesTheAddress keeps the lockout rules for PATCH exactly what they are
+// for POST and PUT: one bad key is a charged 403, a blocked attempt is a charged 429, and
+// neither writes anything.
+func TestPatchWrongKeyChargesTheAddress(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBinWithMetadata(t, s, "test-key", "kept title", "kept description")
+	const addr = "203.0.113.20:1234"
+
+	rec := patchFrom(t, s, addr, base, "wrong", map[string]string{"X-Bin-Title": "written?"})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("PATCH with a wrong key = %d, want %d; body %q", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if failures, dur := storedBlock(t, s, "203.0.113.20"); failures != 1 || dur != blockStep {
+		t.Errorf("after a PATCH failure = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
+	}
+
+	rec = patchFrom(t, s, addr, base, "test-key", map[string]string{"X-Bin-Title": "written?"})
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("PATCH from the blocked address = %d, want %d; body %q", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+	}
+	if failures, dur := storedBlock(t, s, "203.0.113.20"); failures != 2 || dur != 2*blockStep {
+		t.Errorf("after a blocked PATCH = failures %d, block %v; want 2 failures, %v", failures, dur, 2*blockStep)
+	}
+	retryAfter(t, rec)
+
+	rec = patchFrom(t, s, addr, base, "test-key", map[string]string{"X-Bin-Title": "written?"})
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("hammered PATCH = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+	if failures, dur := storedBlock(t, s, "203.0.113.20"); failures != 3 || dur != 3*blockStep {
+		t.Errorf("after three PATCH failures = failures %d, block %v; want 3 failures, %v", failures, dur, 3*blockStep)
+	}
+
+	if title, description := storedMeta(t, s, base); title != "kept title" || description != "kept description" {
+		t.Errorf("stored metadata after the charged refusals = %q / %q, want it unchanged", title, description)
+	}
+}
+
+// TestPatchProtectedBinChargesNothing is the PUT rule extended to PATCH: a wrong bin password
+// is a 401 that does not touch the block table.
+func TestPatchProtectedBinChargesNothing(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBinWithPassword(t, s, "sesame")
+	hash := strings.Trim(base, "/")
+	const addr = "198.51.100.13:1234"
+
+	rec := patchFrom(t, s, addr, base, "test-key", map[string]string{"X-Bin-Title": "quiet title"})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("PATCH without the bin password = %d, want %d; body %q", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+	if www := rec.Header().Get("WWW-Authenticate"); !strings.HasPrefix(www, "Basic") {
+		t.Errorf("WWW-Authenticate = %q, want a Basic challenge", www)
+	}
+	if _, ok := ipBlockRow(t, s.store, "198.51.100.13"); ok {
+		t.Errorf("a wrong bin password charged 198.51.100.13, want no row in ip_blocks")
+	}
+	if title, _ := storedMeta(t, s, base); title != "" {
+		t.Errorf("stored title after the 401 = %q, want the bin unchanged", title)
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, base, nil)
+	req.RemoteAddr = addr
+	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("X-Bin-Title", "quiet title")
+	req.SetBasicAuth(hash, "sesame")
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH with the bin password = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if rec.Body.String() != `{"title":"quiet title","description":""}`+"\n" {
+		t.Errorf("body = %q, want the resulting row", rec.Body.String())
+	}
+	if _, ok := ipBlockRow(t, s.store, "198.51.100.13"); ok {
+		t.Errorf("the working PATCH charged 198.51.100.13, want no row in ip_blocks")
+	}
+}
+
+// TestGetBinBaseCarriesMetadata is the machine route for metadata: the two headers answer a
+// bin base GET, on the raw index.html branch as well as the listing one, and a sub-path GET
+// carries neither.
+func TestGetBinBaseCarriesMetadata(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBinWithMetadata(t, s, "test-key", "Test report", "findings of the audit")
+
+	rec := get(t, s, base)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET the bin base = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Bin-Title"); got != "Test report" {
+		t.Errorf("X-Bin-Title = %q, want the stored title", got)
+	}
+	if got := rec.Header().Get("X-Bin-Description"); got != "findings of the audit" {
+		t.Errorf("X-Bin-Description = %q, want the stored description", got)
+	}
+
+	if rec := put(t, s, base+"notes.md", "test-key", "# Notes"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT notes.md = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	rec = get(t, s, base+"notes.md")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET notes.md = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("X-Bin-Title"); got != "" {
+		t.Errorf("X-Bin-Title on a sub path = %q, want no metadata there", got)
+	}
+	if got := rec.Header().Get("X-Bin-Description"); got != "" {
+		t.Errorf("X-Bin-Description on a sub path = %q, want no metadata there", got)
+	}
+
+	// The raw index.html shortcut keeps the page verbatim and adds only the headers.
+	if rec := put(t, s, base+"index.html", "test-key", "<h1>Custom index</h1>"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT index.html = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	rec = get(t, s, base)
+	if got := rec.Body.String(); got != "<h1>Custom index</h1>" {
+		t.Errorf("body of the raw index.html = %q, want it served unmodified", got)
+	}
+	if got := rec.Header().Get("X-Bin-Title"); got != "Test report" {
+		t.Errorf("X-Bin-Title on the raw index.html = %q, want the stored title", got)
+	}
+
+	// Empty metadata sends no header, on either branch.
+	plain := createTestBin(t, s, "test-key")
+	rec = get(t, s, plain) // the listing branch
+	if got := rec.Header().Get("X-Bin-Title"); got != "" {
+		t.Errorf("X-Bin-Title of a bin with no title = %q, want it absent", got)
+	}
+	if got := rec.Header().Get("X-Bin-Description"); got != "" {
+		t.Errorf("X-Bin-Description of a bin with no description = %q, want it absent", got)
+	}
+	if rec := put(t, s, plain+"index.html", "test-key", "<p>x</p>"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT the plain bin's index.html = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	rec = get(t, s, plain) // the raw index.html branch
+	if got := rec.Body.String(); got != "<p>x</p>" {
+		t.Errorf("body = %q, want the stored index.html verbatim", got)
+	}
+	if got := rec.Header().Get("X-Bin-Title"); got != "" {
+		t.Errorf("X-Bin-Title on a plain bin's raw index.html = %q, want it absent", got)
+	}
+	if got := rec.Header().Get("X-Bin-Description"); got != "" {
+		t.Errorf("X-Bin-Description on a plain bin's raw index.html = %q, want it absent", got)
+	}
+}
+
+// TestListingShowsBinMetadata compares each listing body byte for byte: a bin with nothing to
+// say is listed exactly as it was listed before metadata existed, and a bin with metadata gains
+// one styled paragraph above an otherwise unchanged file list.
+func TestListingShowsBinMetadata(t *testing.T) {
+	s := newTestServer(t, "test-key")
+
+	const head = "<!doctype html>\n<meta charset=\"utf-8\">\n"
+	const style = "<style>.bin-meta{color:#555;margin:0 0 1em}</style>\n"
+	for _, tc := range []struct {
+		title, description string
+		meta               string // the HTML the listing must carry, empty for no paragraph
+	}{
+		{
+			`x" onload="y`,
+			"<script>alert(1)</script> & ünïcödé",
+			"<strong>x&#34; onload=&#34;y</strong><br>&lt;script&gt;alert(1)&lt;/script&gt; &amp; ünïcödé",
+		},
+		{"Just a title", "", "<strong>Just a title</strong>"},
+		{"", "Just a description", "Just a description"},
+		{"", "", ""},
+	} {
+		base := createTestBinWithMetadata(t, s, "test-key", tc.title, tc.description)
+		rec := get(t, s, base)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET the listing of bin %q = %d, want %d", base, rec.Code, http.StatusOK)
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+			t.Errorf("listing Content-Type = %q, want text/html; charset=utf-8", ct)
+		}
+
+		want := head + "<title>/%s/</title>\n<h1>/%s/</h1>\n"
+		if tc.meta != "" {
+			want += style + "<p class=\"bin-meta\">" + tc.meta + "</p>\n"
+		}
+		want += "<p>empty bin</p>\n"
+		want = fmt.Sprintf(want, strings.Trim(base, "/"), strings.Trim(base, "/"))
+		if got := rec.Body.String(); got != want {
+			t.Errorf("listing of bin %q with metadata %q / %q =\n%q\nwant\n%q", base, tc.title, tc.description, got, want)
+		}
+	}
+
+	// The quote-shaped title reaches the page as text, never as markup.
+	base := createTestBinWithMetadata(t, s, "test-key", `x" onload="y`, "")
+	if body := get(t, s, base).Body.String(); strings.Contains(body, `<h1>x" onload="y</h1>`) {
+		t.Errorf("listing let a quote shape markup:\n%s", body)
+	}
+
+	// Above the file list, and the file list itself keeps the rows it always had.
+	messy := createTestBinWithMetadata(t, s, "test-key", "Button grid", "A grid of pressable <buttons>")
+	plain := createTestBinWithMetadata(t, s, "test-key", "", "")
+	for _, bin := range []string{messy, plain} {
+		rec := put(t, s, bin+"a.html", "test-key", "<p>a</p>")
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("PUT a.html into %q = %d, want %d", bin, rec.Code, http.StatusCreated)
+		}
+	}
+	messyBody := get(t, s, messy).Body.String()
+	plainBody := get(t, s, plain).Body.String()
+	// The rows are compared without their timestamps, which are written per PUT.
+	rows := func(body string) []string {
+		var out []string
+		for _, line := range strings.Split(body, "\n") {
+			if i := strings.Index(line, "<li>"); i >= 0 {
+				out = append(out, strings.SplitN(line[i:], " (", 2)[0])
+			}
+		}
+		return out
+	}
+	if got, want := fmt.Sprint(rows(messyBody)), fmt.Sprint(rows(plainBody)); got != want {
+		t.Errorf("listed rows with metadata = %s, want the rows without it: %s", got, want)
+	}
+	if !strings.Contains(messyBody, "<p class=\"bin-meta\"><strong>Button grid</strong><br>A grid of pressable &lt;buttons&gt;</p>\n") {
+		t.Errorf("listing carries no metadata paragraph:\n%s", messyBody)
+	}
+	if strings.Index(messyBody, "bin-meta") > strings.Index(messyBody, "<ul>") {
+		t.Errorf("metadata paragraph does not come before the file list:\n%s", messyBody)
+	}
 }

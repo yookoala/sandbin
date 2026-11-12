@@ -282,7 +282,7 @@ func TestControlWrongMethod(t *testing.T) {
 func TestControlHasNoBinRoutes(t *testing.T) {
 	socketPath, store, client := newControlTestServer(t)
 	binPath := "/1a50eb32/"
-	if _, err := store.CreateBin(""); err != nil {
+	if _, err := store.CreateBin("", "", ""); err != nil {
 		t.Fatalf("CreateBin: %v", err)
 	}
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,7 +24,7 @@ func newTestStore(t *testing.T) *Store {
 func TestCreateBinHash(t *testing.T) {
 	store := newTestStore(t)
 
-	hash, err := store.CreateBin("")
+	hash, err := store.CreateBin("", "", "")
 	if err != nil {
 		t.Fatalf("CreateBin: %v", err)
 	}
@@ -31,7 +32,7 @@ func TestCreateBinHash(t *testing.T) {
 		t.Errorf("hash %q is not 8 lowercase hex chars", hash)
 	}
 
-	other, err := store.CreateBin("")
+	other, err := store.CreateBin("", "", "")
 	if err != nil {
 		t.Fatalf("CreateBin: %v", err)
 	}
@@ -43,7 +44,7 @@ func TestCreateBinHash(t *testing.T) {
 func TestGetBin(t *testing.T) {
 	store := newTestStore(t)
 
-	hash, err := store.CreateBin("hashed-password")
+	hash, err := store.CreateBin("hashed-password", "", "")
 	if err != nil {
 		t.Fatalf("CreateBin: %v", err)
 	}
@@ -63,9 +64,103 @@ func TestGetBin(t *testing.T) {
 	}
 }
 
+func TestCreateBinStoresMetadata(t *testing.T) {
+	store := newTestStore(t)
+
+	hash, err := store.CreateBin("hashed-password", "Test report", "findings of the audit")
+	if err != nil {
+		t.Fatalf("CreateBin: %v", err)
+	}
+	bin, ok, err := store.GetBin(hash)
+	if err != nil {
+		t.Fatalf("GetBin: %v", err)
+	}
+	if !ok {
+		t.Fatalf("GetBin(%q) not found", hash)
+	}
+	if bin.Title != "Test report" {
+		t.Errorf("Title = %q, want %q", bin.Title, "Test report")
+	}
+	if bin.Description != "findings of the audit" {
+		t.Errorf("Description = %q, want %q", bin.Description, "findings of the audit")
+	}
+
+	// A bin made without metadata is a bin with empty metadata, not a bin missing fields.
+	plain, err := store.CreateBin("", "", "")
+	if err != nil {
+		t.Fatalf("CreateBin: %v", err)
+	}
+	bin, ok, err = store.GetBin(plain)
+	if err != nil || !ok {
+		t.Fatalf("GetBin(%q) = ok %v, err %v", plain, ok, err)
+	}
+	if bin.Title != "" || bin.Description != "" {
+		t.Errorf("metadata of a plain bin = %q / %q, want both empty", bin.Title, bin.Description)
+	}
+}
+
+// TestUpdateBinMeta walks the keep / replace / clear cases one field at a time, which is
+// what COALESCE in one UPDATE is for, and reports a missing bin as false.
+func TestUpdateBinMeta(t *testing.T) {
+	store := newTestStore(t)
+	hash, err := store.CreateBin("", "first title", "first description")
+	if err != nil {
+		t.Fatalf("CreateBin: %v", err)
+	}
+	other, err := store.CreateBin("", "keep me", "keep me too")
+	if err != nil {
+		t.Fatalf("CreateBin: %v", err)
+	}
+
+	// A NULL argument is "leave that field alone", an empty string is "clear it".
+	for i, tc := range []struct {
+		title, description         sql.NullString
+		wantTitle, wantDescription string
+	}{
+		{sql.NullString{}, sql.NullString{}, "first title", "first description"},
+		{sql.NullString{String: "second title", Valid: true}, sql.NullString{}, "second title", "first description"},
+		{sql.NullString{}, sql.NullString{String: "second description", Valid: true}, "second title", "second description"},
+		{sql.NullString{String: "", Valid: true}, sql.NullString{}, "", "second description"},
+		{sql.NullString{}, sql.NullString{String: "", Valid: true}, "", ""},
+		{sql.NullString{String: "third title", Valid: true}, sql.NullString{String: "third description", Valid: true}, "third title", "third description"},
+	} {
+		found, err := store.UpdateBinMeta(hash, tc.title, tc.description)
+		if err != nil {
+			t.Fatalf("UpdateBinMeta #%d: %v", i+1, err)
+		}
+		if !found {
+			t.Fatalf("UpdateBinMeta #%d = false, want the bin found", i+1)
+		}
+		bin, ok, err := store.GetBin(hash)
+		if err != nil || !ok {
+			t.Fatalf("GetBin after update #%d: ok %v, err %v", i+1, ok, err)
+		}
+		if bin.Title != tc.wantTitle || bin.Description != tc.wantDescription {
+			t.Errorf("after update #%d: metadata = %q / %q, want %q / %q",
+				i+1, bin.Title, bin.Description, tc.wantTitle, tc.wantDescription)
+		}
+	}
+
+	// An unknown bin is reported as absent rather than a silent no-op, and no other row moves.
+	found, err := store.UpdateBinMeta("deadbeef", sql.NullString{String: "x", Valid: true}, sql.NullString{String: "y", Valid: true})
+	if err != nil {
+		t.Fatalf("UpdateBinMeta(unknown): %v", err)
+	}
+	if found {
+		t.Errorf("UpdateBinMeta(unknown) = true, want false")
+	}
+	bin, ok, err := store.GetBin(other)
+	if err != nil || !ok {
+		t.Fatalf("GetBin(%q): ok %v, err %v", other, ok, err)
+	}
+	if bin.Title != "keep me" || bin.Description != "keep me too" {
+		t.Errorf("the other bin's metadata = %q / %q, want it untouched", bin.Title, bin.Description)
+	}
+}
+
 func TestPutGetFile(t *testing.T) {
 	store := newTestStore(t)
-	hash, err := store.CreateBin("")
+	hash, err := store.CreateBin("", "", "")
 	if err != nil {
 		t.Fatalf("CreateBin: %v", err)
 	}
@@ -111,7 +206,7 @@ func TestPutGetFile(t *testing.T) {
 
 func TestListFiles(t *testing.T) {
 	store := newTestStore(t)
-	hash, err := store.CreateBin("")
+	hash, err := store.CreateBin("", "", "")
 	if err != nil {
 		t.Fatalf("CreateBin: %v", err)
 	}
@@ -385,6 +480,184 @@ func TestIpBlocksPersistAcrossStores(t *testing.T) {
 
 	if got, blocked := reopened.IsBlocked("203.0.113.7", now); !blocked || !got.Equal(until) {
 		t.Errorf("after reopen = until %v, blocked %v; want %v, blocked", got, blocked, until)
+	}
+}
+
+// oldBinsSchema is the whole schema as the binary from before bin metadata wrote it: a bins
+// table with no title or description column.
+const oldBinsSchema = `
+CREATE TABLE IF NOT EXISTS bins (
+	hash TEXT PRIMARY KEY,
+	password_hash TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS files (
+	bin_hash TEXT NOT NULL,
+	path TEXT NOT NULL,
+	content BLOB NOT NULL,
+	size INTEGER NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (bin_hash, path)
+);
+CREATE TABLE IF NOT EXISTS ip_blocks (
+	ip TEXT PRIMARY KEY,
+	failures INTEGER NOT NULL,
+	blocked_until TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+`
+
+// writeOldSchemaDB writes a db exactly as the pre-metadata binary left one, holding one bin
+// and one file in it, and returns the bin's hash.
+func writeOldSchemaDB(t *testing.T, path string) string {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(oldBinsSchema); err != nil {
+		t.Fatalf("write the old schema: %v", err)
+	}
+	const hash = "abcd1234"
+	if _, err := db.Exec(`INSERT INTO bins (hash, password_hash, created_at) VALUES (?, '', ?)`,
+		hash, time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC).Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert the old bin: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO files (bin_hash, path, content, size, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		hash, "notes.md", []byte("# old"), int64(5), time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC).Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert the old file: %v", err)
+	}
+	return hash
+}
+
+// binColumns lists the columns of bins in table order, which is how these tests say which
+// columns an open added.
+func binColumns(t *testing.T, store *Store) []string {
+	t.Helper()
+	rows, err := store.db.Query(`SELECT name FROM pragma_table_info('bins') ORDER BY cid`)
+	if err != nil {
+		t.Fatalf("read table_info: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan a column name: %v", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read table_info: %v", err)
+	}
+	return names
+}
+
+// TestOpenStoreMigratesAnOldDb is the live-volume case: a db written by the binary from
+// before bin metadata opens, gains the two columns, and its old bin reads as empty metadata
+// with its files intact. Opening it a second time adds nothing further.
+func TestOpenStoreMigratesAnOldDb(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sandbin.db")
+	hash := writeOldSchemaDB(t, dbPath)
+
+	store, err := openStore(dbPath)
+	if err != nil {
+		t.Fatalf("open the old db: %v", err)
+	}
+
+	want := []string{"hash", "password_hash", "created_at", "title", "description"}
+	got := binColumns(t, store)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("columns after the migration = %v, want %v", got, want)
+	}
+
+	bin, ok, err := store.GetBin(hash)
+	if err != nil || !ok {
+		t.Fatalf("GetBin(%q) after the migration = ok %v, err %v", hash, ok, err)
+	}
+	if bin.Title != "" || bin.Description != "" {
+		t.Errorf("the old bin's metadata = %q / %q, want both empty", bin.Title, bin.Description)
+	}
+	content, ok, err := store.GetFile(hash, "notes.md")
+	if err != nil || !ok {
+		t.Fatalf("the old bin's file = ok %v, err %v; want it still there", ok, err)
+	}
+	if string(content) != "# old" {
+		t.Errorf("the old file = %q, want its stored bytes back", content)
+	}
+
+	// The migration is what an open does once: a second open adds nothing and loses nothing.
+	if _, err := store.UpdateBinMeta(hash, sql.NullString{String: "added later", Valid: true}, sql.NullString{}); err != nil {
+		t.Fatalf("UpdateBinMeta on the migrated row: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	reopened, err := openStore(dbPath)
+	if err != nil {
+		t.Fatalf("reopen the migrated db: %v", err)
+	}
+	t.Cleanup(func() { reopened.Close() })
+
+	if got := binColumns(t, reopened); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("columns after reopening = %v, want %v", got, want)
+	}
+	bin, ok, err = reopened.GetBin(hash)
+	if err != nil || !ok {
+		t.Fatalf("GetBin after reopening = ok %v, err %v", ok, err)
+	}
+	if bin.Title != "added later" || bin.Description != "" {
+		t.Errorf("metadata after reopening = %q / %q, want the written title and an empty description",
+			bin.Title, bin.Description)
+	}
+}
+
+// TestOpenStoreCompletesAHalfMigratedTable is the table that only one column reached: the
+// next open adds the missing description and leaves the title column and its rows as they are.
+func TestOpenStoreCompletesAHalfMigratedTable(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sandbin.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open %s: %v", dbPath, err)
+	}
+	if _, err := db.Exec(`
+CREATE TABLE bins (
+	hash TEXT PRIMARY KEY,
+	password_hash TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	title TEXT NOT NULL DEFAULT ''
+)`); err != nil {
+		t.Fatalf("write the half-migrated schema: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO bins (hash, password_hash, created_at, title) VALUES (?, '', ?, ?)`,
+		"abcd1234", time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC).Format(time.RFC3339), "already here"); err != nil {
+		t.Fatalf("insert the bin: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close the half-migrated db: %v", err)
+	}
+
+	store, err := openStore(dbPath)
+	if err != nil {
+		t.Fatalf("open the half-migrated db: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	want := []string{"hash", "password_hash", "created_at", "title", "description"}
+	got := binColumns(t, store)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("columns after the migration = %v, want %v", got, want)
+	}
+	bin, ok, err := store.GetBin("abcd1234")
+	if err != nil || !ok {
+		t.Fatalf("GetBin after the migration = ok %v, err %v", ok, err)
+	}
+	if bin.Title != "already here" || bin.Description != "" {
+		t.Errorf("metadata = %q / %q, want the stored title kept and the new column empty", bin.Title, bin.Description)
 	}
 }
 

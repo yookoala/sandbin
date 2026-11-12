@@ -14,7 +14,9 @@ const schema = `
 CREATE TABLE IF NOT EXISTS bins (
 	hash TEXT PRIMARY KEY,
 	password_hash TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL
+	created_at TEXT NOT NULL,
+	title TEXT NOT NULL DEFAULT '',
+	description TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS files (
 	bin_hash TEXT NOT NULL,
@@ -39,6 +41,8 @@ type Store struct {
 type Bin struct {
 	Hash         string
 	PasswordHash string
+	Title        string
+	Description  string
 }
 
 type FileEntry struct {
@@ -64,12 +68,50 @@ func openStore(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := addMissingBinColumns(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+// addMissingBinColumns completes a bins table written before title and description existed:
+// CREATE TABLE IF NOT EXISTS never adds a column to a table that is already there, and live
+// dbs exist. An old bin reads back as empty metadata.
+func addMissingBinColumns(db *sql.DB) error {
+	present := map[string]bool{}
+	rows, err := db.Query(`SELECT name FROM pragma_table_info('bins')`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		present[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, column := range []string{"title", "description"} {
+		if present[column] {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE bins ADD COLUMN ` + column + ` TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
 
-func (s *Store) CreateBin(passwordHash string) (string, error) {
+// CreateBin makes a bin carrying title and description; empty ones leave the bin
+// without metadata.
+func (s *Store) CreateBin(passwordHash, title, description string) (string, error) {
 	for range 8 {
 		hash, err := newBinHash()
 		if err != nil {
@@ -82,8 +124,8 @@ func (s *Store) CreateBin(passwordHash string) (string, error) {
 		if taken {
 			continue
 		}
-		_, err = s.db.Exec(`INSERT INTO bins (hash, password_hash, created_at) VALUES (?, ?, ?)`,
-			hash, passwordHash, time.Now().UTC().Format(time.RFC3339))
+		_, err = s.db.Exec(`INSERT INTO bins (hash, password_hash, created_at, title, description) VALUES (?, ?, ?, ?, ?)`,
+			hash, passwordHash, time.Now().UTC().Format(time.RFC3339), title, description)
 		if err != nil {
 			return "", err
 		}
@@ -102,7 +144,8 @@ func newBinHash() (string, error) {
 
 func (s *Store) GetBin(hash string) (Bin, bool, error) {
 	var b Bin
-	err := s.db.QueryRow(`SELECT hash, password_hash FROM bins WHERE hash=?`, hash).Scan(&b.Hash, &b.PasswordHash)
+	err := s.db.QueryRow(`SELECT hash, password_hash, title, description FROM bins WHERE hash=?`, hash).
+		Scan(&b.Hash, &b.PasswordHash, &b.Title, &b.Description)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Bin{}, false, nil
 	}
@@ -110,6 +153,22 @@ func (s *Store) GetBin(hash string) (Bin, bool, error) {
 		return Bin{}, false, err
 	}
 	return b, true, nil
+}
+
+// UpdateBinMeta writes the bin's title and description in one UPDATE: a NULL argument
+// leaves that field as it is, so a partial update cannot race with itself. It reports
+// whether the bin exists at all.
+func (s *Store) UpdateBinMeta(hash string, title, description sql.NullString) (bool, error) {
+	res, err := s.db.Exec(`UPDATE bins SET title=COALESCE(?,title), description=COALESCE(?,description) WHERE hash=?`,
+		title, description, hash)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
 }
 
 // PutFile upserts a file and reports whether it replaced an existing one.
