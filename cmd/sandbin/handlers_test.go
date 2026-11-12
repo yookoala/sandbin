@@ -136,6 +136,40 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+func TestFrontPageAtRoot(t *testing.T) {
+	h := newTestServer(t, "test-key")
+
+	// GET / answers the branded page without any key or charging.
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Errorf("GET / Content-Type = %q, want %q", got, "text/html; charset=utf-8")
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"<title>Sandbin</title>", "<h1>Sandbin</h1>", "POST /", "&lt;h1&gt;Hello&lt;/h1&gt;"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("front page missing %q in:\n%s", want, body)
+		}
+	}
+
+	// The front page branch must not shadow creation or the old refusals.
+	if base := createTestBin(t, h, "test-key"); base == "" {
+		t.Fatal("POST / stopped creating a bin")
+	}
+	for _, method := range []string{http.MethodPut, http.MethodDelete, http.MethodPatch, http.MethodHead, http.MethodOptions} {
+		req := httptest.NewRequest(method, "/", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s / = %d, want %d", method, rec.Code, http.StatusMethodNotAllowed)
+		}
+	}
+}
+
 func TestPostPutGetRoundTrip(t *testing.T) {
 	h := newTestServer(t, "test-key")
 	base := createTestBin(t, h, "test-key")

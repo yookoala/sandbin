@@ -41,8 +41,8 @@ type server struct {
 	trustedProxies proxyList
 }
 
-// ServeHTTP sends "/" to bin creation and everything else to the bin subrouter.
-// Path validation happens here, before anything touches SQL.
+// ServeHTTP sends "/" to bin creation (POST) or the front page (GET) and everything else to
+// the bin subrouter. Path validation happens here, before anything touches SQL.
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasPrefix(r.URL.Path, "/") {
 		http.Error(w, "unknown bin", http.StatusNotFound)
@@ -50,11 +50,14 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Path == "/" {
-		if r.Method != http.MethodPost {
+		switch r.Method {
+		case http.MethodPost:
+			s.createBin(w, r)
+		case http.MethodGet:
+			renderFrontPage(w)
+		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
 		}
-		s.createBin(w, r)
 		return
 	}
 
@@ -509,6 +512,37 @@ func (s *server) binAuthorized(w http.ResponseWriter, r *http.Request, bin Bin) 
 	w.Header().Set("WWW-Authenticate", `Basic realm="sandbin"`)
 	http.Error(w, "bin password required", http.StatusUnauthorized)
 	return false
+}
+
+// renderFrontPage writes the branded page the root answers with on GET. It is static on
+// purpose: it says what the service is and how bins work, and nothing about any bin,
+// address or key, so it holds no truth a visitor could abuse and needs no validation.
+func renderFrontPage(w http.ResponseWriter) {
+	const page = `<!doctype html>
+<meta charset="utf-8">
+<title>Sandbin</title>
+<style>
+body{max-width:38rem;margin:2rem auto;padding:0 1rem;font-family:system-ui,sans-serif;color:#222}
+h1{margin-bottom:0.1em}
+.tagline{color:#555;margin:0 0 1.5em}
+pre{background:#f4f4f4;padding:0.6em 0.8em;overflow-x:auto}
+</style>
+<h1>Sandbin</h1>
+<p class="tagline">A PUT/GET preview server for CLI agents in a sandbox: submit HTML, ANSI and
+prototype files, and hand a human plain preview URLs.</p>
+<p>A bin is a collection of files under a random eight-hex path. Create one with a key-checked
+<code>POST /</code>, <code>PUT</code> files under its subpaths, and <code>GET</code> them back:
+the bin base serves its <code>index.html</code> or lists its files, a <code>.ansi</code> file
+comes back rendered, a title and description can say what a bin holds, and an archive upload
+unpacks into the bin. The <code>sandbin-client</code> command does the same in one line.</p>
+<pre>curl -X POST -H "X-API-Key: your-key" https://this.host/                        -&gt; /abc1234/
+curl -X PUT  -H "X-API-Key: your-key" -d '&lt;h1&gt;Hello&lt;/h1&gt;' https://this.host/abc1234/index.html
+open https://this.host/abc1234/</pre>
+<p>Bins are private in the ordinary way: the root lists nothing, so a bin is reachable only
+through its URL, and a bin can demand its own password on top.</p>
+`
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	io.WriteString(w, page)
 }
 
 // renderListing writes the directory listing the bin base answers with when the bin holds no

@@ -42,6 +42,9 @@ see Trusted proxies) optionally name the proxies the server believes. The server
 key is configured, a trusted proxy value cannot be read, or another serve already answers on its
 control socket.
 
+`GET /` answers a small branded front page that says what the service is. Creating a bin stays
+the key-checked `POST /`, and every other method on `/` still answers `405 method not allowed`.
+
 Create a bin, then PUT files under it. `$BIN` already ends in `/`, so write `${BIN}name` and
 not `$BIN/name`, which asks for a `//` path the server rejects:
 
