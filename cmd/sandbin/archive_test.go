@@ -128,6 +128,58 @@ func tarDir(name string) tarEntry {
 	return tarEntry{hdr: tar.Header{Name: name, Typeflag: tar.TypeDir, Mode: 0755}}
 }
 
+// rawTarEntry is one hand-written ustar header block, its name field spelled exactly as
+// the bytes say. Go's own tar writer refuses a name that is empty or carries a NUL, so
+// the shapes a crafted archive can carry have to be laid out byte by byte here.
+type rawTarEntry struct {
+	name string
+	typ  byte
+	body string
+}
+
+// makeRawTar writes those blocks, gzipped when gz is true, and closes the archive with
+// the two zero blocks every tar ends with.
+func makeRawTar(t *testing.T, gz bool, entries ...rawTarEntry) []byte {
+	t.Helper()
+	var raw bytes.Buffer
+	for _, e := range entries {
+		blk := make([]byte, 512)
+		copy(blk[0:100], e.name)
+		copy(blk[100:108], fmt.Sprintf("%07o", 0644))
+		copy(blk[124:135], fmt.Sprintf("%011o", len(e.body)))
+		copy(blk[136:147], fmt.Sprintf("%011o", 1763000000))
+		copy(blk[148:156], "        ")
+		blk[156] = e.typ
+		copy(blk[257:263], "ustar\x00")
+		copy(blk[263:265], "00")
+		var sum int
+		for _, b := range blk {
+			sum += int(b)
+		}
+		copy(blk[148:156], fmt.Sprintf("%07o\x00", sum))
+		raw.Write(blk)
+		if len(e.body) > 0 {
+			data := make([]byte, ((len(e.body)+511)/512)*512)
+			copy(data, e.body)
+			raw.Write(data)
+		}
+	}
+	raw.Write(make([]byte, 1024))
+
+	var buf bytes.Buffer
+	if !gz {
+		return raw.Bytes()
+	}
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(raw.Bytes()); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
 // bombZipBody builds a highly compressible bomb: count entries of 1 MiB of zeros each,
 // a body far under 1 MiB that unpacks past the 32 MiB total cap.
 func bombZipBody(t *testing.T, count int) []byte {
@@ -267,9 +319,9 @@ func TestExtractedIndexHTMLBecomesCoverPage(t *testing.T) {
 	}
 }
 
-// TestTarAndTarGzUploadsExtract covers the two tar shapes, including the "./" entry
-// names a -C pack gives its files and a pax global header record, which describes the
-// archive and is skipped rather than stored or refused.
+// TestTarAndTarGzUploadsExtract covers the two tar shapes, including the leading "./"
+// entry names a `tar czf - .` gives its files and a pax global header record, which
+// describes the archive and is skipped rather than stored or refused.
 func TestTarAndTarGzUploadsExtract(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	base := createTestBin(t, s, "test-key")
@@ -277,7 +329,7 @@ func TestTarAndTarGzUploadsExtract(t *testing.T) {
 
 	body := makeTar(t, false,
 		tarDir("site/"),
-		tarFile("site/./index.html", "<p>dot slash</p>"),
+		tarFile("./site/index.html", "<p>dot slash</p>"),
 		tarFile("site/css/app.css", "p { margin: 0 }\n"),
 	)
 	if rec := put(t, s, base+"plain.tar", "test-key", string(body)); rec.Code != http.StatusCreated {
@@ -358,13 +410,13 @@ func TestZipSlipRefusedTheWholeArchive(t *testing.T) {
 		want  string
 	}{
 		{"../escape", "path must not escape the bin"},
-		{"a/../../x", "path must not escape the bin"},
+		{"a/../../x", "path must not contain ., .., // or a trailing slash"}, // the name is judged before path.Join cleans it
 		{"/etc/passwd", "path must be relative"},
 		{strings.Repeat("a/", 16) + "x", "path has too many segments"},
 		{"bad\nname.txt", "path may not contain control characters"},
 		{"bad\x00name.txt", "path may not contain control characters"},
 		{"..\x7f..\\x", "path may not contain control characters"},
-		{"..\\..\\x", "path must not escape the bin"}, // the backslashes become slashes first
+		{"..\\..\\x", "path must not escape the bin"}, // backslashes become slashes first
 	} {
 		body := makeZip(t,
 			zipEntry{name: "fine.txt", body: "fine"},
@@ -777,5 +829,262 @@ func TestExtractionAnswersWithCountAndLines(t *testing.T) {
 	want := "/" + hash + "/one.txt\n/" + hash + "/dir/two.txt" // archive order
 	if rec.Body.String() != want {
 		t.Errorf("body = %q, want %q", rec.Body.String(), want)
+	}
+}
+
+// TestEntryNamesJudgedBeforeTheyJoin is the relocation refusal: an entry is judged on the
+// name the archive actually wrote, before path.Join can clean it. Joined first,
+// "sub/../up.txt" would have landed as site/up.txt, "deep/../../evil.txt" as evil.txt at
+// the bin root, and "/etc/passwd2" as site/etc/passwd2 — the same entry a root-level
+// archive already refused.
+func TestEntryNamesJudgedBeforeTheyJoin(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	for _, tc := range []struct {
+		kind  string
+		entry string
+		want  string
+	}{
+		{"zip", "/etc/passwd2", "path must be relative"},
+		{"zip", "sub/../up.txt", "path must not contain ., .., // or a trailing slash"},
+		{"zip", "deep/../../evil.txt", "path must not contain ., .., // or a trailing slash"},
+		{"zip", "..", "path must not escape the bin"},
+		{"zip", "site/./index.html", "path must not contain ., .., // or a trailing slash"},
+		{"zip", "././x.txt", "path must not contain ., .., // or a trailing slash"},
+		{"tar.gz", "/etc/passwd2", "path must be relative"},
+		{"tar.gz", "sub/../up.txt", "path must not contain ., .., // or a trailing slash"},
+		{"tar.gz", "deep/../../evil.txt", "path must not contain ., .., // or a trailing slash"},
+		{"tar.gz", "..", "path must not escape the bin"},
+		{"tar", `a\..\b.txt`, "path may not contain backslashes"}, // tar keeps its backslashes verbatim
+	} {
+		var body []byte
+		switch tc.kind {
+		case "zip":
+			body = makeZip(t, zipEntry{name: "fine.txt", body: "fine"}, zipEntry{name: tc.entry, body: "hostile"})
+		case "tar":
+			body = makeTar(t, false, tarFile("fine.txt", "fine"), tarFile(tc.entry, "hostile"))
+		default:
+			body = makeTar(t, true, tarFile("fine.txt", "fine"), tarFile(tc.entry, "hostile"))
+		}
+		name := "site/abs." + tc.kind
+		rec := put(t, s, base+name, "test-key", string(body))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("PUT %s with entry %q = %d, want %d; body %q", name, tc.entry, rec.Code, http.StatusBadRequest, rec.Body.String())
+			continue
+		}
+		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != tc.want {
+			t.Errorf("%s entry %q body = %q, want %q", tc.kind, tc.entry, got, tc.want)
+		}
+		if got := listingPaths(t, s, hash); len(got) != 0 {
+			t.Errorf("%s entry %q stored %v, want the whole archive refused", tc.kind, tc.entry, got)
+		}
+	}
+}
+
+// TestRefusedRelocatingEntryLeavesNothingAtTheBinRoot is the same refusal seen through the
+// handler: deep/../../evil.txt under site/abs.zip never lands, the bin's own files are
+// untouched, and no evil.txt appears at the root the entry was reaching for.
+func TestRefusedRelocatingEntryLeavesNothingAtTheBinRoot(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	if rec := put(t, s, base+"keep.txt", "test-key", "leave me alone"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT keep.txt = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	body := makeZip(t,
+		zipEntry{name: "fine.txt", body: "fine"},
+		zipEntry{name: "deep/../../evil.txt", body: "hostile"},
+	)
+	rec := put(t, s, base+"site/abs.zip", "test-key", string(body))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PUT site/abs.zip = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if got := listingPaths(t, s, hash); strings.Join(got, ",") != "keep.txt" {
+		t.Errorf("listing after the refusal = %v, want only keep.txt", got)
+	}
+	for _, p := range []string{"evil.txt", "site/evil.txt", "site/fine.txt", "site/abs.zip"} {
+		if rec := get(t, s, base+p); rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", p, rec.Code)
+		}
+	}
+	if rec := get(t, s, base+"keep.txt"); rec.Code != http.StatusOK || rec.Body.String() != "leave me alone" {
+		t.Errorf("GET keep.txt = %d, body %q, want it untouched", rec.Code, rec.Body.String())
+	}
+}
+
+// TestTarDotSlashEntriesLandInTheArchivesFolder is the `tar czf - .` idiom: one leading
+// "./" is stripped, a root directory entry names the folder itself, and both land inside
+// the folder the archive was uploaded under.
+func TestTarDotSlashEntriesLandInTheArchivesFolder(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	body := makeTar(t, true,
+		tarDir("./"),
+		tarFile("./hello.txt", "hello\n"),
+		tarDir("./sub/"),
+		tarFile("./sub/app.css", "body {}\n"),
+	)
+	rec := put(t, s, base+"site/x.tar.gz", "test-key", string(body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("PUT site/x.tar.gz = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Extracted-Count"); got != "2" {
+		t.Errorf("X-Extracted-Count = %q, want 2", got)
+	}
+	if got := listingPaths(t, s, hash); strings.Join(got, ",") != "site/hello.txt,site/sub/app.css" {
+		t.Errorf("listing = %v, want site/hello.txt and site/sub/app.css", got)
+	}
+	if rec := get(t, s, base+"site/hello.txt"); rec.Body.String() != "hello\n" {
+		t.Errorf("GET site/hello.txt = %q", rec.Body.String())
+	}
+
+	// The same shapes written byte for byte, as `tar czf - .` from inside the folder does,
+	// including the bare "." block for the folder itself.
+	root := makeRawTar(t, false,
+		rawTarEntry{name: "./", typ: tar.TypeDir},
+		rawTarEntry{name: "./root.txt", typ: tar.TypeReg, body: "root\n"},
+	)
+	if rec := put(t, s, base+"x.tar", "test-key", string(root)); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT x.tar = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if got := listingPaths(t, s, hash); strings.Join(got, ",") != "root.txt,site/hello.txt,site/sub/app.css" {
+		t.Errorf("listing = %v, want root.txt beside the site/ files", got)
+	}
+}
+
+// TestUnnamedEntryRefused names an archive that claims a file and gave it no name.
+func TestUnnamedEntryRefused(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	bodies := []struct {
+		file string
+		body []byte
+		want string
+	}{
+		{"unnamed.zip", makeZip(t, zipEntry{name: "fine.txt", body: "fine"}, zipEntry{name: "", body: "hostile"}),
+			"archive contains an unnamed entry"},
+		{"unnamed.tar", makeRawTar(t, false,
+			rawTarEntry{name: "fine.txt", typ: tar.TypeReg, body: "fine"},
+			rawTarEntry{name: "", typ: tar.TypeReg, body: "hostile"}),
+			"archive contains an unnamed entry"},
+		{"unnamed.tar.gz", makeRawTar(t, true,
+			rawTarEntry{name: "fine.txt", typ: tar.TypeReg, body: "fine"},
+			rawTarEntry{name: "./", typ: tar.TypeReg, body: "hostile"}),
+			"archive contains an unnamed entry ./"},
+	}
+	for _, tc := range bodies {
+		rec := put(t, s, base+tc.file, "test-key", string(tc.body))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("PUT %s = %d, want %d; body %q", tc.file, rec.Code, http.StatusBadRequest, rec.Body.String())
+			continue
+		}
+		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != tc.want {
+			t.Errorf("PUT %s body = %q, want %q", tc.file, got, tc.want)
+		}
+		if got := listingPaths(t, s, hash); len(got) != 0 {
+			t.Errorf("PUT %s stored %v, want nothing", tc.file, got)
+		}
+	}
+}
+
+// TestNULInEntryNameRefused closes the truncation quirk: a name field that keeps going
+// past its NUL terminator is refused instead of storing the entry under the shorter name
+// archive/tar stops at.
+func TestNULInEntryNameRefused(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	// A zip carries the name with the NUL in it, so cleanPath's control-character rule is
+	// what answers.
+	zipBody := makeZip(t, zipEntry{name: "fine.txt", body: "fine"}, zipEntry{name: "evil\x00.txt", body: "hostile"})
+	rec := put(t, s, base+"nul.zip", "test-key", string(zipBody))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PUT nul.zip = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "path may not contain control characters" {
+		t.Errorf("zip body = %q, want %q", got, "path may not contain control characters")
+	}
+	if got := listingPaths(t, s, hash); len(got) != 0 {
+		t.Errorf("the NUL zip stored %v, want nothing", got)
+	}
+
+	// A tar cannot carry the NUL to the reader at all: archive/tar ends the name at it, so
+	// the raw header block is what has to be refused.
+	for _, tc := range []struct {
+		file string
+		body []byte
+	}{
+		{"nul.tar", makeRawTar(t, false,
+			rawTarEntry{name: "fine.txt", typ: tar.TypeReg, body: "fine"},
+			rawTarEntry{name: "evil\x00.txt", typ: tar.TypeReg, body: "hostile"})},
+		{"nul.tar.gz", makeRawTar(t, true,
+			rawTarEntry{name: "./", typ: tar.TypeDir},
+			rawTarEntry{name: "evil\x00.txt", typ: tar.TypeReg, body: "hostile"})},
+	} {
+		rec := put(t, s, base+tc.file, "test-key", string(tc.body))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("PUT %s = %d, want %d; body %q", tc.file, rec.Code, http.StatusBadRequest, rec.Body.String())
+			continue
+		}
+		want := `archive contains an entry name with a NUL byte "evil\x00.txt"`
+		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != want {
+			t.Errorf("PUT %s body = %q, want %q", tc.file, got, want)
+		}
+		if got := listingPaths(t, s, hash); len(got) != 0 {
+			t.Errorf("PUT %s stored %v, want nothing — the entry must not land as the truncated name", tc.file, got)
+		}
+	}
+}
+
+// TestEntryNamesWithinTheirOwnCaps keeps the caps honest on both sides of the join: a name
+// the root accepts stays accepted, and the same name under a deep folder is refused by the
+// length and depth of the path it lands at.
+func TestEntryNamesWithinTheirOwnCaps(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	long := strings.Repeat("n", maxPathLen)               // exactly the cap a name may have
+	deep := strings.Repeat("s/", maxPathSegs-1) + "x.txt" // exactly the segments a name may have
+	for _, name := range []string{long, deep} {
+		body := makeZip(t, zipEntry{name: name, body: "fits"})
+		rec := put(t, s, base+"root.zip", "test-key", string(body))
+		if rec.Code != http.StatusCreated {
+			t.Errorf("PUT root.zip with entry %q = %d, want %d; body %q", name, rec.Code, http.StatusCreated, rec.Body.String())
+		}
+	}
+	if got := listingPaths(t, s, hash); len(got) != 2 {
+		t.Errorf("listing = %v, want the two accepted entries", got)
+	}
+
+	dir := strings.Repeat("d/", 10)
+	for _, tc := range []struct {
+		entry string
+		want  string
+	}{
+		{strings.Repeat("n", 240), "path too long"},                                   // 20 bytes of folder + the name
+		{strings.Repeat("s/", maxPathSegs-1) + "x.txt", "path has too many segments"}, // 10 folders + 15 + 1
+	} {
+		body := makeZip(t, zipEntry{name: tc.entry, body: "hostile"})
+		rec := put(t, s, base+dir+"abs.zip", "test-key", string(body))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("PUT %sabs.zip with entry %q = %d, want %d; body %q", dir, tc.entry, rec.Code, http.StatusBadRequest, rec.Body.String())
+			continue
+		}
+		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != tc.want {
+			t.Errorf("entry %q under %s body = %q, want %q", tc.entry, dir, got, tc.want)
+		}
+	}
+	if got := listingPaths(t, s, hash); len(got) != 2 {
+		t.Errorf("listing = %v, want the refused joins to have stored nothing", got)
 	}
 }

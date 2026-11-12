@@ -110,10 +110,19 @@ The archive name itself is not stored and no directory is created for it; every 
 is an ordinary bin file from then on, listed, served and rendered like any upload, and an
 `index.html` among the entries becomes the bin's cover page.
 
-Every entry is checked before anything is stored, against the same path rules an ordinary
-upload name obeys, so a `../` escape, an absolute path, a control character or an over-deep
-path refuses the whole archive with `400` naming the rule (`path must not escape the bin` and
-friends) and the bin stays exactly as it was. Symlink, hardlink, device and fifo entries
+Every entry is checked before anything is stored, on the name the archive itself wrote: a
+`.` or `..` segment anywhere in it, a name starting with `/`, a control character, a
+backslash (tar keeps them), an over-long or over-deep name is refused by the same rules an
+ordinary upload name obeys. One leading `./` is stripped, because that is how
+`tar czf - .` names its files, and the entry naming the folder itself is checked and
+skipped; a regular file with no name at all is `400 archive contains an unnamed entry`. A
+tar header whose name field carries bytes past its NUL terminator is
+`400 archive contains an entry name with a NUL byte <name>`, because the archive reader
+would otherwise store that entry under the shortened name it stops at. So an entry can
+never move a file out of the folder the archive lands in: `sub/../up.txt` under
+`site/bundle.zip` is a refusal, not `site/up.txt`, and `deep/../../evil.txt` never reaches
+the bin root. Every refusal answers `400` naming the rule (`path must not escape the bin`
+and friends) and the bin stays exactly as it was. Symlink, hardlink, device and fifo entries
 (`archive contains a symlink <path>`) and entries a zip claims to have encrypted
 (`archive contains an encrypted entry <path>`) are refused the same loud way, as are duplicate
 paths (`archive contains duplicate path <path>`), an archive holding no files
@@ -128,7 +137,9 @@ mention, and answers `201` when at least one path was new and `200` when every p
 replacement, with an `X-Extracted-Count: <n>` header and one `/<hash>/<path>` line per
 extracted file as its body. To keep an archive-named body raw after all, send an `X-Extract`
 header on the `PUT` — any value, even empty; presence is what the server reads — and the bytes
-are stored and served unchanged.
+are stored and served unchanged. In curl the empty header is written `-H "X-Extract;"` —
+`-H "X-Extract:"` strips the header from the request instead of sending it empty, so the server
+extracts.
 
 ## Upload previews with sandbin-client
 

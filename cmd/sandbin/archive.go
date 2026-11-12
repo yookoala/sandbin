@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 )
 
@@ -64,6 +65,105 @@ func isZeroBlock(block []byte) bool {
 	return true
 }
 
+// tarRawEntryNames reads the tar block layout just far enough to look at every entry's
+// name field as the raw bytes carry it. archive/tar stops reading a name at the first
+// NUL, so a header whose name field goes on past that terminator names a file no
+// filesystem can hold, and the entry would land under the shortened name the archive
+// never claimed. Anything this walk cannot trust — a block whose ustar magic or checksum
+// does not hold, a GNU sparse entry with its extra blocks, a walk past the 32 MiB cap —
+// ends the walk and leaves the archive to the tar reader itself, so a genuine archive is
+// never refused over a miscount.
+func tarRawEntryNames(r io.Reader) error {
+	blk := make([]byte, 512)
+	var walked int64
+	for {
+		if _, err := io.ReadFull(r, blk); err != nil {
+			return nil // a short stream is the tar reader's "corrupt" to name, not a name problem
+		}
+		if isZeroBlock(blk) {
+			return nil
+		}
+		if !tarBlockTrustworthy(blk) {
+			return nil
+		}
+		if field := blk[:100]; rawNameRunsPastItsTerminator(field) {
+			return refusal("archive contains an entry name with a NUL byte %q",
+				strings.TrimRight(string(field), "\x00"))
+		}
+		size, ok := tarOctal(blk[124:136])
+		if !ok || blk[156] == tar.TypeGNUSparse {
+			return nil
+		}
+		padded := (size + 511) / 512 * 512
+		if walked += 512 + padded; walked > maxExtractTotal {
+			return nil // the unpack cap is the tar reader's own refusal to make
+		}
+		if padded > 0 {
+			if _, err := io.CopyN(io.Discard, r, padded); err != nil {
+				return nil
+			}
+		}
+	}
+}
+
+// tarRawEntryNamesGz runs the same walk over a second, independent read of a gzipped
+// tar, so the streaming pass that validates and reads the entries stays exactly as it is.
+func tarRawEntryNamesGz(body []byte) error {
+	gz, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return nil // the archive pass is the one that names corrupt bytes
+	}
+	defer gz.Close()
+	return tarRawEntryNames(gz)
+}
+
+// tarBlockTrustworthy reports a header block whose ustar magic and stored checksum hold,
+// which is all this walk needs before it believes the block is a header at all.
+func tarBlockTrustworthy(blk []byte) bool {
+	if !bytes.Equal(blk[257:263], []byte("ustar\x00")) && !bytes.Equal(blk[257:263], []byte("ustar ")) {
+		return false
+	}
+	var sum int
+	for i, b := range blk {
+		if i >= 148 && i < 156 {
+			sum += ' ' // the checksum field is spelled as spaces while the sum is taken
+			continue
+		}
+		sum += int(b)
+	}
+	stored, ok := tarOctal(blk[148:156])
+	return ok && stored == int64(sum)
+}
+
+// tarOctal reads one tar octal field, which ends at a NUL or a space. A field this
+// function cannot read (a base-2 GNU number, junk) is "not ok", which stops the walk.
+func tarOctal(field []byte) (int64, bool) {
+	s := string(field)
+	if i := strings.IndexAny(s, "\x00 "); i >= 0 {
+		s = s[:i]
+	}
+	value, err := strconv.ParseInt(strings.TrimSpace(s), 8, 64)
+	if err != nil || value < 0 {
+		return 0, false
+	}
+	return value, true
+}
+
+// rawNameRunsPastItsTerminator reports name bytes that keep going after the NUL that
+// ends the name.
+func rawNameRunsPastItsTerminator(field []byte) bool {
+	i := bytes.IndexByte(field, 0)
+	if i < 0 {
+		return false // the field is full of name, which is how tar writes a 100-byte one
+	}
+	for _, b := range field[i+1:] {
+		if b != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // archiveErr is a refusal to extract an archive: the status to answer and the exact
 // words the decisions settled on.
 type archiveErr struct {
@@ -90,11 +190,11 @@ func archiveErrStatus(err error) int {
 	return http.StatusInternalServerError
 }
 
-// extractArchive parses an archive whole, validates every entry against the rules a
-// normal upload name obeys, and returns the files the bin would gain: nothing is
-// stored until the caller runs PutFiles on the full batch, so a refusal mid-parse
-// leaves the bin exactly as it was. Entries land under the upload name's parent
-// directory and the archive name itself is never among them.
+// extractArchive parses an archive whole, judges every raw entry name against the rules
+// a normal upload name obeys before the entry is placed anywhere, and returns the files
+// the bin would gain: nothing is stored until the caller runs PutFiles on the full batch,
+// so a refusal mid-parse leaves the bin exactly as it was. Entries land under the upload
+// name's parent directory and the archive name itself is never among them.
 func extractArchive(kind archiveKind, sub string, body []byte) ([]FilePut, error) {
 	collector := &extractCollector{dir: parentOfUploadName(sub), seen: map[string]bool{}}
 	var err error
@@ -102,8 +202,14 @@ func extractArchive(kind archiveKind, sub string, body []byte) ([]FilePut, error
 	case archiveZip:
 		err = collector.fromZip(body)
 	case archiveTar:
+		if err := tarRawEntryNames(bytes.NewReader(body)); err != nil {
+			return nil, err
+		}
 		err = collector.fromTar(bytes.NewReader(body), "corrupt tar archive")
 	case archiveTarGz:
+		if err := tarRawEntryNamesGz(body); err != nil {
+			return nil, err
+		}
 		gz, gzErr := gzip.NewReader(bytes.NewReader(body))
 		if gzErr != nil {
 			return nil, &archiveErr{status: http.StatusBadRequest, message: "corrupt tar.gz archive"}
@@ -139,20 +245,49 @@ type extractCollector struct {
 	zipEntry bool // zip entry names get their backslashes converted before combining
 }
 
-// pathOf combines one entry name with the destination directory and runs the
-// result through the same cleanPath every upload name obeys, so zip slip is
-// refused by the guard the repo already proves against adversarial input.
-func (c *extractCollector) pathOf(name string) (string, error) {
+// pathOf judges one archive entry name and answers the bin path it lands at. The name
+// is judged as the archive wrote it, before path.Join gets a chance to clean it: joined
+// first, "sub/../up.txt" would quietly become "up.txt" and "/etc/passwd" would lose its
+// leading slash, so an entry could move a file out of the folder the archive lands in.
+// The format's own conventions come first — a zip's backslashes become slashes, one
+// trailing "/" is how an archive marks a directory, and one leading "./" is the
+// `tar czf - .` idiom — and what is left obeys the same cleanPath every upload name
+// obeys, which refuses a "." or ".." segment anywhere, an absolute name, a control
+// character, a backslash (tar keeps them), and over-long or over-deep names. The joined
+// path is cleaned once more as the belt-and-braces check on the caps of the path the
+// entry actually lands at.
+func (c *extractCollector) pathOf(raw string, isFile bool) (string, error) {
+	name := raw
 	if c.zipEntry {
 		name = strings.ReplaceAll(name, "\\", "/")
 	}
-	combined, err := cleanPath(path.Join(c.dir, name))
+	name = strings.TrimSuffix(name, "/")
+	name = strings.TrimPrefix(name, "./")
+	if name == "" || name == "." {
+		if isFile {
+			return "", unnamedEntry(raw)
+		}
+		return "", nil // the folder the archive was made of: validated by being the destination
+	}
+	entered, err := cleanPath(name)
 	if err != nil {
 		// cleanPath only ever refuses with its own validation words; they are the
 		// refusal the client sees, verbatim, at 400.
 		return "", &archiveErr{status: http.StatusBadRequest, message: err.Error()}
 	}
-	return combined, nil
+	landed, err := cleanPath(path.Join(c.dir, entered))
+	if err != nil {
+		return "", &archiveErr{status: http.StatusBadRequest, message: err.Error()}
+	}
+	return landed, nil
+}
+
+// unnamedEntry names an entry that claims to be a file and was given no name at all.
+func unnamedEntry(raw string) error {
+	if raw == "" {
+		return refusal("archive contains an unnamed entry")
+	}
+	return refusal("archive contains an unnamed entry %s", raw)
 }
 
 // add validates one regular-file entry, reads it under the caps while streaming
@@ -188,12 +323,13 @@ func (c *extractCollector) fromZip(body []byte) error {
 		return &archiveErr{status: http.StatusBadRequest, message: "corrupt zip archive"}
 	}
 	for _, f := range zr.File {
-		p, err := c.pathOf(f.Name)
+		mode := f.Mode()
+		isDir := mode.IsDir() || strings.HasSuffix(f.Name, "/")
+		p, err := c.pathOf(f.Name, !isDir)
 		if err != nil {
 			return err
 		}
-		mode := f.Mode()
-		if mode.IsDir() || strings.HasSuffix(f.Name, "/") {
+		if isDir {
 			continue // directories exist only as path prefixes in a bin
 		}
 		if f.Flags&0x1 != 0 {
@@ -233,18 +369,18 @@ func (c *extractCollector) fromTar(r io.Reader, corruptMessage string) error {
 		case tar.TypeXGlobalHeader:
 			continue // pax global headers describe the archive, not a file
 		case tar.TypeDir:
-			if _, err := c.pathOf(hdr.Name); err != nil {
+			if _, err := c.pathOf(hdr.Name, false); err != nil {
 				return err
 			}
 			continue
 		case tar.TypeSymlink, tar.TypeLink, tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
-			p, err := c.pathOf(hdr.Name)
+			p, err := c.pathOf(hdr.Name, true)
 			if err != nil {
 				return err
 			}
 			return refusal("archive contains a %s %s", tarEntryType(hdr.Typeflag), p)
 		case tar.TypeReg, tar.TypeRegA:
-			p, err := c.pathOf(hdr.Name)
+			p, err := c.pathOf(hdr.Name, true)
 			if err != nil {
 				return err
 			}
