@@ -70,9 +70,13 @@ func isZeroBlock(block []byte) bool {
 // NUL, so a header whose name field goes on past that terminator names a file no
 // filesystem can hold, and the entry would land under the shortened name the archive
 // never claimed. Anything this walk cannot trust — a block whose ustar magic or checksum
-// does not hold, a GNU sparse entry with its extra blocks, a walk past the 32 MiB cap —
-// ends the walk and leaves the archive to the tar reader itself, so a genuine archive is
-// never refused over a miscount.
+// does not hold, a GNU sparse entry with its extra blocks, a walk past the 32 MiB cap, a
+// size field spelling a negative or unholdable number — ends the walk and leaves the
+// archive to the tar reader itself, so a genuine archive is never refused over a miscount.
+// A size field too big for octal digits is read the POSIX way rather than given up on
+// (tarSize), because giving up used to let one base-256 size hide the name of every entry
+// after it. Whatever the walk concludes, fromTar judges every entry the reader surfaces
+// through pathOf, so no name is ever stored without the upload rules having been run on it.
 func tarRawEntryNames(r io.Reader) error {
 	blk := make([]byte, 512)
 	var walked int64
@@ -90,9 +94,14 @@ func tarRawEntryNames(r io.Reader) error {
 			return refusal("archive contains an entry name with a NUL byte %q",
 				strings.TrimRight(string(field), "\x00"))
 		}
-		size, ok := tarOctal(blk[124:136])
-		if !ok || blk[156] == tar.TypeGNUSparse {
-			return nil
+		size, ok := tarSize(blk[124:136])
+		if !ok || size < 0 || blk[156] == tar.TypeGNUSparse {
+			return nil // a size this walk cannot trust, or a sparse map: the reader's own verdict
+		}
+		if size > maxBodyBytes {
+			// A header claiming more than a bin file may hold, named exactly the way the
+			// streaming caps name the same breach once the bytes are read.
+			return sizeRefusal("extracted file over 1 MiB")
 		}
 		padded := (size + 511) / 512 * 512
 		if walked += 512 + padded; walked > maxExtractTotal {
@@ -137,6 +146,8 @@ func tarBlockTrustworthy(blk []byte) bool {
 
 // tarOctal reads one tar octal field, which ends at a NUL or a space. A field this
 // function cannot read (a base-2 GNU number, junk) is "not ok", which stops the walk.
+// The size field has its own reader, tarSize, because POSIX lets a size be spelled some
+// other way; every other field the walk looks at stays octal.
 func tarOctal(field []byte) (int64, bool) {
 	s := string(field)
 	if i := strings.IndexAny(s, "\x00 "); i >= 0 {
@@ -147,6 +158,39 @@ func tarOctal(field []byte) (int64, bool) {
 		return 0, false
 	}
 	return value, true
+}
+
+// tarSize reads a size field the way POSIX says one may be spelled: plain octal, or
+// base-256 when the first byte carries the 0x80 bit — the remaining bytes being a
+// big-endian two's complement number, exactly the decoding archive/tar itself applies. A
+// number too wide to hold answers "not ok"; a negative one comes back as it decoded, and
+// it is the walk that reads a negative size as a header lying rather than an entry.
+func tarSize(field []byte) (int64, bool) {
+	if len(field) == 0 || field[0]&0x80 == 0 {
+		return tarOctal(field)
+	}
+	inv := byte(0x00) // 0x00 for a positive number, 0xff to read a negative one as unsigned
+	if field[0]&0x40 != 0 {
+		inv = 0xff
+	}
+	var x uint64
+	for i, b := range field {
+		b ^= inv
+		if i == 0 {
+			b &= 0x7f // the top bit says "base-256", the next one says "negative"
+		}
+		if x>>56 > 0 {
+			return 0, false // the number is too wide for an int64
+		}
+		x = x<<8 | uint64(b)
+	}
+	if x>>63 > 0 {
+		return 0, false
+	}
+	if inv == 0xff {
+		return ^int64(x), true
+	}
+	return int64(x), true
 }
 
 // rawNameRunsPastItsTerminator reports name bytes that keep going after the NUL that
@@ -379,7 +423,13 @@ func (c *extractCollector) fromTar(r io.Reader, corruptMessage string) error {
 				return err
 			}
 			return refusal("archive contains a %s %s", tarEntryType(hdr.Typeflag), p)
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg, tar.TypeRegA, tar.TypeGNUSparse:
+			// A GNU sparse entry (typeflag 'S', the old in-header map and its extended
+			// map blocks alike) is a regular file with holes, and the reader already
+			// materializes those holes as zero bytes: the caps below count the bytes it
+			// answers exactly as they count any other file's. The pax-based GNU sparse
+			// variants and the GNU long name and long link records never appear here —
+			// the reader folds them into the entry they describe.
 			p, err := c.pathOf(hdr.Name, true)
 			if err != nil {
 				return err

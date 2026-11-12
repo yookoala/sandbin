@@ -118,8 +118,13 @@ ordinary upload name obeys. One leading `./` is stripped, because that is how
 skipped; a regular file with no name at all is `400 archive contains an unnamed entry`. A
 tar header whose name field carries bytes past its NUL terminator is
 `400 archive contains an entry name with a NUL byte <name>`, because the archive reader
-would otherwise store that entry under the shortened name it stops at. So an entry can
-never move a file out of the folder the archive lands in: `sub/../up.txt` under
+would otherwise store that entry under the shortened name it stops at; the walk that reads
+those name fields reaches every header it can count, a size written the base-256 way
+included. Two shapes are judged by what the archive reader reads instead of by the raw
+bytes: an entry following a GNU sparse entry, whose extra blocks the walk cannot count
+past, and an entry whose name arrives in a GNU long name record. There the entry lands
+under that reader's shortened name, judged by the same rules. So an entry can never move a
+file out of the folder the archive lands in: `sub/../up.txt` under
 `site/bundle.zip` is a refusal, not `site/up.txt`, and `deep/../../evil.txt` never reaches
 the bin root. Every refusal answers `400` naming the rule (`path must not escape the bin`
 and friends) and the bin stays exactly as it was. Symlink, hardlink, device and fifo entries
@@ -127,11 +132,14 @@ and friends) and the bin stays exactly as it was. Symlink, hardlink, device and 
 (`archive contains an encrypted entry <path>`) are refused the same loud way, as are duplicate
 paths (`archive contains duplicate path <path>`), an archive holding no files
 (`archive contains no files`) and bodies that are broken archives (`corrupt zip archive`,
-`corrupt tar archive`, `corrupt tar.gz archive`). Inside the unchanged 1 MiB body cap each
-entry unpacks to at most 1 MiB, one archive holds at most 1000 entries and unpacks at most
-32 MiB in total, checked while streaming so a decompression bomb stops at its caps instead of
-at the server's memory: a breach is `413 extracted file over 1 MiB`, `archive has over 1000
-files` or `archive unpacks over 32 MiB`, and nothing is stored. A successful extraction stores
+`corrupt tar archive`, `corrupt tar.gz archive`). A GNU sparse entry — what `tar --sparse`
+writes — is a regular file with holes and extracts as one: the holes fill out to the size
+the entry claims, and the caps just below count the bytes it fills out to. Inside the
+unchanged 1 MiB body cap each entry unpacks to at most 1 MiB, one archive holds at most
+1000 entries and unpacks at most 32 MiB in total, checked while streaming so a
+decompression bomb stops at its caps instead of at the server's memory: a breach is
+`413 extracted file over 1 MiB`, `archive has over 1000 files` or `archive unpacks over
+32 MiB`, and nothing is stored. A successful extraction stores
 all entries or none, replaces the paths it names and never deletes anything the archive did not
 mention, and answers `201` when at least one path was new and `200` when every path was a
 replacement, with an `X-Extracted-Count: <n>` header and one `/<hash>/<path>` line per

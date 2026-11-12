@@ -129,16 +129,24 @@ func tarDir(name string) tarEntry {
 }
 
 // rawTarEntry is one hand-written ustar header block, its name field spelled exactly as
-// the bytes say. Go's own tar writer refuses a name that is empty or carries a NUL, so
-// the shapes a crafted archive can carry have to be laid out byte by byte here.
+// the bytes say. Go's own tar writer refuses a name that is empty or carries a NUL, and it
+// has no way to spell a size the POSIX base-256 way or a GNU sparse map at all, so the
+// shapes a crafted archive or a foreign tar tool can carry have to be laid out byte by
+// byte here.
 type rawTarEntry struct {
-	name string
-	typ  byte
-	body string
+	name     string
+	typ      byte
+	body     string
+	size     []byte     // the 12 size bytes spelled directly, which is how base-256 is spelled
+	gnu      bool       // GNU magic and version, which is what a sparse map lives in
+	apparent int64      // GNU sparse: the size the holes fill out to, kept in the real size field
+	sparse   [][2]int64 // GNU sparse: the fragments the archive really carries, as offset and length
 }
 
 // makeRawTar writes those blocks, gzipped when gz is true, and closes the archive with
-// the two zero blocks every tar ends with.
+// the two zero blocks every tar ends with. The header is USTAR unless an entry asks for
+// the GNU format — the one a sparse map or a long name record lives in — in which case
+// the magic and version are GNU's.
 func makeRawTar(t *testing.T, gz bool, entries ...rawTarEntry) []byte {
 	t.Helper()
 	var raw bytes.Buffer
@@ -146,12 +154,31 @@ func makeRawTar(t *testing.T, gz bool, entries ...rawTarEntry) []byte {
 		blk := make([]byte, 512)
 		copy(blk[0:100], e.name)
 		copy(blk[100:108], fmt.Sprintf("%07o", 0644))
-		copy(blk[124:135], fmt.Sprintf("%011o", len(e.body)))
+		if e.size != nil {
+			copy(blk[124:136], e.size)
+		} else {
+			copy(blk[124:135], fmt.Sprintf("%011o", len(e.body)))
+		}
 		copy(blk[136:147], fmt.Sprintf("%011o", 1763000000))
 		copy(blk[148:156], "        ")
 		blk[156] = e.typ
-		copy(blk[257:263], "ustar\x00")
-		copy(blk[263:265], "00")
+		if e.gnu || len(e.sparse) > 0 {
+			copy(blk[257:263], "ustar ") // GNU magic and version: the format a sparse map or a long name record belongs to
+			copy(blk[263:265], " \x00")
+			for i, frag := range e.sparse {
+				if i >= 4 {
+					t.Fatalf("the old GNU sparse map holds 4 fragments, got %d", len(e.sparse))
+				}
+				copy(blk[386+i*24:386+i*24+12], fmt.Sprintf("%011o\x00", frag[0]))
+				copy(blk[386+i*24+12:386+i*24+24], fmt.Sprintf("%011o\x00", frag[1]))
+			}
+			if len(e.sparse) > 0 {
+				copy(blk[483:494], fmt.Sprintf("%011o", e.apparent))
+			}
+		} else {
+			copy(blk[257:263], "ustar\x00")
+			copy(blk[263:265], "00")
+		}
 		var sum int
 		for _, b := range blk {
 			sum += int(b)
@@ -178,6 +205,32 @@ func makeRawTar(t *testing.T, gz bool, entries ...rawTarEntry) []byte {
 		t.Fatalf("gzip close: %v", err)
 	}
 	return buf.Bytes()
+}
+
+// sparseRawEntry is the one shape the GNU sparse tests need: a regular file with holes,
+// the bytes it really carries in body, the fragments that hold them in frag, and the size
+// the holes fill out to in apparent. That is exactly what GNU tar --sparse writes, and the
+// typeflag it writes is tar.TypeGNUSparse.
+func sparseRawEntry(name string, apparent int64, frag [][2]int64, body string) rawTarEntry {
+	return rawTarEntry{name: name, typ: tar.TypeGNUSparse, body: body, apparent: apparent, sparse: frag}
+}
+
+// base256 spells a tar size field the POSIX way for a number too big for octal digits: the
+// top bit of the first byte marks base-256, and the 12 bytes carry a big-endian two's
+// complement number, so a negative one keeps its sign bytes set.
+func base256(t *testing.T, value int64) []byte {
+	t.Helper()
+	field := make([]byte, 12)
+	rest := value
+	for i := 11; i >= 1; i-- {
+		field[i] = byte(rest)
+		rest >>= 8
+	}
+	if rest != 0 && rest != -1 {
+		t.Fatalf("base256(%d) does not fit the field", value)
+	}
+	field[0] = byte(rest) | 0x80
+	return field
 }
 
 // bombZipBody builds a highly compressible bomb: count entries of 1 MiB of zeros each,
@@ -1042,6 +1095,216 @@ func TestNULInEntryNameRefused(t *testing.T) {
 		if got := listingPaths(t, s, hash); len(got) != 0 {
 			t.Errorf("PUT %s stored %v, want nothing — the entry must not land as the truncated name", tc.file, got)
 		}
+	}
+}
+
+// TestTarBase256SizeFieldKeepsWalking closes the bypass the review found: a first header
+// whose size is spelled the POSIX base-256 way used to stop the raw name walk before it
+// reached the entry after it, and the entry waiting there was one whose name field ran on
+// past its NUL terminator. The walk now reads that size the way archive/tar reads it, so
+// the entry after it is named.
+func TestTarBase256SizeFieldKeepsWalking(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	// Over the per-entry cap, and physically consistent: the 2 MiB of zeros are really in
+	// the archive — gzip is what keeps the request body far under the 1 MiB body cap — so
+	// this is an archive whose own declared size the caps refuse, named the way the
+	// streaming refusal names the same breach. Nothing reaches the NUL-overrun entry, and
+	// the reader would have refused this archive too.
+	overBody := makeRawTar(t, true,
+		rawTarEntry{name: "big.txt", typ: tar.TypeReg, body: strings.Repeat("\x00", 2<<20), size: base256(t, 2<<20)},
+		rawTarEntry{name: "evil\x00.txt", typ: tar.TypeReg, body: "hostile"})
+	if len(overBody) >= maxBodyBytes {
+		t.Fatalf("the gzipped 2 MiB archive is %d bytes, want it well under 1 MiB", len(overBody))
+	}
+	rec := put(t, s, base+"over.tar.gz", "test-key", string(overBody))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("PUT over.tar.gz = %d, want %d; body %q", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
+	}
+	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "extracted file over 1 MiB" {
+		t.Errorf("over.tar.gz body = %q, want %q", got, "extracted file over 1 MiB")
+	}
+	if got := listingPaths(t, s, hash); len(got) != 0 {
+		t.Errorf("the over-cap base-256 archive stored %v, want nothing", got)
+	}
+
+	// Within the cap: the walk reads the base-256 size, steps over the entry it counts,
+	// and gets to the NUL-overrun name after it. This is the shape that used to land as a
+	// 201 with the truncated name.
+	for _, tc := range []struct {
+		file string
+		body []byte
+	}{
+		{"chain.tar", makeRawTar(t, false,
+			rawTarEntry{name: "one.txt", typ: tar.TypeReg, body: strings.Repeat("a", 1024), size: base256(t, 1024)},
+			rawTarEntry{name: "evil\x00.txt", typ: tar.TypeReg, body: "hostile"})},
+		{"chain.tar.gz", makeRawTar(t, true,
+			rawTarEntry{name: "one.txt", typ: tar.TypeReg, body: strings.Repeat("a", 1024), size: base256(t, 1024)},
+			rawTarEntry{name: "evil\x00.txt", typ: tar.TypeReg, body: "hostile"})},
+	} {
+		rec := put(t, s, base+tc.file, "test-key", string(tc.body))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("PUT %s = %d, want %d; body %q", tc.file, rec.Code, http.StatusBadRequest, rec.Body.String())
+			continue
+		}
+		want := `archive contains an entry name with a NUL byte "evil\x00.txt"`
+		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != want {
+			t.Errorf("PUT %s body = %q, want %q", tc.file, got, want)
+		}
+		if got := listingPaths(t, s, hash); len(got) != 0 {
+			t.Errorf("PUT %s stored %v, want nothing", tc.file, got)
+		}
+	}
+
+	// A base-256 size that decodes negative says the header lies, so it is as untrustworthy
+	// as junk and the walk hands the archive to archive/tar. Recorded here is what that
+	// reader actually says about the archive, and nothing lands either way.
+	negative := makeRawTar(t, false,
+		rawTarEntry{name: "one.txt", typ: tar.TypeReg, body: "one", size: base256(t, -1)},
+		rawTarEntry{name: "evil\x00.txt", typ: tar.TypeReg, body: "hostile"})
+	rec = put(t, s, base+"negative.tar", "test-key", string(negative))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PUT negative.tar = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "corrupt tar archive" {
+		t.Errorf("negative.tar body = %q, want archive/tar's own verdict %q", got, "corrupt tar archive")
+	}
+	if got := listingPaths(t, s, hash); len(got) != 0 {
+		t.Errorf("negative.tar stored %v, want nothing", got)
+	}
+}
+
+// TestTarGNUSparseEntriesExtractAsFiles is the portability half: a sparse entry is a
+// regular file with holes, archive/tar already materializes those holes, and GNU tar
+// --sparse writes exactly that. The caps count the bytes such an entry materializes to.
+func TestTarGNUSparseEntriesExtractAsFiles(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	// Two fragments of real data, holes between and after them, filling out to 200000
+	// bytes. The fixture is checked to carry a typeflag 'S' header at all, because that is
+	// the flag the server used to call corrupt.
+	wantHoles := strings.Repeat("A", 1024) +
+		strings.Repeat("\x00", 100000-1024) +
+		strings.Repeat("B", 1024) +
+		strings.Repeat("\x00", 200000-100000-1024)
+	holes := makeRawTar(t, false,
+		rawTarEntry{name: "fine.txt", typ: tar.TypeReg, body: "fine"},
+		sparseRawEntry("holes.bin", 200000, [][2]int64{{0, 1024}, {100000, 1024}},
+			strings.Repeat("A", 1024)+strings.Repeat("B", 1024)),
+		rawTarEntry{name: "after.txt", typ: tar.TypeReg, body: "after"},
+	)
+	if !hasTypeflag(holes, tar.TypeGNUSparse) {
+		t.Fatal("the sparse fixture carries no tar.TypeGNUSparse header block")
+	}
+	rec := put(t, s, base+"holes.tar", "test-key", string(holes))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("PUT holes.tar = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Extracted-Count"); got != "3" {
+		t.Errorf("X-Extracted-Count = %q, want 3", got)
+	}
+	if got := listingPaths(t, s, hash); strings.Join(got, ",") != "after.txt,fine.txt,holes.bin" {
+		t.Errorf("listing = %v, want the sparse entry beside the ordinary ones", got)
+	}
+	if rec := get(t, s, base+"holes.bin"); rec.Code != http.StatusOK || rec.Body.String() != wantHoles {
+		t.Errorf("GET holes.bin = %d with %d bytes, want %d bytes read byte-identical",
+			rec.Code, len(rec.Body.String()), len(wantHoles))
+	}
+	if rec := get(t, s, base+"after.txt"); rec.Body.String() != "after" {
+		t.Errorf("GET after.txt = %q, want the entry after a sparse map to extract too", rec.Body.String())
+	}
+
+	// The same discipline on a sparse file whose holes fill out past what a bin file may be.
+	bigHoles := makeRawTar(t, false,
+		sparseRawEntry("big.bin", 2<<20, [][2]int64{{0, 1024}}, strings.Repeat("A", 1024)))
+	rec = put(t, s, base+"big.tar", "test-key", string(bigHoles))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("PUT big.tar = %d, want %d; body %q", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
+	}
+	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "extracted file over 1 MiB" {
+		t.Errorf("big.tar body = %q, want %q", got, "extracted file over 1 MiB")
+	}
+
+	// gzipped too, which is the shape a sparse folder upload takes, and under its own
+	// directory so this case says 201 for a path it creates rather than 200 for one the
+	// case above already made.
+	holesGz := makeRawTar(t, true, sparseRawEntry("holes.bin", 200000,
+		[][2]int64{{0, 1024}, {100000, 1024}}, strings.Repeat("A", 1024)+strings.Repeat("B", 1024)))
+	rec = put(t, s, base+"gz/holes.tar.gz", "test-key", string(holesGz))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("PUT gz/holes.tar.gz = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if rec := get(t, s, base+"gz/holes.bin"); rec.Body.String() != wantHoles {
+		t.Errorf("GET gz/holes.bin from the gzipped archive = %d bytes, want %d bytes read byte-identical",
+			len(rec.Body.String()), len(wantHoles))
+	}
+
+	if got := listingPaths(t, s, hash); len(got) == 0 {
+		t.Errorf("the sparse archives stored nothing")
+	}
+}
+
+// hasTypeflag reports whether a raw tar body carries a header block with that typeflag.
+func hasTypeflag(body []byte, typeflag byte) bool {
+	for start := 0; start+512 <= len(body); start += 512 {
+		if body[start+156] == typeflag && !isZeroBlock(body[start:start+512]) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestTarWalkBailsLeaveValidatedNamesBehind keeps the residual honest: the name walk gives
+// up on a layout it cannot follow — a sparse entry's extra blocks, a GNU long name's data
+// block — and there the entry lands under the name archive/tar itself read, which is a
+// name the upload rules still judged. These are the shapes the README scopes.
+func TestTarWalkBailsLeaveValidatedNamesBehind(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	// A NUL-overrun name after a sparse map: the walk stops at the sparse entry it cannot
+	// count past, so the reader's truncated reading of the name is what lands.
+	after := makeRawTar(t, false,
+		sparseRawEntry("holes.bin", 2000, [][2]int64{{0, 512}}, strings.Repeat("A", 512)),
+		rawTarEntry{name: "evil\x00.txt", typ: tar.TypeReg, body: "hostile"})
+	rec := put(t, s, base+"after-sparse.tar", "test-key", string(after))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("PUT after-sparse.tar = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if got := listingPaths(t, s, hash); strings.Join(got, ",") != "evil,holes.bin" {
+		t.Errorf("listing after a sparse map = %v, want the entry under the name archive/tar read", got)
+	}
+	if rec := get(t, s, base+"evil"); rec.Code != http.StatusOK || rec.Body.String() != "hostile" {
+		t.Errorf("GET evil = %d with body %q, want the validated truncated name served", rec.Code, rec.Body.String())
+	}
+
+	// A name a GNU long name record carries is not in any 100-byte name field for the walk
+	// to read at all, and the record's own bytes stop at a NUL for the reader too: the
+	// entry lands under the truncated long name, not the name its own header spells.
+	longBody := strings.Repeat("deep/", 8) + strings.Repeat("x", 60) + "evil\x00.txt"
+	longName := makeRawTar(t, false,
+		rawTarEntry{name: "././@LongLink", typ: tar.TypeGNULongName, body: longBody, gnu: true},
+		rawTarEntry{name: "short.txt", typ: tar.TypeReg, body: "hostile"})
+	rec = put(t, s, base+"longname.tar", "test-key", string(longName))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("PUT longname.tar = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	wantLong := strings.Repeat("deep/", 8) + strings.Repeat("x", 60) + "evil"
+	if got := listingPaths(t, s, hash); strings.Join(got, ",") != wantLong+",evil,holes.bin" {
+		t.Errorf("listing after a long name record = %v, want the entry under %q", got, wantLong)
+	}
+	for _, p := range []string{"short.txt", wantLong + ".txt"} {
+		if rec := get(t, s, base+p); rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404 — neither the entry's own name nor the name past the NUL lands", p, rec.Code)
+		}
+	}
+	if rec := get(t, s, base+wantLong); rec.Code != http.StatusOK || rec.Body.String() != "hostile" {
+		t.Errorf("GET the truncated long name = %d with body %q, want it served", rec.Code, rec.Body.String())
 	}
 }
 
