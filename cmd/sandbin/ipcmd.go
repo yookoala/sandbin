@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -205,7 +206,7 @@ func ipClear(args []string, stdout, stderr io.Writer) error {
 func ipFlagSet(verb string, stderr io.Writer) (*flag.FlagSet, *string, *string) {
 	fs := flag.NewFlagSet("sandbin ip "+verb, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	dbPath := fs.String("db", "sandbin.db", "sqlite file holding all bins")
+	dbPath := fs.String("db", "sandbin.db", "serve's db; its control socket <db>.sock is what this verb asks")
 	socketPath := fs.String("socket", "", "control socket of the running serve (default <db>.sock)")
 	return fs, dbPath, socketPath
 }
@@ -243,6 +244,11 @@ func controlRequest(stderr io.Writer, method, socketPath, path string) (int, []b
 	}
 	resp, err := controlClient(socketPath).Do(req)
 	if err != nil {
+		// A live server behind a socket the caller may not connect must not read as
+		// "nothing is listening", or the operator restarts serve instead of fixing the mode.
+		if errors.Is(err, os.ErrPermission) {
+			return 0, nil, ipError(stderr, "cannot connect to %s: permission denied", socketPath)
+		}
 		return 0, nil, ipError(stderr, "no sandbin serve listening on %s", socketPath)
 	}
 	defer resp.Body.Close()
