@@ -19,6 +19,9 @@ const (
 	maxBodyBytes = 1 << 20 // the same 1 MiB cap the server puts on a PUT body
 	maxPathLen   = 256
 	maxPathSegs  = 16
+	// The same caps the server puts on the two metadata headers.
+	maxTitleBytes       = 200
+	maxDescriptionBytes = 2000
 )
 
 func main() {
@@ -37,6 +40,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	binFlag := fs.String("bin", "", "an existing bin hash to upload into")
 	newBin := fs.Bool("new", false, "create a fresh bin instead of reusing this directory's")
 	nameFlag := fs.String("name", "", "the path to upload piped-in stdin as")
+	titleFlag := fs.String("title", "", "single-line title to give the bin, sent as X-Bin-Title")
+	descriptionFlag := fs.String("description", "", "single-line description to give the bin, sent as X-Bin-Description")
+	describe := fs.Bool("describe", false, "print this bin's title and description instead of uploading")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			// The usage has already been printed; asking for it is not a failure.
@@ -59,9 +65,33 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	if *binFlag != "" && *newBin {
 		return errors.New("use either --bin or --new, not both")
 	}
-	// A run without the key would only charge this address a 30 minute block, so it
-	// makes no request at all.
-	if *apiKey == "" {
+	// A metadata flag that was given says something about the bin's fields, even when the
+	// value it carries is the empty string.
+	titleGiven := flagGiven(fs, "title")
+	descriptionGiven := flagGiven(fs, "description")
+	// --describe reads one bin and writes nothing, so the flags that write have no place in it.
+	if *describe {
+		if *newBin {
+			return errors.New("--describe reads the bin this run would reuse: --new makes a fresh one")
+		}
+		if fs.NArg() > 0 || *nameFlag != "" {
+			return errors.New("--describe uploads nothing: pass no file arguments and no --name")
+		}
+		if titleGiven || descriptionGiven {
+			return errors.New("--describe only reads: set --title and --description on a run that writes")
+		}
+	}
+	// Metadata is checked before any request, the way an upload name is, because argv can
+	// carry a newline the transport would not carry.
+	if err := cleanMetadata("title", *titleFlag, maxTitleBytes); err != nil {
+		return err
+	}
+	if err := cleanMetadata("description", *descriptionFlag, maxDescriptionBytes); err != nil {
+		return err
+	}
+	// A write run without the key would only charge this address a 30 minute block, so it
+	// makes no request at all. --describe writes nothing and needs no key.
+	if !*describe && *apiKey == "" {
 		return errors.New("no API key: pass --api-key or set SANDBIN_API_KEY")
 	}
 
@@ -71,9 +101,38 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 		return err
 	}
 
-	names, stdinName, err := uploadTargets(fs.Args(), *nameFlag, stdin)
+	dir, err := os.Getwd()
 	if err != nil {
 		return err
+	}
+
+	if *describe {
+		bin, protected, err := resolveExistingBin(c, dir, *binFlag)
+		if err != nil {
+			return err
+		}
+		if protected && c.password == "" {
+			fmt.Fprintf(stderr, "sandbin-client: warning: bin %s has a password and SANDBIN_BIN_PASSWORD is not set\n", bin)
+		}
+		title, description, err := c.describeBin(bin)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "title: %s\ndescription: %s\n", title, description)
+		return nil
+	}
+
+	// A run with no upload targets is refused, unless it came to say what the bin holds:
+	// a metadata flag is a job of its own.
+	metaRun := titleGiven || descriptionGiven
+
+	var names []string
+	var stdinName string
+	if fs.NArg() > 0 || *nameFlag != "" || !metaRun {
+		names, stdinName, err = uploadTargets(fs.Args(), *nameFlag, stdin)
+		if err != nil {
+			return err
+		}
 	}
 	// stdin is read before the bin is chosen, so an oversized stream makes no
 	// request and leaves no bin behind.
@@ -85,11 +144,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 		}
 	}
 
-	dir, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	bin, protected, err := resolveBin(c, dir, *binFlag, *newBin)
+	bin, protected, justCreated, err := resolveBin(c, dir, *binFlag, *newBin, *titleFlag, *descriptionFlag)
 	if err != nil {
 		return err
 	}
@@ -100,6 +155,22 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	// Lines are held until every upload has succeeded, so a failed run prints
 	// nothing on stdout.
 	lines := make([]string, 0, len(names)+2)
+	if metaRun && !justCreated {
+		// A bin this run did not create takes its metadata as one PATCH before any upload,
+		// so a later upload failure still leaves the bin saying what it was meant to hold.
+		// A given flag replaces its field, and the empty value one carries clears it.
+		var titlePatch, descriptionPatch *string
+		if titleGiven {
+			titlePatch = titleFlag
+		}
+		if descriptionGiven {
+			descriptionPatch = descriptionFlag
+		}
+		if err := c.patchBinMeta(bin, titlePatch, descriptionPatch); err != nil {
+			return err
+		}
+		lines = append(lines, "updated /"+bin+"/")
+	}
 	for _, name := range names {
 		created, err := uploadFile(c, bin, name)
 		if err != nil {
@@ -122,37 +193,71 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	return nil
 }
 
+// flagGiven reports whether a flag appeared on the command line, which is the difference
+// between "set this field to the empty string" and "say nothing about it". FlagSet.Visit only
+// visits the flags a run actually set.
+func flagGiven(fs *flag.FlagSet, name string) bool {
+	given := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			given = true
+		}
+	})
+	return given
+}
+
 // resolveBin picks the bin to upload into: --bin, then this directory's state file
 // when its url matches the url in use, then a new bin written to the state file so
-// the next run reuses it. --new skips straight to a new bin.
-func resolveBin(c *client, dir, binFlag string, newBin bool) (string, bool, error) {
+// the next run reuses it. --new skips straight to a new bin. A bin made here takes its
+// metadata in the creation POST, and justCreated is what tells the caller no second
+// request is needed for it.
+func resolveBin(c *client, dir, binFlag string, newBin bool, title, description string) (string, bool, bool, error) {
 	if binFlag != "" {
 		hash, err := cleanBinHash(binFlag)
-		return hash, false, err
+		return hash, false, false, err
 	}
 
 	base := c.base.String()
 	if !newBin {
 		state, found, err := readState(dir)
 		if err != nil {
-			return "", false, err
+			return "", false, false, err
 		}
 		if found && state.URL == base {
-			return state.Bin, state.Protected, nil
+			return state.Bin, state.Protected, false, nil
 		}
 	}
 
-	hash, err := c.createBin()
+	hash, err := c.createBin(title, description)
 	if err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 	protected := c.password != ""
 	if err := writeState(dir, binState{URL: base, Bin: hash, Protected: protected}); err != nil {
 		// The bin exists on the server now, so the run must report its hash: rerunning
 		// would only create a second bin, not recover this one.
-		return "", false, fmt.Errorf("created bin %s but could not save it: %v", hash, err)
+		return "", false, false, fmt.Errorf("created bin %s but could not save it: %v", hash, err)
 	}
-	return hash, protected, nil
+	return hash, protected, true, nil
+}
+
+// resolveExistingBin is the bin --describe reads: --bin, or this directory's state file when
+// its url matches the url in use. A read-only run makes no bin, so a directory with neither
+// gets an error naming what it needs.
+func resolveExistingBin(c *client, dir, binFlag string) (string, bool, error) {
+	if binFlag != "" {
+		hash, err := cleanBinHash(binFlag)
+		return hash, false, err
+	}
+
+	state, found, err := readState(dir)
+	if err != nil {
+		return "", false, err
+	}
+	if !found || state.URL != c.base.String() {
+		return "", false, fmt.Errorf("--describe has no bin for this directory: pass --bin or upload something first")
+	}
+	return state.Bin, state.Protected, nil
 }
 
 // uploadTargets cleans every upload name and checks each local file exists and fits
@@ -238,6 +343,21 @@ func cleanUploadName(raw string) (string, error) {
 		return "", errors.New("path has too many segments")
 	}
 	return name, nil
+}
+
+// cleanMetadata refuses a title or description the way the server refuses it, with the
+// server's own wording, so a bad flag fails before a request. Bytes are what the cap counts,
+// and a value typed into argv can carry a newline the transport would never carry.
+func cleanMetadata(name, raw string, maxBytes int) error {
+	if len(raw) > maxBytes {
+		return fmt.Errorf("%s over %d bytes", name, maxBytes)
+	}
+	for _, r := range raw {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("%s may not contain control characters", name)
+		}
+	}
+	return nil
 }
 
 // cleanBinHash accepts a --bin hash, and tolerates the "/abc1234/" shape a created

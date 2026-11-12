@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	apiKeyHeader      = "X-API-Key"
-	binPasswordHeader = "X-Bin-Password"
+	apiKeyHeader         = "X-API-Key"
+	binPasswordHeader    = "X-Bin-Password"
+	binTitleHeader       = "X-Bin-Title"
+	binDescriptionHeader = "X-Bin-Description"
 )
 
 // apiError is a non-2xx answer: the status, the plain-text body the server wrote,
@@ -86,8 +88,9 @@ func (c *client) fileURL(bin, name string) string {
 
 // createBin POSTs "/" and returns the new bin's hash, read out of the "/abc1234/"
 // body the server answers with. No Basic Auth here: the bin password is being set,
-// not proven.
-func (c *client) createBin() (string, error) {
+// not proven. A metadata header goes only when there is metadata to send, so a bin
+// without any is created exactly as it always was.
+func (c *client) createBin(title, description string) (string, error) {
 	req, err := http.NewRequest(http.MethodPost, c.base.String()+"/", nil)
 	if err != nil {
 		return "", err
@@ -95,6 +98,12 @@ func (c *client) createBin() (string, error) {
 	req.Header.Set(apiKeyHeader, c.apiKey)
 	if c.password != "" {
 		req.Header.Set(binPasswordHeader, c.password)
+	}
+	if title != "" {
+		req.Header.Set(binTitleHeader, title)
+	}
+	if description != "" {
+		req.Header.Set(binDescriptionHeader, description)
 	}
 	_, body, err := c.do(req)
 	if err != nil {
@@ -142,6 +151,64 @@ func (c *client) putFile(bin, name string, body io.Reader) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("%s: unexpected status %d", req.URL, status)
+}
+
+// patchBinMeta PATCHes the bin base with the metadata headers it carries: a nil value says
+// nothing about that field, an empty one clears it. The answer is the bin's row as it now
+// stands, which this client does not read: all it needs is that the write took.
+func (c *client) patchBinMeta(bin string, title, description *string) error {
+	req, err := http.NewRequest(http.MethodPatch, c.binURL(bin), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set(apiKeyHeader, c.apiKey)
+	if c.password != "" {
+		req.SetBasicAuth(bin, c.password)
+	}
+	if title != nil {
+		req.Header.Set(binTitleHeader, *title)
+	}
+	if description != nil {
+		req.Header.Set(binDescriptionHeader, *description)
+	}
+	status, _, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("%s: unexpected status %d", req.URL, status)
+	}
+	return nil
+}
+
+// describeBin GETs the bin base once and reads the metadata headers its answer carries; a
+// header that is not there is a bin with nothing in that field. No API key goes out, because
+// reading a bin is what a GET has always been; a protected bin answers 401 until the bin
+// password arrives as Basic Auth.
+func (c *client) describeBin(bin string) (string, string, error) {
+	req, err := http.NewRequest(http.MethodGet, c.binURL(bin), nil)
+	if err != nil {
+		return "", "", err
+	}
+	if c.password != "" {
+		req.SetBasicAuth(bin, c.password)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("%s %s: %v", req.Method, req.URL, err)
+	}
+	defer resp.Body.Close()
+
+	// The page behind the headers is whatever the bin holds, and this read is about the
+	// headers, so the body is only taken as far as an error message needs it.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	if err != nil {
+		return "", "", fmt.Errorf("%s %s: read response: %v", req.Method, req.URL, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return "", "", newAPIError(resp, body)
+	}
+	return resp.Header.Get(binTitleHeader), resp.Header.Get(binDescriptionHeader), nil
 }
 
 // do runs one request once and returns a 2xx status and body. Anything else comes

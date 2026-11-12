@@ -20,6 +20,12 @@ import (
 // 401 for a missing bin password, 413 for an oversized body, and 201 or 200
 // according to whether the path was new. It counts requests, which is how these
 // tests prove the client never retries.
+type fakeBin struct {
+	password    string
+	title       string
+	description string
+}
+
 type fakeServer struct {
 	apiKey     string
 	bodyLimit  int
@@ -29,16 +35,17 @@ type fakeServer struct {
 	mu       sync.Mutex
 	requests int
 	puts     int
+	patches  int
 	failures int
-	bins     map[string]string // bin hash -> bin password, "" meaning open
-	files    map[string]string // "bin/path" -> stored body
+	bins     map[string]fakeBin // bin hash -> its password and metadata
+	files    map[string]string  // "bin/path" -> stored body
 }
 
 // newFake starts a fake server, exports its url and key as the client's env, and
 // runs the test in a private working directory.
 func newFake(t *testing.T, apiKey string) *fakeServer {
 	t.Helper()
-	f := &fakeServer{apiKey: apiKey, bodyLimit: 1 << 20, bins: map[string]string{}, files: map[string]string{}}
+	f := &fakeServer{apiKey: apiKey, bodyLimit: 1 << 20, bins: map[string]fakeBin{}, files: map[string]string{}}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	t.Setenv("SANDBIN_URL", srv.URL)
@@ -56,11 +63,14 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPut {
 		f.puts++
 	}
+	if r.Method == http.MethodPatch {
+		f.patches++
+	}
 	if f.log != nil {
-		fmt.Fprintln(f.log, "request")
+		fmt.Fprintln(f.log, "request", r.Method)
 	}
 
-	keyChecked := r.Method == http.MethodPost || r.Method == http.MethodPut
+	keyChecked := r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch
 	if keyChecked && f.failures > 0 {
 		// An attempt while blocked is another failure, so the wait walks up.
 		f.failures++
@@ -76,7 +86,11 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		hash := fmt.Sprintf("bin%04d", len(f.bins)+1)
-		f.bins[hash] = r.Header.Get("X-Bin-Password")
+		f.bins[hash] = fakeBin{
+			password:    r.Header.Get("X-Bin-Password"),
+			title:       r.Header.Get("X-Bin-Title"),
+			description: r.Header.Get("X-Bin-Description"),
+		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusCreated)
 		if f.createBody != "" {
@@ -86,28 +100,65 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "/"+hash+"/")
 		return
 	}
-	if r.Method != http.MethodPut {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 
 	first, rest, found := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
 	if !found || first == "" {
 		http.Error(w, "unknown bin", http.StatusNotFound)
 		return
 	}
-	password, known := f.bins[first]
+	bin, known := f.bins[first]
 	if !known {
 		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
+	}
+	if r.Method != http.MethodPut {
+		// GET and PATCH read or write the bin itself; nothing else is on this fake.
+		_, password, ok := r.BasicAuth()
+		if bin.password != "" && (!ok || password != bin.password) {
+			w.Header().Set("WWW-Authenticate", `Basic realm="sandbin"`)
+			http.Error(w, "bin password required", http.StatusUnauthorized)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			// The metadata of a bin base GET comes back as headers, empty fields omitted.
+			if bin.title != "" {
+				w.Header().Set("X-Bin-Title", bin.title)
+			}
+			if bin.description != "" {
+				w.Header().Set("X-Bin-Description", bin.description)
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			io.WriteString(w, "<!doctype html>\n<title>/"+first+"/</title>\n")
+			return
+		case http.MethodPatch:
+			if rest != "" {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			// A header that was sent replaces its field, an empty value clears it, and a
+			// header that was not sent leaves it. The answer is the row as it now stands.
+			if values, ok := r.Header["X-Bin-Title"]; ok {
+				bin.title = values[0]
+			}
+			if values, ok := r.Header["X-Bin-Description"]; ok {
+				bin.description = values[0]
+			}
+			f.bins[first] = bin
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, "{\"title\":%q,\"description\":%q}\n", bin.title, bin.description)
+			return
+		}
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if rest == "" {
 		http.Error(w, "empty path", http.StatusBadRequest)
 		return
 	}
-	if password != "" {
+	if bin.password != "" {
 		_, sent, ok := r.BasicAuth()
-		if !ok || sent != password {
+		if !ok || sent != bin.password {
 			w.Header().Set("WWW-Authenticate", `Basic realm="sandbin"`)
 			http.Error(w, "bin password required", http.StatusUnauthorized)
 			return
@@ -142,8 +193,17 @@ func (f *fakeServer) addBin(password string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	hash := fmt.Sprintf("bin%04d", len(f.bins)+1)
-	f.bins[hash] = password
+	f.bins[hash] = fakeBin{password: password}
 	return hash
+}
+
+// binMeta reads back what the fake holds for a bin, which is how the metadata tests say
+// what the server actually stored.
+func (f *fakeServer) binMeta(hash string) (string, string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	bin := f.bins[hash]
+	return bin.title, bin.description
 }
 
 func (f *fakeServer) requestsSeen() int {
@@ -158,6 +218,14 @@ func (f *fakeServer) putsSeen() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.puts
+}
+
+// patchesSeen counts the PATCHes, which is how a test says a created bin took no second
+// request and an existing one took exactly one.
+func (f *fakeServer) patchesSeen() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.patches
 }
 
 func (f *fakeServer) binCount() int {
@@ -1008,7 +1076,7 @@ func TestStateWriteFailureNamesTheCreatedBin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newClient: %v", err)
 	}
-	_, _, err = resolveBin(c, filepath.Join(t.TempDir(), "gone"), "", false)
+	_, _, _, err = resolveBin(c, filepath.Join(t.TempDir(), "gone"), "", false, "", "")
 	if err == nil {
 		t.Fatalf("resolveBin into a missing directory succeeded, want an error")
 	}
@@ -1020,6 +1088,397 @@ func TestStateWriteFailureNamesTheCreatedBin(t *testing.T) {
 	}
 	if f.binCount() != 1 {
 		t.Errorf("bins = %d, want the one bin resolveBin created", f.binCount())
+	}
+}
+
+// TestMetadataOnlyRunUpdatesAnExistingBin is a run that uploads nothing and says what the
+// bin holds: one PATCH, one line on stdout, and --describe reads it back.
+func TestMetadataOnlyRunUpdatesAnExistingBin(t *testing.T) {
+	f := newFake(t, "test-key")
+	hash := f.addBin("")
+
+	stdout, stderr, err := runClient(t, nil, "--bin", hash, "--title", "Audit notes", "--description", "findings of the audit")
+	if err != nil {
+		t.Fatalf("metadata-only run: %v; stderr %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want nothing on a successful run", stderr)
+	}
+	base := os.Getenv("SANDBIN_URL")
+	want := "updated /" + hash + "/\n" + base + "/" + hash + "/\n"
+	if stdout != want {
+		t.Errorf("stdout =\n%s\nwant\n%s", stdout, want)
+	}
+	if title, description := f.binMeta(hash); title != "Audit notes" || description != "findings of the audit" {
+		t.Errorf("stored metadata = %q / %q, want the flags' values", title, description)
+	}
+	if f.requestsSeen() != 1 || f.patchesSeen() != 1 {
+		t.Errorf("requests = %d (PATCHes %d), want exactly one PATCH", f.requestsSeen(), f.patchesSeen())
+	}
+	if f.binCount() != 1 {
+		t.Errorf("bins = %d, want only the named bin", f.binCount())
+	}
+	if _, err := os.Stat(stateFileName); !os.IsNotExist(err) {
+		t.Errorf("%s exists after a --bin run, want no state file", stateFileName)
+	}
+
+	// The same run twice is the same PATCH: a metadata flag is not an upload.
+	if _, _, err := runClient(t, nil, "--bin", hash, "--description", "findings of the audit, again"); err != nil {
+		t.Fatalf("second metadata-only run: %v", err)
+	}
+	if title, description := f.binMeta(hash); title != "Audit notes" || description != "findings of the audit, again" {
+		t.Errorf("stored metadata = %q / %q, want the title kept and the description replaced", title, description)
+	}
+
+	// Reading it back is --describe's job.
+	stdout, stderr, err = runClient(t, nil, "--describe", "--bin", hash)
+	if err != nil {
+		t.Fatalf("--describe: %v; stderr %s", err, stderr)
+	}
+	if want := "title: Audit notes\ndescription: findings of the audit, again\n"; stdout != want {
+		t.Errorf("--describe stdout =\n%s\nwant\n%s", stdout, want)
+	}
+	if stderr != "" {
+		t.Errorf("--describe stderr = %q, want nothing", stderr)
+	}
+	if f.requestsSeen() != 3 || f.patchesSeen() != 2 {
+		t.Errorf("requests = %d (PATCHes %d), want two PATCHes and the one GET", f.requestsSeen(), f.patchesSeen())
+	}
+}
+
+// TestMetadataFlagClearsAField is the empty value: --description "" clears that field and
+// says nothing about the other one.
+func TestMetadataFlagClearsAField(t *testing.T) {
+	f := newFake(t, "test-key")
+	hash := f.addBin("")
+
+	if _, _, err := runClient(t, nil, "--bin", hash, "--title", "kept title", "--description", "cleared description"); err != nil {
+		t.Fatalf("run setting both fields: %v", err)
+	}
+	if _, stderr, err := runClient(t, nil, "--bin", hash, "--description", ""); err != nil {
+		t.Fatalf("run clearing the description: %v; stderr %s", err, stderr)
+	}
+	if title, description := f.binMeta(hash); title != "kept title" || description != "" {
+		t.Errorf("stored metadata = %q / %q, want the title kept and the description cleared", title, description)
+	}
+	if f.patchesSeen() != 2 {
+		t.Errorf("PATCHes = %d, want one per metadata run", f.patchesSeen())
+	}
+
+	stdout, _, err := runClient(t, nil, "--describe", "--bin", hash)
+	if err != nil {
+		t.Fatalf("--describe after the clear: %v", err)
+	}
+	if stdout != "title: kept title\ndescription: \n" {
+		t.Errorf("--describe stdout = %q, want the cleared field printed as empty", stdout)
+	}
+}
+
+// TestCreatingABinCarriesMetadataInItsPOST is the no-second-request rule: a bin made here
+// takes its metadata in the creation POST and never sees a PATCH.
+func TestCreatingABinCarriesMetadataInItsPOST(t *testing.T) {
+	f := newFake(t, "test-key")
+	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
+
+	stdout, stderr, err := runClient(t, nil, "--title", "Prototype", "--description", "the JS prototype", "index.html")
+	if err != nil {
+		t.Fatalf("run: %v; stderr %s", err, stderr)
+	}
+	hash := binHashOf(t, stdout)
+	if title, description := f.binMeta(hash); title != "Prototype" || description != "the JS prototype" {
+		t.Errorf("stored metadata = %q / %q, want the creation headers", title, description)
+	}
+	if f.requestsSeen() != 2 || f.putsSeen() != 1 || f.patchesSeen() != 0 {
+		t.Errorf("requests = %d (PUTs %d, PATCHes %d), want one POST and one PUT and no PATCH",
+			f.requestsSeen(), f.putsSeen(), f.patchesSeen())
+	}
+	base := os.Getenv("SANDBIN_URL")
+	want := "created " + base + "/" + hash + "/index.html\n" + base + "/" + hash + "/\n"
+	if stdout != want {
+		t.Errorf("stdout =\n%s\nwant\n%s", stdout, want)
+	}
+}
+
+// TestMetadataOnlyRunOnAFreshDirectoryCreatesOneBin is the metadata-only run with no bin to
+// reuse: the created bin already carries the metadata, so the run makes one request.
+func TestMetadataOnlyRunOnAFreshDirectoryCreatesOneBin(t *testing.T) {
+	f := newFake(t, "test-key")
+
+	stdout, stderr, err := runClient(t, nil, "--title", "Notes only", "--description", "no files yet")
+	if err != nil {
+		t.Fatalf("metadata-only run: %v; stderr %s", err, stderr)
+	}
+	if f.requestsSeen() != 1 || f.patchesSeen() != 0 {
+		t.Errorf("requests = %d (PATCHes %d), want the creation POST alone", f.requestsSeen(), f.patchesSeen())
+	}
+	if title, description := f.binMeta("bin0001"); title != "Notes only" || description != "no files yet" {
+		t.Errorf("stored metadata = %q / %q, want the creation headers", title, description)
+	}
+	if strings.Contains(stdout, "updated /") {
+		t.Errorf("stdout =\n%s\nwant no updated line for a bin this run made", stdout)
+	}
+	if !strings.HasSuffix(stdout, os.Getenv("SANDBIN_URL")+"/bin0001/\n") {
+		t.Errorf("stdout =\n%s\nwant the bin URL last", stdout)
+	}
+
+	state, _ := readStateFile(t)
+	if !strings.Contains(string(state), "bin0001") {
+		t.Errorf("state file =\n%s\nwant it to remember the new bin", state)
+	}
+}
+
+// TestMetadataPATCHComesBeforeTheUploads is the ordering the decisions settle on: a reused
+// bin is described first, so the line order says so too.
+func TestMetadataPATCHComesBeforeTheUploads(t *testing.T) {
+	f := newFake(t, "test-key")
+	writeWorkDirFile(t, "index.html", "<h1>one</h1>")
+
+	first, _, err := runClient(t, nil, "index.html")
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	hash := binHashOf(t, first)
+
+	log := &orderLog{}
+	f.setLog(log)
+	stdout, stderr, err := runClient(t, nil, "--title", "Audit notes", "index.html")
+	if err != nil {
+		t.Fatalf("run with metadata: %v; stderr %s", err, stderr)
+	}
+	base := os.Getenv("SANDBIN_URL")
+	want := "updated /" + hash + "/\n" +
+		"updated " + base + "/" + hash + "/index.html\n" +
+		base + "/" + hash + "/\n"
+	if stdout != want {
+		t.Errorf("stdout =\n%s\nwant\n%s", stdout, want)
+	}
+
+	lines := log.snapshot()
+	if len(lines) != 2 {
+		t.Fatalf("server log = %q, want one PATCH and one PUT", lines)
+	}
+	if !strings.Contains(lines[0], "PATCH") || !strings.Contains(lines[1], "PUT") {
+		t.Errorf("server log = %q, want the PATCH before the PUT", lines)
+	}
+	if f.patchesSeen() != 1 {
+		t.Errorf("PATCHes = %d, want exactly one", f.patchesSeen())
+	}
+}
+
+// TestFailedUploadStillLeavesTheBinDescribed is why the PATCH comes first: the run failed
+// and printed nothing, but the bin says what it was meant to hold.
+func TestFailedUploadStillLeavesTheBinDescribed(t *testing.T) {
+	f := newFake(t, "test-key")
+	writeWorkDirFile(t, "index.html", "<h1>one</h1>")
+
+	first, _, err := runClient(t, nil, "index.html")
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	hash := binHashOf(t, first)
+
+	f.setBodyLimit(8)
+	writeWorkDirFile(t, "index.html", strings.Repeat("x", 20))
+	stdout, _, err := runClient(t, nil, "--description", "what this bin was for", "index.html")
+	if err == nil {
+		t.Fatalf("run against an oversized body succeeded, want a 413")
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want nothing when the run failed", stdout)
+	}
+	if _, description := f.binMeta(hash); description != "what this bin was for" {
+		t.Errorf("stored description = %q, want the PATCH that ran before the failed upload", description)
+	}
+	if f.patchesSeen() != 1 {
+		t.Errorf("PATCHes = %d, want exactly one", f.patchesSeen())
+	}
+}
+
+// TestRefusesBadMetadataLocallyWithNoRequest mirrors the server's caps client-side, with the
+// server's own wording, so a bad flag costs nothing.
+func TestRefusesBadMetadataLocallyWithNoRequest(t *testing.T) {
+	f := newFake(t, "test-key")
+	hash := f.addBin("")
+	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
+
+	for _, bad := range []struct {
+		flag, value, want string
+	}{
+		{"--title", strings.Repeat("t", maxTitleBytes+1), "title over 200 bytes"},
+		// 101 two-byte characters are 202 bytes: the cap counts bytes, not characters.
+		{"--title", strings.Repeat("é", maxTitleBytes/2+1), "title over 200 bytes"},
+		{"--description", strings.Repeat("d", maxDescriptionBytes+1), "description over 2000 bytes"},
+		{"--title", "a\nb", "title may not contain control characters"},
+		{"--title", "a\tb", "title may not contain control characters"},
+		{"--description", "a\x7fb", "description may not contain control characters"},
+	} {
+		stdout, stderr, err := runClient(t, nil, bad.flag, bad.value, "--bin", hash, "index.html")
+		if err == nil {
+			t.Errorf("run with %s %q succeeded, want a local refusal", bad.flag, bad.value)
+			continue
+		}
+		if !strings.Contains(stderr, bad.want) {
+			t.Errorf("stderr for %s %q = %q, want %q", bad.flag, bad.value, stderr, bad.want)
+		}
+		if stdout != "" {
+			t.Errorf("stdout for %s %q = %q, want nothing", bad.flag, bad.value, stdout)
+		}
+	}
+	if f.requestsSeen() != 0 {
+		t.Errorf("requests = %d, want none: a bad metadata flag is refused locally", f.requestsSeen())
+	}
+
+	// Exactly at the cap is accepted, by the same measure.
+	if _, stderr, err := runClient(t, nil, "--bin", hash,
+		"--title", strings.Repeat("t", maxTitleBytes), "--description", strings.Repeat("d", maxDescriptionBytes)); err != nil {
+		t.Fatalf("run at the caps: %v; stderr %s", err, stderr)
+	}
+	if title, description := f.binMeta(hash); len(title) != maxTitleBytes || len(description) != maxDescriptionBytes {
+		t.Errorf("stored metadata = %d / %d bytes, want both at the cap", len(title), len(description))
+	}
+}
+
+// TestDescribeNeedsNoAPIKey is the read-only rule: a run that writes nothing needs no key,
+// reads the bin this directory's state file names, and makes exactly one request.
+func TestDescribeNeedsNoAPIKey(t *testing.T) {
+	f := newFake(t, "test-key")
+	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
+
+	stdout, _, err := runClient(t, nil, "--title", "Audit notes", "--description", "findings of the audit", "index.html")
+	if err != nil {
+		t.Fatalf("run with metadata: %v", err)
+	}
+	hash := binHashOf(t, stdout)
+	requestsBefore := f.requestsSeen()
+
+	t.Setenv("SANDBIN_API_KEY", "")
+	stdout, stderr, err := runClient(t, nil, "--describe")
+	if err != nil {
+		t.Fatalf("--describe without an API key: %v; stderr %s", err, stderr)
+	}
+	if want := "title: Audit notes\ndescription: findings of the audit\n"; stdout != want {
+		t.Errorf("stdout =\n%s\nwant\n%s", stdout, want)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want nothing", stderr)
+	}
+	if f.requestsSeen() != requestsBefore+1 {
+		t.Errorf("requests = %d, want the one GET this run made", f.requestsSeen())
+	}
+
+	// --bin reaches the same bin with no key and no state file either.
+	if _, err := os.Stat(stateFileName); err != nil {
+		t.Fatalf("stat %s: %v", stateFileName, err)
+	}
+	stdout, _, err = runClient(t, nil, "--describe", "--bin", "/"+hash+"/")
+	if err != nil {
+		t.Fatalf("--describe --bin: %v", err)
+	}
+	if want := "title: Audit notes\ndescription: findings of the audit\n"; stdout != want {
+		t.Errorf("--describe --bin stdout =\n%s\nwant\n%s", stdout, want)
+	}
+}
+
+// TestDescribeHasNoBinToRead is the state file that does not match the url in use: a
+// read-only run makes no bin behind the user's back.
+func TestDescribeHasNoBinToRead(t *testing.T) {
+	f := newFake(t, "test-key")
+	writeWorkDirFile(t, stateFileName, `{"url": "http://other.invalid", "bin": "ffffffff", "protected": false}`)
+
+	stdout, stderr, err := runClient(t, nil, "--describe")
+	if err == nil {
+		t.Fatalf("--describe against a non-matching state file succeeded, want an error")
+	}
+	if !strings.Contains(stderr, "--describe") {
+		t.Errorf("stderr = %q, want it to name --describe", stderr)
+	}
+	if stdout != "" || f.requestsSeen() != 0 || f.binCount() != 0 {
+		t.Errorf("stdout = %q, requests = %d, bins = %d; want none of them", stdout, f.requestsSeen(), f.binCount())
+	}
+}
+
+// TestDescribeProtectedBinHonoursBinPassword keeps the bin password rule for the read-only
+// run: without it the warning and the 401, with it the two lines.
+func TestDescribeProtectedBinHonoursBinPassword(t *testing.T) {
+	f := newFake(t, "test-key")
+	hash := f.addBin("sesame")
+	t.Setenv("SANDBIN_BIN_PASSWORD", "sesame")
+
+	if _, stderr, err := runClient(t, nil, "--bin", hash, "--title", "Secret notes"); err != nil {
+		t.Fatalf("run setting the title: %v; stderr %s", err, stderr)
+	}
+
+	t.Setenv("SANDBIN_BIN_PASSWORD", "")
+	stdout, stderr, err := runClient(t, nil, "--describe", "--bin", hash)
+	if err == nil {
+		t.Fatalf("--describe on a protected bin without the password succeeded, want a 401")
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want nothing", stdout)
+	}
+	if !strings.Contains(stderr, "401") || !strings.Contains(stderr, "bin password required") {
+		t.Errorf("stderr = %q, want 401 and the server's message", stderr)
+	}
+	if !strings.Contains(stderr, "SANDBIN_BIN_PASSWORD") {
+		t.Errorf("stderr = %q, want the hint naming SANDBIN_BIN_PASSWORD", stderr)
+	}
+
+	t.Setenv("SANDBIN_BIN_PASSWORD", "sesame")
+	stdout, stderr, err = runClient(t, nil, "--describe", "--bin", hash)
+	if err != nil {
+		t.Fatalf("--describe with the bin password: %v; stderr %s", err, stderr)
+	}
+	if stdout != "title: Secret notes\ndescription: \n" {
+		t.Errorf("stdout = %q, want the two lines", stdout)
+	}
+}
+
+// TestDescribeRefusedWithWriteFlags keeps --describe to one job: it reads a bin, so the
+// flags that make or write one have no place next to it.
+func TestDescribeRefusedWithWriteFlags(t *testing.T) {
+	f := newFake(t, "test-key")
+	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
+
+	for _, args := range [][]string{
+		{"--describe", "--new"},
+		{"--describe", "index.html"},
+		{"--describe", "--name", "x.txt"},
+		{"--describe", "--title", "t"},
+		{"--describe", "--description", "d"},
+		{"--describe", "--bin", "bin0001", "index.html"},
+	} {
+		stdout, stderr, err := runClient(t, nil, args...)
+		if err == nil {
+			t.Errorf("run %q succeeded, want a refusal", args)
+			continue
+		}
+		if !strings.Contains(stderr, "--describe") {
+			t.Errorf("stderr for %q = %q, want it to name --describe", args, stderr)
+		}
+		if stdout != "" {
+			t.Errorf("stdout for %q = %q, want nothing", args, stdout)
+		}
+	}
+	if f.requestsSeen() != 0 {
+		t.Errorf("requests = %d, want none", f.requestsSeen())
+	}
+}
+
+// TestRunWithNoTargetAndNoMetadataFlagIsStillRefused keeps the old refusal: metadata flags
+// are what make a run with nothing to upload a run at all.
+func TestRunWithNoTargetAndNoMetadataFlagIsStillRefused(t *testing.T) {
+	f := newFake(t, "test-key")
+	hash := f.addBin("")
+
+	stdout, stderr, err := runClient(t, nil, "--bin", hash)
+	if err == nil {
+		t.Fatalf("run with no file, no stdin and no metadata flag succeeded, want an error")
+	}
+	if !strings.Contains(stderr, "--name") {
+		t.Errorf("stderr = %q, want the message naming --name", stderr)
+	}
+	if stdout != "" || f.requestsSeen() != 0 {
+		t.Errorf("stdout = %q, requests = %d; want neither", stdout, f.requestsSeen())
 	}
 }
 
