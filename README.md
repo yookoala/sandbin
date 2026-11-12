@@ -98,10 +98,43 @@ PUT bodies are capped at 1 MiB. `403` is a bad API key, `401` a missing bin pass
 `413` an oversized body, `429` an address blocked for bad API keys. A `HEAD` answers `405`:
 read the headers of a `GET` with `curl -s -D - -o /dev/null <url>`.
 
+An upload whose cleaned path ends in `.zip`, `.tar`, `.tar.gz` or `.tgz` (either case) and
+whose body starts with the matching archive magic is unpacked into the bin instead of stored as
+one file: zip, raw tar and gzipped tar, and the format is taken from the body's magic rather
+than the extension, so a `.tgz` holding a zip is unzipped while an archive-looking name holding
+no archive magic is a `400 not a zip, tar or tar.gz archive`. An archive body under an ordinary
+name stays just a file. The entries land under the upload name's parent directory:
+`PUT ${BIN}site/bundle.tar.gz` with entries `index.html` and `css/app.css` creates
+`site/index.html` and `site/css/app.css`, and an archive at the bin root unpacks to the root.
+The archive name itself is not stored and no directory is created for it; every extracted file
+is an ordinary bin file from then on, listed, served and rendered like any upload, and an
+`index.html` among the entries becomes the bin's cover page.
+
+Every entry is checked before anything is stored, against the same path rules an ordinary
+upload name obeys, so a `../` escape, an absolute path, a control character or an over-deep
+path refuses the whole archive with `400` naming the rule (`path must not escape the bin` and
+friends) and the bin stays exactly as it was. Symlink, hardlink, device and fifo entries
+(`archive contains a symlink <path>`) and entries a zip claims to have encrypted
+(`archive contains an encrypted entry <path>`) are refused the same loud way, as are duplicate
+paths (`archive contains duplicate path <path>`), an archive holding no files
+(`archive contains no files`) and bodies that are broken archives (`corrupt zip archive`,
+`corrupt tar archive`, `corrupt tar.gz archive`). Inside the unchanged 1 MiB body cap each
+entry unpacks to at most 1 MiB, one archive holds at most 1000 entries and unpacks at most
+32 MiB in total, checked while streaming so a decompression bomb stops at its caps instead of
+at the server's memory: a breach is `413 extracted file over 1 MiB`, `archive has over 1000
+files` or `archive unpacks over 32 MiB`, and nothing is stored. A successful extraction stores
+all entries or none, replaces the paths it names and never deletes anything the archive did not
+mention, and answers `201` when at least one path was new and `200` when every path was a
+replacement, with an `X-Extracted-Count: <n>` header and one `/<hash>/<path>` line per
+extracted file as its body. To keep an archive-named body raw after all, send an `X-Extract`
+header on the `PUT` — any value, even empty; presence is what the server reads — and the bytes
+are stored and served unchanged.
+
 ## Upload previews with sandbin-client
 
 `cmd/sandbin-client` is this API shaped for an agent that just wrote a prototype: one
-command, one `created` or `updated` line per file on stdout, and the bin base URL last for
+command, one `created` or `updated` line per file on stdout (or one `extracted <n> files into
+<url>` line when the server unpacked an upload), and the bin base URL last for
 the human to open.
 
 ```sh
@@ -116,7 +149,9 @@ has no flag on purpose, so a bin password never lands on a command line: when it
 goes out as `X-Bin-Password` on the create and as Basic Auth (user name = bin hash) on every
 upload. `--bin <hash>` uploads into a bin you already have, `--new` forces a fresh one, and
 `--name <path>` names piped-in stdin; with nothing piped in it is an error, not an empty
-upload. A name that starts with `-` goes after `--` (`sandbin-client -- -draft.html`), and
+upload. `--archive <folder>` uploads a whole folder as one server-unpacked archive (below), and
+`--no-extract` sends the `X-Extract` opt-out header with every upload of the run. A name that
+starts with `-` goes after `--` (`sandbin-client -- -draft.html`), and
 `--help` prints the flag list on stderr.
 
 ```sh
@@ -130,6 +165,43 @@ make 2>&1 | sandbin-client --name build.ansi
 # updated http://localhost:8080/abc1234/build.ansi
 ```
 
+A whole folder goes up as one archive: `--archive <folder>` writes a tar.gz of the folder to a
+temp file, uploads it at the bin root named `<basename>.tar.gz`, and lets the server unpack it.
+The entries carry the folder's path relative to the current directory verbatim, so
+`./hello/world.html` lands as `/<hash>/hello/world.html` — and `--archive projects/app` still
+uploads `app.tar.gz` while its entries read `projects/app/...`, so the bin's paths come out
+exactly folder-relative, never `projects/projects/`.
+
+```sh
+sandbin-client --archive hello
+# extracted 2 files into http://localhost:8080/abc1234/hello.tar.gz
+# http://localhost:8080/abc1234/          <- the folder, as ordinary bin files
+```
+
+That line names the upload; every path that landed is in the bin's listing. The folder is
+checked before any request, the way upload names are: `.` and absolute folder arguments are
+refused (`--archive names a folder` — the base path of a bin must name a folder), as are a
+missing path, a plain file instead of a folder, a symlink or other non-regular entry inside it
+(`<path> is not a regular file`), a file over 1 MiB (`<path> is over 1 MiB`), more than 1000
+files (`folder has over 1000 files`), more than 32 MiB of total content
+(`folder unpacks over 32 MiB`), entry names past the server's path limits, a folder holding no
+files at all (`folder contains no files`), and a built archive over 1 MiB
+(`archive is over 1 MiB`). The temp file is removed on every exit path. `--archive` combines
+with file arguments and `--name` stdin in one run — the archive uploads last — and with
+`--no-extract` the built archive itself is what lands in the bin, stored raw under its own
+name.
+
+Hand-built archives need no client machinery: the server unpacks them from an ordinary upload.
+
+```sh
+tar czf - hello | sandbin-client --name site/bundle.tar.gz   # entries land under site/
+sandbin-client site/bundle.zip                               # zip too, from any zip tool
+```
+
+A broken archive — a zip-slip path, a symlink entry, an encrypted entry, a duplicate path, no
+files, corrupt bytes, or a breached size cap — comes back as the `400` or `413` the API spells
+out, the whole archive refused and the bin left exactly as it was.
+
 `--title <text>` and `--description <text>` say what the bin holds. They go out as
 `X-Bin-Title` and `X-Bin-Description`: on the `POST` when the run creates the bin, and on a
 `PATCH /abc1234/` when it already exists. A run with metadata flags and no files or stdin is a
@@ -140,7 +212,7 @@ read from the bin base; it needs no API key, because a public bin's metadata is 
 protected bin is read with `SANDBIN_BIN_PASSWORD` as the bin password. A title is at most 200
 bytes and a description at most 2000, neither may span lines or carry control characters, and
 `sandbin-client` refuses one that is too long locally rather than spending a request on it.
-`--describe` takes no file arguments and no stdin, so it can only ever read.
+`--describe` takes no file arguments, no `--name` and no `--archive`, so it can only ever read.
 
 ```sh
 sandbin-client --title 'Button grid' --description 'A grid of pressable buttons'
