@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  # one release build per ref, and never cancel one mid-push; the queue
+  # is what keeps :latest pointing at the newest commit on main
+  group: release-${{ github.ref }}
+
+jobs:
+  container:
+    name: publish ghcr.io/yookoala/sandbin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Containerfile
+          push: true
+          # a v* tag push makes ghcr.io/.../sandbin:<that tag>; a main push
+          # moves :latest to the newest commit. Tags are never deleted, so
+          # every release tag stays pullable.
+          tags: ghcr.io/${{ github.repository_owner }}/sandbin:${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
