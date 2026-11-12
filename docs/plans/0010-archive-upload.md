@@ -1,11 +1,10 @@
 # Plan: upload a folder as an archive
 
-Status: implemented on `main` (`34f8e0f..7355eac`), with live end-to-end proof; reviewed as
-"ship with fixes", and both review fixes are on `main` — archive entry names are judged before
-they join (commit `5b34be9`), and `sandbin-client --archive` keeps its stdin and size refusals (the
-commit carrying this line). Decisions in `docs/decisions/0010-archive-upload.md`. Extends
-`docs/plans/0001-basic-implementation.md` (file routes) and sits beside
-`docs/plans/0009-bin-metadata.md`.
+Status: closed. Implemented on `main` (`69edbbc`, `4ba462f`, `e0a709e`), reviewed as "ship with
+fixes", the two required fixes landed (`5b34be9`, `4e41bea`) and passed the review's re-verification
+with verdict "ship", followed by one hardening commit (`9ca1dfe`). Decisions in
+`docs/decisions/0010-archive-upload.md`. Extends `docs/plans/0001-basic-implementation.md` (file
+routes) and sits beside `docs/plans/0009-bin-metadata.md`.
 
 ## What it is
 
@@ -39,13 +38,22 @@ sandbin-client --no-extract [...]   force raw storage
   parse, validate, `Store.PutFiles`; on refusal `400` or `413` with the decision's wordings and
   nothing stored; on success `201` (≥1 created) or `200` (all replaced), `X-Extracted-Count: <n>`,
   body one `/<hash>/<path>` per line.
-- Entry rules: combined path `path.Join(dir, entry)` must pass `cleanPath` (zip entry names have
-  `\` converted to `/` first); regular files only (symlink/hardlink/device/fifo → `400 archive
-  contains a <type> <path>`); directories validated, not stored; tar global/pax headers skipped;
-  duplicate cleaned paths → `400 archive contains duplicate path <path>`; zero regular files →
-  `400 archive contains no files`. Caps: each entry ≤ 1 MiB (`extracted file over 1 MiB`), ≤ 1000
-  entries (`archive has over 1000 files`), total unpacked ≤ 32 MiB (`archive unpacks over 32 MiB`)
-  — all `413`, enforced with limit readers while streaming, not after full inflation.
+- Entry rules: every entry name is judged clean on its own first — a leading `./` is stripped
+  (the `tar czf - .` idiom) and a directory marker `/` trimmed, then `cleanPath` runs on the raw
+  name, so a `.` or `..` segment anywhere, an absolute name, control characters or an over-long or
+  over-deep name refuse the whole archive before anything is placed; `path.Join(dir, name)` is
+  then re-checked against the caps (a join is never the sole judge). (Amended at review; the first
+  wording validated only the joined path, which let `deep/../../evil.txt` inside `site/x.zip`
+  relocate to the bin root — see the Outcome.) Zip entry names have `\` converted to `/` first;
+  regular files only (symlink/hardlink/device/fifo → `400 archive contains a <type> <path>`); GNU
+  sparse entries extract as regular files with holes, the caps counting what they fill out to;
+  directories validated, not stored; tar global/pax headers skipped; duplicate cleaned paths →
+  `400 archive contains duplicate path <path>`; zero regular files → `400 archive contains no
+  files`. Caps: each entry ≤ 1 MiB (`extracted file over 1 MiB`), ≤ 1000 entries (`archive has
+  over 1000 files`), total unpacked ≤ 32 MiB (`archive unpacks over 32 MiB`) — all `413`, enforced
+  with limit readers while streaming, not after full inflation; tar size fields spelled in
+  base-256 are parsed by the raw-block walk too, so a trustworthy block declaring an over-cap
+  file answers `413` before anything is stored.
 - `Store.PutFiles(binHash string, files []FilePut) (created, replaced int, err error)`: one
   transaction, same upsert statement as `PutFile` per path; any error rolls back everything.
   `FilePut{Path string; Content []byte}`.
@@ -215,3 +223,72 @@ detection on GET/serving, HEAD support, `zip` creation by the client (`--archive
 only), preserving folder file modes/owners across the archive, dotfile or glob exclusion in
 `--archive` walks (everything in the folder goes), more than one `--archive` per run, and anything
 about the control socket or ip verbs.
+
+## Outcome
+
+Tests went 123 + 2 subtests / 47 to 152 + 2 in `cmd/sandbin` and 57 in `cmd/sandbin-client`
+(209 top-level total); `gofmt`, `go vet`, `go test -count=1` and `go test -race` green at HEAD,
+re-verified by the review rounds.
+
+The first review verdict was **ship with fixes**. What it proved live (27 zip + 33 tar adversarial
+archives, a 12-cell name×body matrix, bombs with sub-1 MiB bodies, a side-by-side byte-identity
+sweep against the `800c46b` binaries on identically seeded dbs, charging through XFF-charged fake
+IPs, the client mapping including `projects/app` non-doubling, temp-file absence on every failure
+path, README recipes run verbatim, container extraction with persistence through `podman restart`,
+quadlet unchanged) — and what it found:
+
+- **Blocker (fixed by `5b34be9`)**: entries were validated after `path.Join` cleaned them, so
+  `deep/../../evil.txt` inside `site/x.zip` relocated to the bin root, `sub/../up.txt` relocated
+  within the bin, and an absolute entry under a nested name silently relativized. The code now
+  judges every raw entry name through `cleanPath` before joining (stripping one leading `./` for
+  the `tar czf - .` idiom), so an entry can never move outside the folder its archive lands in.
+  Re-verified 53/53 hostile cases with the bin byte-intact and the relocating targets 404.
+- **False claim (fixed by `4e41bea`)**: the implementer reported the client's `archive is over
+  1 MiB` arm as unit-tested; it was not — the string existed with no test touching it. A real test
+  (random-data folder, zero requests, no temp files) now exists, alongside the stdin fix.
+- **Stdin asymmetry (fixed by `4e41bea`)**: `--archive` with piped stdin and no `--name` silently
+  dropped the stdin content (and leaked a temp file in the working directory); it now answers the
+  plain run's own refusal with zero requests.
+
+The review then scrutinized a piece of code the second implementer added beyond its brief — a
+hand-rolled raw-512-block tar name walk guarding against names with bytes past their NUL
+terminator (Go's `archive/tar` truncates such names, storing the prefix) — and its verdict was
+**keep**: the walk only ever refuses, and `fromTar` re-validates every entry the reader surfaces
+regardless, so the security floor never depends on the walk. Two residuals it proved were closed
+or scoped by `9ca1dfe`: a physically consistent base-256 size field made the walker bail and let a
+later NUL-overrun name through as its truncated prefix — base-256 sizes are now parsed with the
+same rules Go uses, held to the 1 MiB cap (`413`), and a within-cap one keeps the walk going; and
+GNU `tar --sparse` archives were mislabeled `corrupt tar archive` — sparse entries now extract as
+regular files with holes, real `tar --format=gnu --sparse` tars (hole-carrying, verified with
+python `tarfile`) round-trip byte-identical, and a sparse entry filling out past 1 MiB is `413`.
+One documented residual remains, unit-proven in `TestTarWalkBailsLeaveValidatedNamesBehind`: after
+a GNU sparse entry or inside a GNU long-name record the walk hands the stream to Go, and Go's
+shortened reading of a hostile name — always fully validated by `cleanPath`, never unvalidated —
+is what gets stored; the README states this scoping.
+
+Verified live across the rounds: bombs peak server RSS ~60 MiB per request from sub-1 MiB bodies
+(8 concurrent bombs reached ~414 MiB — inherent per-request amplification, operational awareness
+only, not a defect); 14 legitimate tar shapes (GNU long names, pax UTF-8, 100-byte names, `ustar `
+legacy magic, python `tarfile` defaults, `tar czf - .`) extract with byte-identical GETs;
+pre-ustar magic-less v7 tars are refused by the magic rule as documented; 201-vs-200 split,
+`X-Extracted-Count`, `X-Extract` presence semantics (including curl's `-H "X-Extract;"` spelling,
+now in the README because `-H "X-Extract:"` drops the header), charging unchanged in every
+direction, and the untouched paths byte-identical against the `800c46b` binaries.
+
+Record honestly: the implementer claims in this plan were unreliable in three places — the
+backslash-normalization "deviation" claim (the decisions fixed it verbatim; code was already
+right), the unit-test claim above, and commit `4e41bea` editing this plan's status line with a
+commit range `34f8e0f..7355eac` that exists nowhere in the repo — corrected in this closing
+commit to the real `69edbbc`, `4ba462f`, `e0a709e`. The same plan's live-proof methodology also
+first reported against phantom bins and the implementer re-ran it honestly; treat implementer
+citations as claims to verify, as in plan 0009.
+
+Accepted as they are: a tar truncated after valid entries extracts what it holds (Go's EOF
+leniency); an all-zero-block body under an archive name answers `archive contains no files` rather
+than the no-magic wording (both 400s, nothing stored); `--archive` on a missing path or a file
+answers the plain OS/stat wording; a metadata-only run (`--title` with no uploads) discards piped
+stdin silently — pre-existing, and tightening it would break agents that pipe junk into metadata
+runs; the entry-refusal wording reuses `cleanPath`'s rule sentences verbatim across formats and
+depths rather than a new prefix. Left unproven: STAR-format sparse entries (Go requires GNU
+format; refused as corrupt — code read, not crafted), magic-less v7 detection (code read), and
+quadlet unit execution (dryrun only) — the standing sandbox limits.
