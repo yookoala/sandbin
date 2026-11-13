@@ -1,9 +1,9 @@
 # Plan: the init re-initialization guard, and the installer running init
 
-Status: planned. Decisions in `docs/decisions/0014-reinit-guard-and-installer-init.md` — they
-are the spec; this plan implements them. Baseline HEAD `9467d78` (`cmd/sandbin` 179 top-level
-tests + 19 subtests, `cmd/sandbin-client` 91 + 13 subtests, all gates green). Sits on
-`docs/plans/0011-client-config.md` (the init wizard this guards) and plan 0012 (the installer).
+Status: closed. Implemented on `main` (`7a52ca1`, `ed8afb6`, `8dbb1f0`), reviewed with verdict
+**ship** and no blockers. Decisions in `docs/decisions/0014-reinit-guard-and-installer-init.md`.
+Sits on `docs/plans/0011-client-config.md` (the init wizard this guards) and plan 0012 (the
+installer).
 
 **Goal:** re-running `sandbin-client init` in a project whose `.sandbin.yaml` already holds both
 `sandbin_url` and `api_key` is an explicit act — a `[y/N]` question at a terminal, a refusal
@@ -173,3 +173,31 @@ Piped `y` answers (the user chose `--reinit` instead), consent memory across inv
 `--force` aliases, guarding partial config files, server-side init state, the installer forcing
 `--reinit` or accepting an `--api-key`, masking the key prompt (existing shortcut stands), and
 re-running the wizard on refusal.
+
+## Outcome
+
+Tests went 91 + 13 to 99 + 28 in `cmd/sandbin-client` (+8 guard tests; `cmd/sandbin` stayed
+179 + 19 with markers extended in place); all five gates green at every task commit and at HEAD,
+run by implementer and reviewer, with `comm` on test-name lists proving zero removals.
+
+The review proved live: every refusal wording byte-for-byte (naming the stored url, never the
+key) with exit 1 and the config byte-identical after each refusal; refusals send zero requests
+(`ip list` empty before and after a wrong-key re-run) while a contrast ordinary wrong-key verify
+charges exactly one via an X-Forwarded-For fake IP; the partial-config matrix, `--reinit`
+preservation (and correct dropping of `bin`/`protected` on a url change), and its no-op on fresh
+directories all matched the decision table. The pty battery pinned the terminal flow — warning,
+`re-initialize? [y/N]: `, y/Y/yes/YES proceed with no extra prompts, n/bare-Enter/EOF cancel at
+exit 0 leaving every byte untouched, and cancel-then-`--reinit` succeeding. The installer asks
+exactly one question (the key; zero url prompts), a piped `curl | bash` completes with an
+appended command after the pipeline still executing (init ate only `/dev/tty`), a wrong typed key
+warns yet exits 0 with the skill installed and no config written, and the go-less path attempts
+no init. Byte-identity against `9467d78` binaries held across a 30-step battery: only the front
+page clause, the install.sh step and one SKILL.md line differ. The container served the full
+pty install + init + upload round trip through its port.
+
+Deviation verdicts (reviewer): updating `TestInitEnvUrlOverridesTheFileUrl` to pass `--reinit`
+keeps every original assertion (mandatory, not a softening); `/dev/null` stdin counts as a
+terminal (pre-existing `isTerminal` char-device rule) so it answers the guard question, hits EOF
+and cancels at exit 0 — accepted, with a follow-up SKILL.md sentence deferred to the next plan; the HEAD-binary substitution for guard-dependent installer proofs (published
+`@latest` v0.1.2 predates the guard) judged honest — a release-bump concern, not a repo defect;
+the plan's baseline naming `9467d78` vs HEAD `94c2cf2` confirmed docs-only delta.
