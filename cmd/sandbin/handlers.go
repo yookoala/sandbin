@@ -134,13 +134,15 @@ func splitBinPath(urlPath string) (hash, sub string, ok bool) {
 	return first, rest, true
 }
 
-// binRoutes serves GET, PUT and PATCH under one bin hash.
+// binRoutes serves GET, PUT, DELETE and PATCH under one bin hash.
 func (s *server) binRoutes(w http.ResponseWriter, r *http.Request, hash, sub string) {
 	switch r.Method {
 	case http.MethodGet:
 		s.getFile(w, r, hash, sub)
 	case http.MethodPut:
 		s.putFile(w, r, hash, sub)
+	case http.MethodDelete:
+		s.deletePath(w, r, hash, sub)
 	case http.MethodPatch:
 		s.patchBin(w, r, hash, sub)
 	default:
@@ -431,6 +433,105 @@ func (s *server) putArchive(w http.ResponseWriter, hash, sub string, kind archiv
 		lines = append(lines, "/"+hash+"/"+f.Path)
 	}
 	io.WriteString(w, strings.Join(lines, "\n"))
+}
+
+// deleteBody is the DELETE answer: the bin-relative paths that were removed, a folder
+// listing every file it took.
+type deleteBody struct {
+	Deleted []string `json:"deleted"`
+}
+
+// deletePath removes one file, or a whole folder when the path ends in a slash. Its guards
+// are putFile's in the same order: the block check that charges, the key check that charges,
+// the path shape, the bin lookup and its password, and only then the body a DELETE must not
+// carry. The bin base names no path, so a DELETE there is method not allowed: a bin itself is
+// never deleted.
+func (s *server) deletePath(w http.ResponseWriter, r *http.Request, hash, sub string) {
+	ip := clientIP(r, s.trustedProxies)
+	if until, blocked := s.store.IsBlocked(ip, time.Now()); blocked {
+		w.Header().Set("Retry-After", strconv.Itoa(int(time.Until(until).Seconds())))
+		// An attempt while blocked is itself a failure, so hammering walks the penalty up.
+		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
+			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
+		}
+		http.Error(w, "too many bad API keys", http.StatusTooManyRequests)
+		return
+	}
+
+	if subtle.ConstantTimeCompare([]byte(r.Header.Get(apiKeyHeader)), s.apiKey) != 1 {
+		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
+			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
+		}
+		http.Error(w, "invalid API key", http.StatusForbidden)
+		return
+	}
+
+	// The trailing slash is the folder marker, so it is trimmed here rather than left for
+	// cleanPath, which keeps refusing it for every other method.
+	folder := strings.HasSuffix(sub, "/")
+	sub = strings.TrimSuffix(sub, "/")
+	if sub == "" {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	sub, err := cleanPath(sub)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	bin, ok, err := s.store.GetBin(hash)
+	if err != nil {
+		log.Printf("get bin %q: %v", hash, err)
+		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
+	} else if !ok {
+		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
+	}
+	if !s.binAuthorized(w, r, bin) {
+		return
+	}
+
+	// A DELETE carries nothing. The cap is here so a body sent along with one is refused
+	// before it is read.
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil || len(body) > 0 {
+		http.Error(w, "delete takes no body", http.StatusBadRequest)
+		return
+	}
+
+	var deleted []string
+	if folder {
+		deleted, err = s.store.DeleteFolder(hash, sub)
+	} else {
+		var gone bool
+		gone, err = s.store.DeleteFile(hash, sub)
+		if gone {
+			deleted = []string{sub}
+		}
+	}
+	if err != nil {
+		log.Printf("delete %q from bin %q: %v", sub, hash, err)
+		http.Error(w, "could not delete file", http.StatusInternalServerError)
+		return
+	}
+	if len(deleted) == 0 {
+		// An unknown file and a folder nothing lives under are the same refusal.
+		http.Error(w, "unknown path", http.StatusNotFound)
+		return
+	}
+
+	out, err := json.Marshal(deleteBody{Deleted: deleted})
+	if err != nil {
+		log.Printf("encode the deleted paths of bin %q: %v", hash, err)
+		http.Error(w, "could not answer the delete", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(append(out, '\n'))
 }
 
 // binMetaBody is the PATCH answer: the bin's metadata as its row now holds it.

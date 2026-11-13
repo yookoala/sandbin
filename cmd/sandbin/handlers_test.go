@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -568,20 +569,21 @@ func TestMethodNotAllowed(t *testing.T) {
 	h := newTestServer(t, "test-key")
 	base := createTestBin(t, h, "test-key")
 
-	req := httptest.NewRequest(http.MethodDelete, base+"page.html", nil)
-	req.Header.Set("X-API-Key", "test-key")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("DELETE = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	// DELETE is a bin verb now, so the refusals here belong to the methods that never were.
+	for _, method := range []string{http.MethodPost, http.MethodHead, http.MethodOptions} {
+		req := httptest.NewRequest(method, base+"page.html", nil)
+		req.Header.Set("X-API-Key", "test-key")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s under a bin = %d, want %d", method, rec.Code, http.StatusMethodNotAllowed)
+		}
 	}
 
-	req = httptest.NewRequest(http.MethodPost, base+"page.html", nil)
-	req.Header.Set("X-API-Key", "test-key")
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("POST under a bin = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	// Under a bin a DELETE is answered by the path it names, not by the method: nothing is
+	// stored here, so it is the ordinary 404.
+	if rec := del(t, h, base+"page.html", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
+		t.Errorf("DELETE under a bin = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
 	}
 }
 
@@ -938,6 +940,52 @@ func patchFrom(t *testing.T, h http.Handler, remoteAddr, path, apiKey string, he
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+// del DELETEs a path with the API key and returns the recorder.
+func del(t *testing.T, h http.Handler, path, apiKey string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, path, nil)
+	req.Header.Set("X-API-Key", apiKey)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// delFrom DELETEs a path from a fixed socket address; an empty apiKey omits the header.
+func delFrom(t *testing.T, h http.Handler, remoteAddr, path, apiKey string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, path, nil)
+	req.RemoteAddr = remoteAddr
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// delWithBody DELETEs a path while sending a body, which is the shape a DELETE must refuse.
+func delWithBody(t *testing.T, h http.Handler, path, apiKey, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, path, strings.NewReader(body))
+	req.Header.Set("X-API-Key", apiKey)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// deletedBody is the JSON a DELETE answers: the removed paths under a "deleted" key, with
+// the same trailing newline the PATCH answer carries.
+func deletedBody(t *testing.T, paths ...string) string {
+	t.Helper()
+	out, err := json.Marshal(struct {
+		Deleted []string `json:"deleted"`
+	}{paths})
+	if err != nil {
+		t.Fatalf("marshal the deleted body: %v", err)
+	}
+	return string(out) + "\n"
 }
 
 // retryAfter parses the recorder's Retry-After header.
@@ -1977,5 +2025,326 @@ func TestSkillRouteDoesNotShadowBins(t *testing.T) {
 	}
 	if body := get(t, s, base).Body.String(); !strings.Contains(body, "skills/x.txt") {
 		t.Errorf("the listing does not show skills/x.txt:\n%s", body)
+	}
+}
+
+// TestDeleteFileRoundTrip is the single-file case: the answer names the path, the file is
+// gone from the store, from a GET and from the listing, and its siblings are untouched.
+func TestDeleteFileRoundTrip(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+
+	for _, name := range []string{"notes.md", "other.md", "hello/keep.txt"} {
+		if rec := put(t, s, base+name, "test-key", "body of "+name); rec.Code != http.StatusCreated {
+			t.Fatalf("PUT %s = %d, want %d; body %q", name, rec.Code, http.StatusCreated, rec.Body.String())
+		}
+	}
+
+	rec := del(t, s, base+"notes.md", "test-key")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE notes.md = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("DELETE Content-Type = %q, want application/json", ct)
+	}
+	if want := deletedBody(t, "notes.md"); rec.Body.String() != want {
+		t.Errorf("DELETE body = %q, want %q", rec.Body.String(), want)
+	}
+
+	hash := strings.Trim(base, "/")
+	if _, ok, err := s.store.GetFile(hash, "notes.md"); err != nil || ok {
+		t.Errorf("GetFile(notes.md) after the delete = ok %v, err %v; want gone, no error", ok, err)
+	}
+	if rec := get(t, s, base+"notes.md"); rec.Code != http.StatusNotFound {
+		t.Errorf("GET notes.md after the delete = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+	body := get(t, s, base).Body.String()
+	if strings.Contains(body, "notes.md") {
+		t.Errorf("the listing still names notes.md:\n%s", body)
+	}
+	for _, name := range []string{"other.md", "hello/keep.txt"} {
+		if rec := get(t, s, base+name); rec.Code != http.StatusOK || rec.Body.String() != "body of "+name {
+			t.Errorf("GET %s after the delete = %d, body %q; want 200 and the stored body", name, rec.Code, rec.Body.String())
+		}
+	}
+
+	// A second delete of the same path is a 404 that removed nothing.
+	if rec := del(t, s, base+"notes.md", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
+		t.Errorf("second DELETE notes.md = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
+	}
+}
+
+// TestDeleteFolderRoundTrip is the recursive case, including the boundaries: a file named
+// exactly like the folder and a sibling whose name merely starts with it both survive.
+func TestDeleteFolderRoundTrip(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	seed := []string{"hello/b.txt", "hello/deep/x.txt", "hello", "helloworld/x.txt", "drafts/one.md"}
+	for _, name := range seed {
+		if rec := put(t, s, base+name, "test-key", "body of "+name); rec.Code != http.StatusCreated {
+			t.Fatalf("PUT %s = %d, want %d; body %q", name, rec.Code, http.StatusCreated, rec.Body.String())
+		}
+	}
+
+	rec := del(t, s, base+"hello/", "test-key")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE hello/ = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	want := deletedBody(t, "hello/b.txt", "hello/deep/x.txt")
+	if rec.Body.String() != want {
+		t.Errorf("DELETE hello/ body = %q, want %q", rec.Body.String(), want)
+	}
+	for _, name := range []string{"hello/b.txt", "hello/deep/x.txt"} {
+		if _, ok, err := s.store.GetFile(hash, name); err != nil || ok {
+			t.Errorf("GetFile(%q) after the folder delete = ok %v, err %v; want gone", name, ok, err)
+		}
+	}
+	for _, name := range []string{"hello", "helloworld/x.txt", "drafts/one.md"} {
+		if rec := get(t, s, base+name); rec.Code != http.StatusOK || rec.Body.String() != "body of "+name {
+			t.Errorf("GET %s after the folder delete = %d, body %q; want 200 and the stored body", name, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Without the trailing slash a folder name is a plain path lookup: 404, never recursive.
+	if rec := del(t, s, base+"drafts", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
+		t.Errorf("DELETE drafts (no slash) = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
+	}
+	if rec := get(t, s, base+"drafts/one.md"); rec.Code != http.StatusOK {
+		t.Errorf("GET drafts/one.md after the slash-less delete = %d, want 200: the folder was never touched", rec.Code)
+	}
+
+	// A folder nothing lives under is a 404, and the bin is exactly as it was.
+	if rec := del(t, s, base+"nope/", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
+		t.Errorf("DELETE nope/ = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
+	}
+}
+
+// TestDeleteUnknownBinAndBase checks DELETE never deletes a bin: an unknown bin is 404, the
+// bin base is 405, and DELETE keeps every other route's existing refusal.
+func TestDeleteUnknownBinAndBase(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+
+	if rec := del(t, s, "/deadbeef/notes.md", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown bin\n" {
+		t.Errorf("DELETE in an unknown bin = %d, body %q; want 404 unknown bin", rec.Code, rec.Body.String())
+	}
+	for _, p := range []string{base, strings.TrimRight(base, "/")} {
+		rec := del(t, s, p, "test-key")
+		if p == base {
+			// the bin base is not a path, so DELETE there is method not allowed
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Errorf("DELETE %s = %d, body %q; want 405 method not allowed", p, rec.Code, rec.Body.String())
+			}
+			continue
+		}
+		// a bin named without its trailing slash keeps the answer every method gives there
+		if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown bin\n" {
+			t.Errorf("DELETE %s = %d, body %q; want 404 unknown bin", p, rec.Code, rec.Body.String())
+		}
+	}
+
+	// The root and the fixed routes answer DELETE exactly as they answer any other method.
+	for _, p := range []string{"/", "/healthz", "/verify-key", "/skills/sandbin-preview/SKILL.md"} {
+		rec := del(t, s, p, "test-key")
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("DELETE %s = %d, body %q; want 405", p, rec.Code, rec.Body.String())
+		}
+	}
+
+	// The bin survives every refusal above.
+	if rec := get(t, s, base); rec.Code != http.StatusOK {
+		t.Errorf("GET the bin base after the refusals = %d, want 200", rec.Code)
+	}
+}
+
+// TestDeleteChargesWrongKeyLikeOtherWrites is the charging battery: one wrong-key DELETE is
+// one failure, a blocked address is 429 with Retry-After and counts again, and a good key
+// finding nothing charges nothing.
+func TestDeleteChargesWrongKeyLikeOtherWrites(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	const addr = "203.0.113.41:1234"
+
+	rec := delFrom(t, s, addr, base+"notes.md", "wrong")
+	if rec.Code != http.StatusForbidden || rec.Body.String() != "invalid API key\n" {
+		t.Fatalf("DELETE with a wrong key = %d, body %q; want 403 invalid API key", rec.Code, rec.Body.String())
+	}
+	if failures, dur := storedBlock(t, s, "203.0.113.41"); failures != 1 || dur != blockStep {
+		t.Errorf("after a wrong-key DELETE = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
+	}
+
+	rec = delFrom(t, s, addr, base+"notes.md", "test-key")
+	if rec.Code != http.StatusTooManyRequests || rec.Body.String() != "too many bad API keys\n" {
+		t.Fatalf("DELETE from the blocked address = %d, body %q; want 429", rec.Code, rec.Body.String())
+	}
+	if ra := retryAfter(t, rec); ra <= 1800-30 || ra > 1800 {
+		t.Errorf("blocked DELETE Retry-After = %d, want about 1800", ra)
+	}
+	if failures, dur := storedBlock(t, s, "203.0.113.41"); failures != 2 || dur != 2*blockStep {
+		t.Errorf("after a blocked DELETE = failures %d, block %v; want 2 failures, %v", failures, dur, 2*blockStep)
+	}
+
+	// A header-less DELETE is a missing key, which counts like a wrong one.
+	const bareAddr = "203.0.113.42:1234"
+	if rec := delFrom(t, s, bareAddr, base+"notes.md", ""); rec.Code != http.StatusForbidden {
+		t.Errorf("DELETE without the header = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if failures, dur := storedBlock(t, s, "203.0.113.42"); failures != 1 || dur != blockStep {
+		t.Errorf("after a header-less DELETE = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
+	}
+
+	// Good key, unknown path: a 404 that leaves no row at all.
+	const cleanAddr = "198.51.100.41:1234"
+	rec = delFrom(t, s, cleanAddr, base+"missing.md", "test-key")
+	if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
+		t.Fatalf("DELETE of an unknown path = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
+	}
+	if _, ok := ipBlockRow(t, s.store, "198.51.100.41"); ok {
+		t.Errorf("a good-key 404 DELETE charged 198.51.100.41, want no row in ip_blocks")
+	}
+
+	// The bin and its file are exactly as they were before all that.
+	if rec := put(t, s, base+"notes.md", "test-key", "# Notes"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT notes.md after the refusals = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if rec := del(t, s, base+"notes.md", "test-key"); rec.Code != http.StatusOK {
+		t.Errorf("the good-key DELETE after the refusals = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+// TestDeleteProtectedBin is the bin-password rule: a protected bin refuses a DELETE without
+// its password, charges nothing for that, and a Basic Auth DELETE with the password deletes.
+func TestDeleteProtectedBin(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBinWithPassword(t, s, "sesame")
+	hash := strings.Trim(base, "/")
+
+	req := httptest.NewRequest(http.MethodPut, base+"secret.txt", strings.NewReader("protected body"))
+	req.Header.Set("X-API-Key", "test-key")
+	req.SetBasicAuth(hash, "sesame")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("PUT with the bin password = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	const addr = "198.51.100.42:1234"
+	rec = delFrom(t, s, addr, base+"secret.txt", "test-key")
+	if rec.Code != http.StatusUnauthorized || rec.Body.String() != "bin password required\n" {
+		t.Fatalf("DELETE without the bin password = %d, body %q; want 401", rec.Code, rec.Body.String())
+	}
+	if _, ok := ipBlockRow(t, s.store, "198.51.100.42"); ok {
+		t.Errorf("a missing bin password charged 198.51.100.42, want no row in ip_blocks")
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, base+"secret.txt", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	req.SetBasicAuth(hash, "wrong")
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("DELETE with a wrong bin password = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if _, ok := ipBlockRow(t, s.store, "127.0.0.1"); ok {
+		t.Errorf("a wrong bin password charged the socket address, want no row in ip_blocks")
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, base+"secret.txt", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	req.SetBasicAuth(hash, "sesame")
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE with the bin password = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if want := deletedBody(t, "secret.txt"); rec.Body.String() != want {
+		t.Errorf("DELETE body = %q, want %q", rec.Body.String(), want)
+	}
+	if _, ok, err := s.store.GetFile(hash, "secret.txt"); err != nil || ok {
+		t.Errorf("GetFile(secret.txt) after the delete = ok %v, err %v; want gone", ok, err)
+	}
+}
+
+// TestDeleteRefusesABody picks the shape the plan names: a DELETE with a non-empty body is a
+// 400, and the file it aimed at is untouched.
+func TestDeleteRefusesABody(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	if rec := put(t, s, base+"notes.md", "test-key", "# Notes"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT notes.md = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	rec := delWithBody(t, s, base+"notes.md", "test-key", "a body a DELETE refuses")
+	if rec.Code != http.StatusBadRequest || rec.Body.String() != "delete takes no body\n" {
+		t.Errorf("DELETE with a body = %d, body %q; want 400 delete takes no body", rec.Code, rec.Body.String())
+	}
+	if content, ok, err := s.store.GetFile(hash, "notes.md"); err != nil || !ok || string(content) != "# Notes" {
+		t.Errorf("notes.md after the refused DELETE = ok %v, err %v, content %q; want untouched", ok, err, content)
+	}
+
+	// An empty body is the ordinary DELETE.
+	if rec := del(t, s, base+"notes.md", "test-key"); rec.Code != http.StatusOK {
+		t.Errorf("DELETE with no body = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+// TestDeleteEmptiedBinSurvives proves the bin outlives its files: the listing answers, the
+// metadata stands, PATCH still works, and the next upload lands in the same bin.
+func TestDeleteEmptiedBinSurvives(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBinWithMetadata(t, s, "test-key", "kept title", "kept description")
+
+	for _, name := range []string{"notes.md", "drafts/one.md", "drafts/deep/two.md"} {
+		if rec := put(t, s, base+name, "test-key", "body of "+name); rec.Code != http.StatusCreated {
+			t.Fatalf("PUT %s = %d, want %d", name, rec.Code, http.StatusCreated)
+		}
+	}
+
+	if rec := del(t, s, base+"notes.md", "test-key"); rec.Code != http.StatusOK {
+		t.Fatalf("DELETE notes.md = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	rec := del(t, s, base+"drafts/", "test-key")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE drafts/ = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	want := deletedBody(t, "drafts/deep/two.md", "drafts/one.md")
+	if rec.Body.String() != want {
+		t.Errorf("DELETE drafts/ body = %q, want %q", rec.Body.String(), want)
+	}
+
+	// The emptied bin lists, keeps its words, and answers PATCH.
+	rec = get(t, s, base)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET the emptied bin = %d, want %d", rec.Code, http.StatusOK)
+	}
+	for _, name := range []string{"notes.md", "drafts/one.md", "drafts/deep/two.md"} {
+		if strings.Contains(rec.Body.String(), name) {
+			t.Errorf("the emptied bin still lists %s:\n%s", name, rec.Body.String())
+		}
+	}
+	if title, description := storedMeta(t, s, base); title != "kept title" || description != "kept description" {
+		t.Errorf("stored metadata after the deletes = %q / %q, want it untouched", title, description)
+	}
+	rec = patchFrom(t, s, "198.51.100.43:1234", base, "test-key", map[string]string{"X-Bin-Title": "new title"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH the emptied bin = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if title, _ := storedMeta(t, s, base); title != "new title" {
+		t.Errorf("stored title after the PATCH = %q, want new title", title)
+	}
+
+	// A new upload lands in the same bin.
+	if rec := put(t, s, base+"fresh.md", "test-key", "# Fresh"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT fresh.md into the emptied bin = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if body := get(t, s, base).Body.String(); !strings.Contains(body, "fresh.md") {
+		t.Errorf("the listing after the new upload does not name fresh.md:\n%s", body)
+	}
+	if count := storedBinCount(t, s); count != 1 {
+		t.Errorf("the store holds %d bins after the deletes, want 1", count)
 	}
 }
