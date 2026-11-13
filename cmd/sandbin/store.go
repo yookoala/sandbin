@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"time"
 
 	"modernc.org/sqlite"
@@ -236,6 +237,64 @@ func (s *Store) GetFile(binHash, path string) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	return content, true, nil
+}
+
+// DeleteFile removes one file from its bin and reports whether it removed anything.
+func (s *Store) DeleteFile(binHash, path string) (bool, error) {
+	res, err := s.db.Exec(`DELETE FROM files WHERE bin_hash=? AND path=?`, binHash, path)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
+// DeleteFolder removes every file sitting under folder at any depth, in one transaction,
+// and returns the removed paths in listing order. The folder is the paths starting with
+// folder followed by a slash, so a file named exactly like the folder and a sibling whose
+// name merely starts with it both stay. Nothing under it deletes nothing, and the answer
+// is empty.
+func (s *Store) DeleteFolder(binHash, folder string) ([]string, error) {
+	rows, err := s.db.Query(`SELECT path FROM files WHERE bin_hash=? ORDER BY path`, binHash)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var deleted []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(path, folder+"/") {
+			deleted = append(deleted, path)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(deleted) == 0 {
+		return nil, nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	for _, path := range deleted {
+		if _, err := tx.Exec(`DELETE FROM files WHERE bin_hash=? AND path=?`, binHash, path); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return deleted, nil
 }
 
 func (s *Store) ListFiles(binHash string) ([]FileEntry, error) {

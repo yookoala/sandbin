@@ -310,6 +310,128 @@ func TestPutFilesOnClosedStore(t *testing.T) {
 	}
 }
 
+// TestDeleteFile removes exactly one file: the row goes, its GetFile lookup fails, every
+// other file and another bin's file of the same name survive, the bin row and its metadata
+// are untouched, and a second delete of the same path reports nothing gone.
+func TestDeleteFile(t *testing.T) {
+	store := newTestStore(t)
+	hash, err := store.CreateBin("", "kept title", "kept description")
+	if err != nil {
+		t.Fatalf("CreateBin: %v", err)
+	}
+	other, err := store.CreateBin("", "", "")
+	if err != nil {
+		t.Fatalf("CreateBin: %v", err)
+	}
+	for _, seed := range []struct{ bin, path string }{
+		{hash, "notes.md"}, {hash, "hello/x.txt"}, {hash, "other.txt"},
+		{other, "notes.md"}, // the same name in another bin
+	} {
+		if _, err := store.PutFile(seed.bin, seed.path, []byte("body of "+seed.path)); err != nil {
+			t.Fatalf("PutFile(%q in %q): %v", seed.path, seed.bin, seed.path)
+		}
+	}
+
+	gone, err := store.DeleteFile(hash, "notes.md")
+	if err != nil {
+		t.Fatalf("DeleteFile: %v", err)
+	}
+	if !gone {
+		t.Errorf("DeleteFile(notes.md) = false, want true")
+	}
+	if _, ok, err := store.GetFile(hash, "notes.md"); err != nil || ok {
+		t.Errorf("GetFile(notes.md) after the delete = ok %v, err %v; want gone, no error", ok, err)
+	}
+	for _, path := range []string{"hello/x.txt", "other.txt"} {
+		content, ok, err := store.GetFile(hash, path)
+		if err != nil || !ok || string(content) != "body of "+path {
+			t.Errorf("%q after the delete = ok %v, err %v, content %q; want untouched", path, ok, err, content)
+		}
+	}
+	if content, ok, err := store.GetFile(other, "notes.md"); err != nil || !ok || string(content) != "body of notes.md" {
+		t.Errorf("the other bin's notes.md = ok %v, err %v, content %q; want untouched", ok, err, content)
+	}
+
+	// A second delete of the same path removes nothing and says so.
+	if gone, err := store.DeleteFile(hash, "notes.md"); err != nil || gone {
+		t.Errorf("second DeleteFile = gone %v, err %v; want false, no error", gone, err)
+	}
+
+	// The bin row and its metadata are untouched by the delete.
+	bin, ok, err := store.GetBin(hash)
+	if err != nil || !ok {
+		t.Fatalf("GetBin after the delete = ok %v, err %v", ok, err)
+	}
+	if bin.Title != "kept title" || bin.Description != "kept description" {
+		t.Errorf("bin metadata after the delete = %q / %q, want it untouched", bin.Title, bin.Description)
+	}
+}
+
+// TestDeleteFolder walks the recursion and the boundary: every file under the folder goes,
+// the returned list is sorted, a sibling whose name merely starts with the folder name
+// stays, a file named exactly like the folder stays, an empty match deletes nothing, and a
+// second delete of the same folder returns empty.
+func TestDeleteFolder(t *testing.T) {
+	store := newTestStore(t)
+	hash, err := store.CreateBin("", "kept title", "kept description")
+	if err != nil {
+		t.Fatalf("CreateBin: %v", err)
+	}
+	for _, path := range []string{"hello/b.txt", "hello/deep/x", "hello", "helloworld/x", "other.txt"} {
+		if _, err := store.PutFile(hash, path, []byte("body of "+path)); err != nil {
+			t.Fatalf("PutFile(%q): %v", path, err)
+		}
+	}
+
+	deleted, err := store.DeleteFolder(hash, "hello")
+	if err != nil {
+		t.Fatalf("DeleteFolder: %v", err)
+	}
+	want := []string{"hello/b.txt", "hello/deep/x"}
+	if len(deleted) != len(want) {
+		t.Fatalf("DeleteFolder deleted %v, want %v", deleted, want)
+	}
+	for i := range want {
+		if deleted[i] != want[i] {
+			t.Errorf("deleted[%d] = %q, want %q", i, deleted[i], want[i])
+		}
+	}
+	for _, path := range want {
+		if _, ok, err := store.GetFile(hash, path); err != nil || ok {
+			t.Errorf("GetFile(%q) after the folder delete = ok %v, err %v; want gone", path, ok, err)
+		}
+	}
+	// helloworld/x is never caught by DeleteFolder(hello), and a file named exactly like
+	// the folder survives it.
+	for _, path := range []string{"hello", "helloworld/x", "other.txt"} {
+		content, ok, err := store.GetFile(hash, path)
+		if err != nil || !ok || string(content) != "body of "+path {
+			t.Errorf("%q after the folder delete = ok %v, err %v, content %q; want untouched", path, ok, err, content)
+		}
+	}
+
+	// A second delete of the now-empty folder returns empty and touches nothing.
+	if deleted, err := store.DeleteFolder(hash, "hello"); err != nil || len(deleted) != 0 {
+		t.Errorf("second DeleteFolder = %v, err %v; want empty, no error", deleted, err)
+	}
+	// A folder name nothing lives under deletes nothing at all.
+	if deleted, err := store.DeleteFolder(hash, "nope"); err != nil || len(deleted) != 0 {
+		t.Errorf("DeleteFolder(nope) = %v, err %v; want empty, no error", deleted, err)
+	}
+	if files, err := store.ListFiles(hash); err != nil || len(files) != 3 {
+		t.Errorf("the bin holds %v files after the refusals, want the 3 survivors", files)
+	}
+
+	// The folder delete does not disturb the bin row or its metadata.
+	bin, ok, err := store.GetBin(hash)
+	if err != nil || !ok {
+		t.Fatalf("GetBin after the folder delete = ok %v, err %v", ok, err)
+	}
+	if bin.Title != "kept title" || bin.Description != "kept description" {
+		t.Errorf("bin metadata after the folder delete = %q / %q, want it untouched", bin.Title, bin.Description)
+	}
+}
+
 func TestListFiles(t *testing.T) {
 	store := newTestStore(t)
 	hash, err := store.CreateBin("", "", "")
