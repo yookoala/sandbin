@@ -1402,3 +1402,130 @@ func TestListingShowsBinMetadata(t *testing.T) {
 		t.Errorf("metadata paragraph does not come before the file list:\n%s", messyBody)
 	}
 }
+
+// verifyKeyFrom POSTs /verify-key from a fixed socket address; an empty apiKey omits the header.
+func verifyKeyFrom(t *testing.T, h http.Handler, remoteAddr, apiKey string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/verify-key", nil)
+	req.RemoteAddr = remoteAddr
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestVerifyKeyAnswersKeyOk is the key check's happy path: the correct key answers
+// "key ok", and a correct call creates no bin and charges nothing.
+func TestVerifyKeyAnswersKeyOk(t *testing.T) {
+	s := newTestServer(t, "test-key")
+
+	rec := verifyKeyFrom(t, s, "198.51.100.21:1234", "test-key")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /verify-key with the correct key = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "key ok" {
+		t.Errorf("body = %q, want %q", got, "key ok")
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", ct)
+	}
+	if _, ok := ipBlockRow(t, s.store, "198.51.100.21"); ok {
+		t.Errorf("a key-correct /verify-key charged 198.51.100.21, want no row in ip_blocks")
+	}
+	if count := storedBinCount(t, s); count != 0 {
+		t.Errorf("bins = %d, want /verify-key to create no bin", count)
+	}
+}
+
+// TestVerifyKeyWrongKeyChargesTheAddress keeps the lockout rules for /verify-key exactly
+// what they are for POST /: one wrong or missing key is a charged 403, an attempt while
+// blocked is a charged 429 with a Retry-After, and hammering walks the penalty up.
+func TestVerifyKeyWrongKeyChargesTheAddress(t *testing.T) {
+	s := newTestServer(t, "test-key")
+
+	rec := verifyKeyFrom(t, s, "203.0.113.21:1234", "wrong")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("wrong key = %d, want %d; body %q", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid API key") {
+		t.Errorf("403 body = %q, want the invalid API key message", rec.Body.String())
+	}
+	if ra := rec.Header().Get("Retry-After"); ra != "" {
+		t.Errorf("403 carries Retry-After %q, want none", ra)
+	}
+	if failures, dur := storedBlock(t, s, "203.0.113.21"); failures != 1 || dur != blockStep {
+		t.Errorf("after a wrong key = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
+	}
+
+	// A missing header counts as a failure the way it does at POST /.
+	rec = verifyKeyFrom(t, s, "203.0.113.22:1234", "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("missing header = %d, want %d; body %q", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if failures, dur := storedBlock(t, s, "203.0.113.22"); failures != 1 || dur != blockStep {
+		t.Errorf("after a missing header = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
+	}
+
+	// The blocked address is refused even with the correct key, and the attempt
+	// itself is charged.
+	rec = verifyKeyFrom(t, s, "203.0.113.21:1234", "test-key")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("blocked /verify-key = %d, want %d; body %q", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "too many bad API keys") {
+		t.Errorf("429 body = %q, want the too many bad API keys message", rec.Body.String())
+	}
+	ra1 := retryAfter(t, rec)
+	if ra1 <= 1800-30 || ra1 > 1800 {
+		t.Errorf("Retry-After = %d, want the first block's 1800 seconds less the elapsed time", ra1)
+	}
+	if failures, dur := storedBlock(t, s, "203.0.113.21"); failures != 2 || dur != 2*blockStep {
+		t.Errorf("after a blocked attempt = failures %d, block %v; want 2 failures, %v", failures, dur, 2*blockStep)
+	}
+
+	rec = verifyKeyFrom(t, s, "203.0.113.21:1234", "test-key")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second blocked /verify-key = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+	ra2 := retryAfter(t, rec)
+	if ra2 <= ra1 {
+		t.Errorf("Retry-After went from %d to %d; the block must grow while hammered", ra1, ra2)
+	}
+}
+
+// TestVerifyKeyIsNoKeyOracle is the 405 answer: only POST checks a key, so no other
+// method can probe one — not for free, and not by charging either.
+func TestVerifyKeyIsNoKeyOracle(t *testing.T) {
+	s := newTestServer(t, "test-key")
+
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions} {
+		req := httptest.NewRequest(method, "/verify-key", nil)
+		req.RemoteAddr = "198.51.100.22:1234"
+		req.Header.Set("X-API-Key", "test-key")
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s /verify-key = %d, want %d; body %q", method, rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
+		}
+	}
+	if _, ok := ipBlockRow(t, s.store, "198.51.100.22"); ok {
+		t.Errorf("the 405 answers charged 198.51.100.22, want no row in ip_blocks")
+	}
+}
+
+// TestVerifyKeyDoesNotShadowBins proves the root branch stays clear of bin hashes: a
+// file literally named verify-key under a bin is an ordinary file, stored and served.
+func TestVerifyKeyDoesNotShadowBins(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+
+	if rec := put(t, s, base+"verify-key", "test-key", "an ordinary file"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT %sverify-key = %d, want %d; body %q", base, rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	rec := get(t, s, base+"verify-key")
+	if rec.Code != http.StatusOK || rec.Body.String() != "an ordinary file" {
+		t.Errorf("GET %sverify-key = %d, body %q; want 200 and the stored body", base, rec.Code, rec.Body.String())
+	}
+}

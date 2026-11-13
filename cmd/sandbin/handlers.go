@@ -73,6 +73,16 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// "verify-key" holds a dash, so it can never name a hex bin hash, same reasoning as healthz.
+	if r.URL.Path == "/verify-key" {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.verifyKey(w, r)
+		return
+	}
+
 	hash, sub, ok := splitBinPath(r.URL.Path)
 	if !ok {
 		http.Error(w, "unknown bin", http.StatusNotFound)
@@ -169,6 +179,33 @@ func (s *server) createBin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusCreated)
 	io.WriteString(w, "/"+hash+"/")
+}
+
+// verifyKey answers the key check: its guard is createBin's verbatim, so a wrong key
+// through it charges exactly like a wrong key through POST /, and a match creates
+// nothing and charges nothing.
+func (s *server) verifyKey(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r, s.trustedProxies)
+	if until, blocked := s.store.IsBlocked(ip, time.Now()); blocked {
+		w.Header().Set("Retry-After", strconv.Itoa(int(time.Until(until).Seconds())))
+		// An attempt while blocked is itself a failure, so hammering walks the penalty up.
+		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
+			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
+		}
+		http.Error(w, "too many bad API keys", http.StatusTooManyRequests)
+		return
+	}
+
+	if subtle.ConstantTimeCompare([]byte(r.Header.Get(apiKeyHeader)), s.apiKey) != 1 {
+		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
+			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
+		}
+		http.Error(w, "invalid API key", http.StatusForbidden)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	io.WriteString(w, "key ok")
 }
 
 func (s *server) getFile(w http.ResponseWriter, r *http.Request, hash, sub string) {
