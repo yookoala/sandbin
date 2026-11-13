@@ -1,8 +1,8 @@
 # Plan: client config file, init wizard, key-check endpoint
 
-Status: planned. Decisions in `docs/decisions/0011-client-config.md` — they are the spec; this
-plan implements them. Extends `docs/plans/0002`-era client state handling (`.sandbin.json`) and
-sits beside `docs/plans/0010-archive-upload.md`.
+Status: closed. Implemented on `main` (`eb1cef6`, `826444e`, `edc9ca3`, `1a10cdb`), reviewed with
+verdict **ship** and no blockers. Decisions in `docs/decisions/0011-client-config.md`. Extends
+the client state handling from earlier plans and sits beside `docs/plans/0010-archive-upload.md`.
 
 **Goal:** `sandbin-client` reads its server URL and API key from a per-project `.sandbin.yaml`
 created by an interactive `sandbin-client init`, verified against a new `POST /verify-key`
@@ -174,3 +174,34 @@ Relaxed charging for `/verify-key` (user deferred it explicitly), global config 
 `~/.config`, migration from `.sandbin.json`, hidden echo for the key prompt (`x/term`), key
 strength validation client-side (the server is the authority), `init --bin`, multiple config
 lookup levels (walk-up to parent dirs), Windows support.
+
+## Outcome
+
+Tests went 153 + 2 / 57 to 157 + 2 in `cmd/sandbin` and 79 (+13 subtests) in
+`cmd/sandbin-client`; `gofmt`, `go vet`, `go test -count=1` and `go test -race` green at HEAD,
+run by both implementer and reviewer.
+
+The review proved live: `verifyKey`'s guard byte-identical to `createBin`'s (its own `diff`
+came back empty) — 403 charges through XFF-faked IPs, escalation walks `Retry-After`, blocked
+attempts charge, a correct call charges nothing, `GET /verify-key` with the *correct* key still
+405s before any key check (no uncharged oracle), and `/<hash>/verify-key` stores ordinary
+files. The config battery ran corrupt YAML (zero requests), `protected: maybe`, config-as-
+directory, 0600 under loose umask and over a 0644 file, key literal grepped 0 from init's
+captured stdout and stderr, env-only keys never persisted, the full precedence matrix, and the
+wizard live through a python3 `forkpty` pty including Enter-on-default. `ensureGitignore` is
+whole-line matching: a trailing-space line counts as present (git agrees), a commented one
+appends; verify failure and write failure both leave the gitignore untouched. Byte-identity
+against the `bb8af64` binaries held across front page, healthz, PUT/GET/ANSI/listing/PATCH, ip
+verbs and a plain no-config client run word for word. Test-integrity check: all 9 moved
+state-file tests kept their assertion bodies; the one deleted test's semantics were
+deliberately overturned by the decisions and its inverse exists.
+
+Accepted as they are: `--api-key ""` counts as a flag given on upload runs (refuses despite a
+good file key) but falls through to env/file/prompt in `init` — flagGiven semantics, code
+commented, not spelled in the README; an un-writable gitignore (made a directory) aborts init
+after the verified config was already written — loud, exit 1; `init` writes `bin: ""` before
+the first upload (the README example shows a completed setup); the wizard echoes the typed key
+through the terminal (`shortcut:` in the decisions). Left unproven live under the root sandbox:
+`writeConfig`/`ensureGitignore` rename-write failures (unit-covered via a missing directory and
+a directory-named config) and `verifyKey`'s odd-status arm, which the reviewer proved live
+against a 500 server anyway.
