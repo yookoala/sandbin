@@ -42,8 +42,8 @@ func main() {
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	fs := flag.NewFlagSet("sandbin-client", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	baseURL := fs.String("url", envOr("SANDBIN_URL", defaultURL), "sandbin server base URL")
-	apiKey := fs.String("api-key", os.Getenv("SANDBIN_API_KEY"), "pre-shared API key to send as X-API-Key")
+	urlFlag := fs.String("url", envOr("SANDBIN_URL", defaultURL), "sandbin server base URL")
+	apiKeyFlag := fs.String("api-key", os.Getenv("SANDBIN_API_KEY"), "pre-shared API key to send as X-API-Key")
 	binFlag := fs.String("bin", "", "an existing bin hash to upload into")
 	newBin := fs.Bool("new", false, "create a fresh bin instead of reusing this directory's")
 	nameFlag := fs.String("name", "", "the path to upload piped-in stdin as")
@@ -99,26 +99,45 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	if err := cleanMetadata("description", *descriptionFlag, maxDescriptionBytes); err != nil {
 		return err
 	}
+	dir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	// The config file is read before the key guard: a corrupt one must fail loudly
+	// and make no request, not quietly fall through to a second bin.
+	cfg, cfgFound, err := readConfig(dir)
+	if err != nil {
+		return err
+	}
+
+	// Resolution is flag > env > file for both settings. The flag defaults already
+	// carry the env, so only a flag that was not given lets the file speak; the file
+	// sits under the env and above the url default.
+	baseURL, apiKey := *urlFlag, *apiKeyFlag
+	if cfgFound {
+		if !flagGiven(fs, "url") && os.Getenv("SANDBIN_URL") == "" && cfg.URL != "" {
+			baseURL = cfg.URL
+		}
+		if !flagGiven(fs, "api-key") && os.Getenv("SANDBIN_API_KEY") == "" && cfg.APIKey != "" {
+			apiKey = cfg.APIKey
+		}
+	}
+
 	// A write run without the key would only charge this address a 30 minute block, so it
 	// makes no request at all. --describe writes nothing and needs no key.
-	if !*describe && *apiKey == "" {
-		return errors.New("no API key: pass --api-key or set SANDBIN_API_KEY")
+	if !*describe && apiKey == "" {
+		return errors.New("no API key: pass --api-key, set SANDBIN_API_KEY or run sandbin-client init")
 	}
 
 	// The bin password is env-only on purpose: no flag puts it on a command line.
-	c, err := newClient(*baseURL, *apiKey, os.Getenv("SANDBIN_BIN_PASSWORD"))
+	c, err := newClient(baseURL, apiKey, os.Getenv("SANDBIN_BIN_PASSWORD"))
 	if err != nil {
 		return err
 	}
 	c.noExtract = *noExtract
 
-	dir, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-
 	if *describe {
-		bin, protected, err := resolveExistingBin(c, dir, *binFlag)
+		bin, protected, err := resolveExistingBin(c, dir, cfg, cfgFound, *binFlag)
 		if err != nil {
 			return err
 		}
@@ -178,7 +197,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 		archiveName = path.Base(folder) + ".tar.gz"
 	}
 
-	bin, protected, justCreated, err := resolveBin(c, dir, *binFlag, *newBin, *titleFlag, *descriptionFlag)
+	bin, protected, justCreated, err := resolveBin(c, dir, cfg, cfgFound, *binFlag, *newBin, *titleFlag, *descriptionFlag)
 	if err != nil {
 		return err
 	}
@@ -255,26 +274,21 @@ func flagGiven(fs *flag.FlagSet, name string) bool {
 	return given
 }
 
-// resolveBin picks the bin to upload into: --bin, then this directory's state file
-// when its url matches the url in use, then a new bin written to the state file so
-// the next run reuses it. --new skips straight to a new bin. A bin made here takes its
-// metadata in the creation POST, and justCreated is what tells the caller no second
-// request is needed for it.
-func resolveBin(c *client, dir, binFlag string, newBin bool, title, description string) (string, bool, bool, error) {
+// resolveBin picks the bin to upload into: --bin, then this directory's config file
+// when its sandbin_url matches the url in use, then a new bin written to the config
+// file so the next run reuses it. --new skips straight to a new bin. A written file
+// keeps whatever api_key it already held — an upload run never newly persists one.
+// A bin made here takes its metadata in the creation POST, and justCreated is what
+// tells the caller no second request is needed for it.
+func resolveBin(c *client, dir string, cfg clientConfig, cfgFound bool, binFlag string, newBin bool, title, description string) (string, bool, bool, error) {
 	if binFlag != "" {
 		hash, err := cleanBinHash(binFlag)
 		return hash, false, false, err
 	}
 
 	base := c.base.String()
-	if !newBin {
-		state, found, err := readState(dir)
-		if err != nil {
-			return "", false, false, err
-		}
-		if found && state.URL == base {
-			return state.Bin, state.Protected, false, nil
-		}
+	if !newBin && cfgFound && cfg.Bin != "" && cfg.URL == base {
+		return cfg.Bin, cfg.Protected, false, nil
 	}
 
 	hash, err := c.createBin(title, description)
@@ -282,7 +296,7 @@ func resolveBin(c *client, dir, binFlag string, newBin bool, title, description 
 		return "", false, false, err
 	}
 	protected := c.password != ""
-	if err := writeState(dir, binState{URL: base, Bin: hash, Protected: protected}); err != nil {
+	if err := writeConfig(dir, clientConfig{URL: base, APIKey: cfg.APIKey, Bin: hash, Protected: protected}); err != nil {
 		// The bin exists on the server now, so the run must report its hash: rerunning
 		// would only create a second bin, not recover this one.
 		return "", false, false, fmt.Errorf("created bin %s but could not save it: %v", hash, err)
@@ -290,23 +304,18 @@ func resolveBin(c *client, dir, binFlag string, newBin bool, title, description 
 	return hash, protected, true, nil
 }
 
-// resolveExistingBin is the bin --describe reads: --bin, or this directory's state file when
-// its url matches the url in use. A read-only run makes no bin, so a directory with neither
-// gets an error naming what it needs.
-func resolveExistingBin(c *client, dir, binFlag string) (string, bool, error) {
+// resolveExistingBin is the bin --describe reads: --bin, or this directory's config file
+// when its sandbin_url matches the url in use. A read-only run makes no bin, so a directory
+// with neither gets an error naming what it needs.
+func resolveExistingBin(c *client, dir string, cfg clientConfig, cfgFound bool, binFlag string) (string, bool, error) {
 	if binFlag != "" {
 		hash, err := cleanBinHash(binFlag)
 		return hash, false, err
 	}
-
-	state, found, err := readState(dir)
-	if err != nil {
-		return "", false, err
-	}
-	if !found || state.URL != c.base.String() {
+	if !cfgFound || cfg.Bin == "" || cfg.URL != c.base.String() {
 		return "", false, fmt.Errorf("--describe has no bin for this directory: pass --bin or upload something first")
 	}
-	return state.Bin, state.Protected, nil
+	return cfg.Bin, cfg.Protected, nil
 }
 
 // uploadTargets cleans every upload name and checks each local file exists and fits

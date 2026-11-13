@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // fakeServer mirrors the real server's contract so the client is tested without a
@@ -65,6 +66,16 @@ func newFake(t *testing.T, apiKey string) *fakeServer {
 	t.Setenv("SANDBIN_BIN_PASSWORD", "")
 	t.Chdir(t.TempDir())
 	return f
+}
+
+// newFakeAt starts a second fake server without moving the test's working directory
+// or env, for the precedence and bin-reuse tests that need two servers.
+func newFakeAt(t *testing.T, apiKey string) (*fakeServer, string) {
+	t.Helper()
+	f := &fakeServer{apiKey: apiKey, bodyLimit: 1 << 20, bins: map[string]fakeBin{}, files: map[string]string{}}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	return f, srv.URL
 }
 
 func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -395,16 +406,16 @@ func writeWorkDirFile(t *testing.T, name, body string) {
 	}
 }
 
-// readStateFile reads .sandbin.json from the test's working directory.
-func readStateFile(t *testing.T) ([]byte, os.FileInfo) {
+// readConfigFile reads .sandbin.yaml from the test's working directory.
+func readConfigFile(t *testing.T) ([]byte, os.FileInfo) {
 	t.Helper()
-	info, err := os.Stat(stateFileName)
+	info, err := os.Stat(configFileName)
 	if err != nil {
-		t.Fatalf("stat %s: %v", stateFileName, err)
+		t.Fatalf("stat %s: %v", configFileName, err)
 	}
-	raw, err := os.ReadFile(stateFileName)
+	raw, err := os.ReadFile(configFileName)
 	if err != nil {
-		t.Fatalf("read %s: %v", stateFileName, err)
+		t.Fatalf("read %s: %v", configFileName, err)
 	}
 	return raw, info
 }
@@ -451,7 +462,7 @@ func TestUploadsFilesAndPrintsTheBinURLLast(t *testing.T) {
 	}
 }
 
-func TestSecondRunReusesTheStateFileAndReportsUpdated(t *testing.T) {
+func TestSecondRunReusesTheConfigFileAndReportsUpdated(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "index.html", "<h1>First</h1>")
 
@@ -473,7 +484,7 @@ func TestSecondRunReusesTheStateFileAndReportsUpdated(t *testing.T) {
 		t.Errorf("second stdout =\n%s\nwant\n%s", stdout, want)
 	}
 	if f.binCount() != 1 {
-		t.Errorf("bins = %d, want the state file's one bin", f.binCount())
+		t.Errorf("bins = %d, want the config file's one bin", f.binCount())
 	}
 	if got := f.stored(hash + "/index.html"); got != "<h1>Second</h1>" {
 		t.Errorf("stored index.html = %q, want the replaced bytes", got)
@@ -502,12 +513,12 @@ func TestNewFlagCreatesASecondBin(t *testing.T) {
 		t.Errorf("bins = %d, want 2", f.binCount())
 	}
 
-	state, _ := readStateFile(t)
-	if !strings.Contains(string(state), newHash) {
-		t.Errorf("state file =\n%s\nwant it to remember the new bin %s", state, newHash)
+	cfgRaw, _ := readConfigFile(t)
+	if !strings.Contains(string(cfgRaw), newHash) {
+		t.Errorf("config file =\n%s\nwant it to remember the new bin %s", cfgRaw, newHash)
 	}
-	if strings.Contains(string(state), oldHash) {
-		t.Errorf("state file =\n%s\nwant the replaced bin gone", state)
+	if strings.Contains(string(cfgRaw), oldHash) {
+		t.Errorf("config file =\n%s\nwant the replaced bin gone", cfgRaw)
 	}
 }
 
@@ -520,8 +531,8 @@ func TestMissingAPIKeyFailsBeforeAnyRequest(t *testing.T) {
 	if err == nil {
 		t.Fatalf("run without a key succeeded, want a startup error")
 	}
-	if !strings.Contains(stderr, "SANDBIN_API_KEY") {
-		t.Errorf("stderr = %q, want it to name SANDBIN_API_KEY", stderr)
+	if !strings.Contains(stderr, "no API key: pass --api-key, set SANDBIN_API_KEY or run sandbin-client init") {
+		t.Errorf("stderr = %q, want the refusal naming --api-key, SANDBIN_API_KEY and init", stderr)
 	}
 	if stdout != "" {
 		t.Errorf("stdout = %q, want nothing", stdout)
@@ -551,8 +562,8 @@ func TestWrongAPIKeyReports403WithExactlyOneRequest(t *testing.T) {
 	if f.requestsSeen() != 1 {
 		t.Errorf("requests = %d, want exactly 1", f.requestsSeen())
 	}
-	if _, err := os.Stat(stateFileName); !os.IsNotExist(err) {
-		t.Errorf("%s exists after a failed run, want no state file", stateFileName)
+	if _, err := os.Stat(configFileName); !os.IsNotExist(err) {
+		t.Errorf("%s exists after a failed run, want no config file", configFileName)
 	}
 }
 
@@ -613,7 +624,7 @@ func TestMissingBinPasswordNamesTheEnvironmentVariable(t *testing.T) {
 	}
 	hash := binHashOf(t, stdout)
 
-	// The state file now says the bin is protected, and the password is gone.
+	// The config file now says the bin is protected, and the password is gone.
 	t.Setenv("SANDBIN_BIN_PASSWORD", "")
 	_, stderr, err := runClient(t, nil, "index.html")
 	if err == nil {
@@ -852,17 +863,17 @@ func TestRefusesOversizedStdinLocallyWithNoRequest(t *testing.T) {
 	}
 }
 
-func TestCorruptStateFileIsAnErrorNamingIt(t *testing.T) {
+func TestCorruptConfigFileIsAnErrorNamingIt(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
-	writeWorkDirFile(t, stateFileName, "this is not json {{{")
+	writeWorkDirFile(t, configFileName, "not: [valid")
 
 	_, stderr, err := runClient(t, nil, "index.html")
 	if err == nil {
-		t.Fatalf("run against a corrupt state file succeeded, want an error")
+		t.Fatalf("run against a corrupt config file succeeded, want an error")
 	}
-	if !strings.Contains(stderr, stateFileName) {
-		t.Errorf("stderr = %q, want it to name %s", stderr, stateFileName)
+	if !strings.Contains(stderr, configFileName) {
+		t.Errorf("stderr = %q, want it to name %s", stderr, configFileName)
 	}
 	// The point of the error: no silent second bin for one prototype.
 	if f.binCount() != 0 || f.requestsSeen() != 0 {
@@ -870,27 +881,35 @@ func TestCorruptStateFileIsAnErrorNamingIt(t *testing.T) {
 	}
 }
 
-func TestStateFileMissingAFieldIsAnError(t *testing.T) {
+func TestConfigFileWithoutABinGetsAFreshBin(t *testing.T) {
+	// A file like the one init writes — a url, no bin yet — is a legal file, not
+	// a corrupt one: the run makes the bin and writes it back.
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
-	writeWorkDirFile(t, stateFileName, `{"url": "http://127.0.0.1:1"}`)
+	writeWorkDirFile(t, configFileName, "sandbin_url: "+os.Getenv("SANDBIN_URL")+"\n")
 
-	_, stderr, err := runClient(t, nil, "index.html")
-	if err == nil {
-		t.Fatalf("run against a half-empty state file succeeded, want an error")
+	stdout, stderr, err := runClient(t, nil, "index.html")
+	if err != nil {
+		t.Fatalf("run against a bin-less config file: %v; stderr %s", err, stderr)
 	}
-	if !strings.Contains(stderr, stateFileName) {
-		t.Errorf("stderr = %q, want it to name %s", stderr, stateFileName)
+	hash := binHashOf(t, stdout)
+	if f.binCount() != 1 {
+		t.Errorf("bins = %d, want the one fresh bin", f.binCount())
 	}
-	if f.requestsSeen() != 0 {
-		t.Errorf("requests = %d, want none", f.requestsSeen())
+	cfgRaw, _ := readConfigFile(t)
+	var cfg clientConfig
+	if err := yaml.Unmarshal(cfgRaw, &cfg); err != nil {
+		t.Fatalf("parse %s: %v", configFileName, err)
+	}
+	if cfg.Bin != hash {
+		t.Errorf("%s =\n%s\nwant the file rewritten with the bin %s", configFileName, cfgRaw, hash)
 	}
 }
 
-func TestStateFileForAnotherUrlStartsAFreshBin(t *testing.T) {
+func TestConfigFileForAnotherUrlStartsAFreshBin(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
-	writeWorkDirFile(t, stateFileName, `{"url": "http://other.invalid", "bin": "ffffffff", "protected": false}`)
+	writeWorkDirFile(t, configFileName, "sandbin_url: http://other.invalid\nbin: ffffffff\nprotected: false\n")
 
 	stdout, _, err := runClient(t, nil, "index.html")
 	if err != nil {
@@ -903,13 +922,222 @@ func TestStateFileForAnotherUrlStartsAFreshBin(t *testing.T) {
 	if f.binCount() != 1 {
 		t.Errorf("bins = %d, want 1 newly created bin", f.binCount())
 	}
-	state, _ := readStateFile(t)
-	if !strings.Contains(string(state), os.Getenv("SANDBIN_URL")) {
-		t.Errorf("state file =\n%s\nwant it rewritten to the url in use", state)
+	cfgRaw, _ := readConfigFile(t)
+	if !strings.Contains(string(cfgRaw), os.Getenv("SANDBIN_URL")) {
+		t.Errorf("config file =\n%s\nwant it rewritten to the url in use", cfgRaw)
 	}
 }
 
-func TestBinAndUrlFlagsNeedNoStateFile(t *testing.T) {
+// TestURLPrecedenceFlagEnvFileDefault walks the whole url ladder: the flag beats the
+// env, the env beats the file, the file beats the default.
+func TestURLPrecedenceFlagEnvFileDefault(t *testing.T) {
+	f1 := newFake(t, "test-key")
+	url1 := os.Getenv("SANDBIN_URL")
+	f2, url2 := newFakeAt(t, "test-key")
+	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
+
+	// file > default: with no env the file's url is the one in use.
+	t.Setenv("SANDBIN_URL", "")
+	writeWorkDirFile(t, configFileName, "sandbin_url: "+url1+"\n")
+	if _, stderr, err := runClient(t, nil, "index.html"); err != nil {
+		t.Fatalf("file-url run: %v; stderr %s", err, stderr)
+	}
+	if f1.requestsSeen() != 2 || f2.requestsSeen() != 0 {
+		t.Errorf("requests = f1 %d, f2 %d; want the file's server used and the other idle", f1.requestsSeen(), f2.requestsSeen())
+	}
+
+	// env > file: the env points at the other server, and the file follows it.
+	t.Setenv("SANDBIN_URL", url2)
+	if _, stderr, err := runClient(t, nil, "index.html"); err != nil {
+		t.Fatalf("env-url run: %v; stderr %s", err, stderr)
+	}
+	if f1.requestsSeen() != 2 || f2.requestsSeen() != 2 {
+		t.Errorf("requests = f1 %d, f2 %d; want the env's server used and the file's idle", f1.requestsSeen(), f2.requestsSeen())
+	}
+
+	// flag > env: the flag points back at the first server.
+	if _, stderr, err := runClient(t, nil, "--url", url1, "index.html"); err != nil {
+		t.Fatalf("flag-url run: %v; stderr %s", err, stderr)
+	}
+	if f1.requestsSeen() != 4 || f2.requestsSeen() != 2 {
+		t.Errorf("requests = f1 %d, f2 %d; want the flag's server used", f1.requestsSeen(), f2.requestsSeen())
+	}
+
+	// default: no env, no file, no flag — the refusal names the default url.
+	t.Setenv("SANDBIN_URL", "")
+	if err := os.Remove(configFileName); err != nil {
+		t.Fatalf("remove %s: %v", configFileName, err)
+	}
+	_, stderr, err := runClient(t, nil, "index.html")
+	if err == nil {
+		t.Fatalf("run against the default url succeeded, want an error")
+	}
+	if !strings.Contains(stderr, defaultURL) {
+		t.Errorf("stderr = %q, want it to name %s", stderr, defaultURL)
+	}
+	if f1.requestsSeen() != 4 || f2.requestsSeen() != 2 {
+		t.Errorf("requests = f1 %d, f2 %d; want neither fake server touched", f1.requestsSeen(), f2.requestsSeen())
+	}
+}
+
+// TestAPIKeyPrecedenceFlagEnvFile walks the key ladder: the flag beats the env, the
+// env beats the file, and a file key alone is enough to run.
+func TestAPIKeyPrecedenceFlagEnvFile(t *testing.T) {
+	f := newFake(t, "test-key")
+	url1 := os.Getenv("SANDBIN_URL")
+	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
+
+	// file alone: with no env the file's key is the one sent.
+	t.Setenv("SANDBIN_API_KEY", "")
+	writeWorkDirFile(t, configFileName, "sandbin_url: "+url1+"\napi_key: test-key\n")
+	if _, stderr, err := runClient(t, nil, "index.html"); err != nil {
+		t.Fatalf("file-key run: %v; stderr %s", err, stderr)
+	}
+	if f.requestsSeen() != 2 {
+		t.Errorf("requests = %d, want the file key accepted", f.requestsSeen())
+	}
+
+	// env > file: the file holds a wrong key, the env the right one.
+	writeWorkDirFile(t, configFileName, "sandbin_url: "+url1+"\napi_key: wrong-file-key\n")
+	t.Setenv("SANDBIN_API_KEY", "test-key")
+	if _, stderr, err := runClient(t, nil, "index.html"); err != nil {
+		t.Fatalf("env-key run: %v; stderr %s", err, stderr)
+	}
+	if f.requestsSeen() != 4 {
+		t.Errorf("requests = %d, want the env key accepted over the file key", f.requestsSeen())
+	}
+
+	// flag > env: the env holds a wrong key, the flag the right one.
+	t.Setenv("SANDBIN_API_KEY", "wrong-env-key")
+	if _, stderr, err := runClient(t, nil, "--api-key", "test-key", "index.html"); err != nil {
+		t.Fatalf("flag-key run: %v; stderr %s", err, stderr)
+	}
+	// One PUT only: the flag key is accepted and the file's bin is the one reused.
+	if f.requestsSeen() != 5 || f.binCount() != 2 {
+		t.Errorf("requests = %d, bins = %d; want the flag key accepted over the env key reusing the file's bin", f.requestsSeen(), f.binCount())
+	}
+}
+
+// TestEnvUrlOverrideDoesNotReuseTheConfigBin is the URL-match rule for real: a bin
+// made for one server is never carried to another, and the new server gets its own bin.
+func TestEnvUrlOverrideDoesNotReuseTheConfigBin(t *testing.T) {
+	f1 := newFake(t, "test-key")
+	url1 := os.Getenv("SANDBIN_URL")
+	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
+
+	first, _, err := runClient(t, nil, "index.html")
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if !strings.Contains(first, url1) {
+		t.Fatalf("first stdout =\n%s\nwant it under %s", first, url1)
+	}
+
+	f2, url2 := newFakeAt(t, "test-key")
+	t.Setenv("SANDBIN_URL", url2)
+	second, stderr, err := runClient(t, nil, "index.html")
+	if err != nil {
+		t.Fatalf("run on the other url: %v; stderr %s", err, stderr)
+	}
+	if !strings.Contains(second, url2) || strings.Contains(second, url1) {
+		t.Fatalf("second stdout =\n%s\nwant it under %s alone, never the file's old server", second, url2)
+	}
+	hash2 := binHashOf(t, second)
+	if f1.requestsSeen() != 2 {
+		t.Errorf("requests at the file's server = %d, want the override run to leave it alone", f1.requestsSeen())
+	}
+	if f2.binCount() != 1 {
+		t.Errorf("bins at the override server = %d, want one fresh bin", f2.binCount())
+	}
+
+	// Back under the file's url the new bin is reused as the file's own.
+	t.Setenv("SANDBIN_URL", "")
+	third, _, err := runClient(t, nil, "index.html")
+	if err != nil {
+		t.Fatalf("run back on the file's url: %v", err)
+	}
+	if want := "updated " + url2 + "/" + hash2 + "/index.html\n"; !strings.HasPrefix(third, want) {
+		t.Errorf("stdout =\n%s\nwant %s", third, want)
+	}
+	if f2.binCount() != 1 {
+		t.Errorf("bins = %d, want the file's bin reused", f2.binCount())
+	}
+}
+
+// TestNewRunKeepsTheConfigFileAPIKey: --new replaces url/bin/protected, and the key
+// a previous init left in the file survives untouched.
+func TestNewRunKeepsTheConfigFileAPIKey(t *testing.T) {
+	f := newFake(t, "test-key")
+	url1 := os.Getenv("SANDBIN_URL")
+	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
+	writeWorkDirFile(t, configFileName, "sandbin_url: "+url1+"\napi_key: test-key\n")
+	t.Setenv("SANDBIN_API_KEY", "") // the key must come from the file for the run to work at all
+
+	first, _, err := runClient(t, nil, "index.html")
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	hash1 := binHashOf(t, first)
+
+	second, _, err := runClient(t, nil, "--new", "index.html")
+	if err != nil {
+		t.Fatalf("run with --new: %v", err)
+	}
+	hash2 := binHashOf(t, second)
+	if hash2 == hash1 {
+		t.Fatalf("--new reused bin %s", hash2)
+	}
+	if f.binCount() != 2 {
+		t.Errorf("bins = %d, want the first bin and the --new bin", f.binCount())
+	}
+
+	cfgRaw, _ := readConfigFile(t)
+	var cfg clientConfig
+	if err := yaml.Unmarshal(cfgRaw, &cfg); err != nil {
+		t.Fatalf("parse %s: %v", configFileName, err)
+	}
+	if cfg.APIKey != "test-key" || cfg.Bin != hash2 || cfg.URL != url1 {
+		t.Errorf("%s =\n%s\nwant the new bin, the same url and the file's api_key kept", configFileName, cfgRaw)
+	}
+}
+
+// TestUploadRunNeverStoresAnEnvOrFlagKey is the api_key persistence rule: an ordinary
+// upload run writes url/bin/protected and leaves the file's api_key empty.
+func TestUploadRunNeverStoresAnEnvOrFlagKey(t *testing.T) {
+	f := newFake(t, "test-key")
+	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
+
+	// The env key is spent on the request, never saved.
+	if _, stderr, err := runClient(t, nil, "index.html"); err != nil {
+		t.Fatalf("env-key run: %v; stderr %s", err, stderr)
+	}
+	var cfg clientConfig
+	cfgRaw, _ := readConfigFile(t)
+	if err := yaml.Unmarshal(cfgRaw, &cfg); err != nil {
+		t.Fatalf("parse %s: %v", configFileName, err)
+	}
+	if cfg.APIKey != "" {
+		t.Errorf("%s =\n%s\nwant no api_key written from the env", configFileName, cfgRaw)
+	}
+
+	// The same for a flag key, with the env empty and the file holding none.
+	t.Setenv("SANDBIN_API_KEY", "")
+	if _, stderr, err := runClient(t, nil, "--api-key", "test-key", "index.html"); err != nil {
+		t.Fatalf("flag-key run: %v; stderr %s", err, stderr)
+	}
+	cfgRaw, _ = readConfigFile(t)
+	if err := yaml.Unmarshal(cfgRaw, &cfg); err != nil {
+		t.Fatalf("parse %s: %v", configFileName, err)
+	}
+	if cfg.APIKey != "" {
+		t.Errorf("%s =\n%s\nwant the api_key still empty after a flag-key run", configFileName, cfgRaw)
+	}
+	if f.binCount() != 1 {
+		t.Errorf("bins = %d, want the file's bin reused for the flag-key run", f.binCount())
+	}
+}
+
+func TestBinAndUrlFlagsNeedNoConfigFile(t *testing.T) {
 	f := newFake(t, "test-key")
 	hash := f.addBin("")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
@@ -924,8 +1152,8 @@ func TestBinAndUrlFlagsNeedNoStateFile(t *testing.T) {
 	if f.binCount() != 1 {
 		t.Errorf("bins = %d, want only the named bin", f.binCount())
 	}
-	if _, err := os.Stat(stateFileName); !os.IsNotExist(err) {
-		t.Errorf("%s exists after a --bin run, want no state file", stateFileName)
+	if _, err := os.Stat(configFileName); !os.IsNotExist(err) {
+		t.Errorf("%s exists after a --bin run, want no config file", configFileName)
 	}
 
 	// The "/abc1234/" shape a created bin was printed as is accepted too.
@@ -941,7 +1169,7 @@ func TestBinAndUrlFlagsNeedNoStateFile(t *testing.T) {
 	}
 }
 
-func TestStateFileIsPrivateAndHoldsNoSecret(t *testing.T) {
+func TestConfigFileIsPrivateAndHoldsNoBinPassword(t *testing.T) {
 	const apiKey = "sekret-api-key"
 	const binPassword = "sekret-bin-password"
 	newFake(t, apiKey)
@@ -954,20 +1182,20 @@ func TestStateFileIsPrivateAndHoldsNoSecret(t *testing.T) {
 	}
 	hash := binHashOf(t, stdout)
 
-	raw, info := readStateFile(t)
+	raw, info := readConfigFile(t)
 	if perm := info.Mode().Perm(); perm != 0600 {
-		t.Errorf("%s mode = %o, want 0600", stateFileName, perm)
+		t.Errorf("%s mode = %o, want 0600", configFileName, perm)
 	}
-	if text := string(raw); strings.Contains(text, apiKey) || strings.Contains(text, binPassword) {
-		t.Errorf("%s = %q, want neither secret in it", stateFileName, text)
+	if text := string(raw); strings.Contains(text, binPassword) || strings.Contains(text, apiKey) {
+		t.Errorf("%s = %q, want neither secret in it: an upload run never stores a key", configFileName, text)
 	}
 
-	var state binState
-	if err := json.Unmarshal(raw, &state); err != nil {
-		t.Fatalf("parse %s: %v", stateFileName, err)
+	var cfg clientConfig
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("parse %s: %v", configFileName, err)
 	}
-	if state.URL != os.Getenv("SANDBIN_URL") || state.Bin != hash || !state.Protected {
-		t.Errorf("%s = %+v, want the url, the bin and protected true", stateFileName, state)
+	if cfg.URL != os.Getenv("SANDBIN_URL") || cfg.Bin != hash || !cfg.Protected || cfg.APIKey != "" {
+		t.Errorf("%s = %+v, want the url, the bin and protected true with no api_key", configFileName, cfg)
 	}
 }
 
@@ -1102,10 +1330,10 @@ func TestRejectsADotAsABinHash(t *testing.T) {
 	}
 }
 
-func TestStateFileWhoseBinNoLongerExistsReports404(t *testing.T) {
+func TestConfigFileWhoseBinNoLongerExistsReports404(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
-	writeWorkDirFile(t, stateFileName, `{"url": "`+os.Getenv("SANDBIN_URL")+`", "bin": "ffffffff", "protected": false}`)
+	writeWorkDirFile(t, configFileName, "sandbin_url: "+os.Getenv("SANDBIN_URL")+"\nbin: ffffffff\nprotected: false\n")
 
 	stdout, stderr, err := runClient(t, nil, "index.html")
 	if err == nil {
@@ -1114,7 +1342,7 @@ func TestStateFileWhoseBinNoLongerExistsReports404(t *testing.T) {
 	if !strings.Contains(stderr, "404") || !strings.Contains(stderr, "unknown bin") {
 		t.Errorf("stderr = %q, want 404 and the server's message", stderr)
 	}
-	// The state file is honoured rather than quietly replaced by a new bin.
+	// The config file is honoured rather than quietly replaced by a new bin.
 	if f.binCount() != 0 {
 		t.Errorf("bins = %d, want no bin created behind the user's back", f.binCount())
 	}
@@ -1138,65 +1366,65 @@ func TestRejectsACreateBinBodyThatIsNotABinPath(t *testing.T) {
 	if f.putsSeen() != 0 {
 		t.Errorf("PUTs = %d, want none after refusing the body", f.putsSeen())
 	}
-	if _, err := os.Stat(stateFileName); !os.IsNotExist(err) {
-		t.Errorf("%s exists after the refusal, want no state file", stateFileName)
+	if _, err := os.Stat(configFileName); !os.IsNotExist(err) {
+		t.Errorf("%s exists after the refusal, want no config file", configFileName)
 	}
 	if stdout != "" {
 		t.Errorf("stdout = %q, want nothing", stdout)
 	}
 }
 
-func TestUnreadableStateFileIsAnErrorNamingIt(t *testing.T) {
+func TestUnreadableConfigFileIsAnErrorNamingIt(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 	// A present file the client cannot read at all.
-	if err := os.Mkdir(stateFileName, 0755); err != nil {
-		t.Fatalf("mkdir %s: %v", stateFileName, err)
+	if err := os.Mkdir(configFileName, 0755); err != nil {
+		t.Fatalf("mkdir %s: %v", configFileName, err)
 	}
 
 	stdout, stderr, err := runClient(t, nil, "index.html")
 	if err == nil {
-		t.Fatalf("run against an unreadable state file succeeded, want an error")
+		t.Fatalf("run against an unreadable config file succeeded, want an error")
 	}
-	if !strings.Contains(stderr, stateFileName) {
-		t.Errorf("stderr = %q, want it to name %s", stderr, stateFileName)
+	if !strings.Contains(stderr, configFileName) {
+		t.Errorf("stderr = %q, want it to name %s", stderr, configFileName)
 	}
 	if stdout != "" || f.requestsSeen() != 0 {
 		t.Errorf("stdout = %q, requests = %d; want neither", stdout, f.requestsSeen())
 	}
 }
 
-func TestStateWriteFailureNamesTheFile(t *testing.T) {
-	// The run reports a state write failure instead of pretending the bin was
+func TestConfigWriteFailureNamesTheFile(t *testing.T) {
+	// The run reports a config write failure instead of pretending the bin was
 	// saved. A missing directory is the failure a root-run test can force.
 	newFake(t, "test-key")
 	dir := filepath.Join(t.TempDir(), "gone")
-	err := writeState(dir, binState{URL: "http://127.0.0.1:1", Bin: "abc1234"})
+	err := writeConfig(dir, clientConfig{URL: "http://127.0.0.1:1", Bin: "abc1234"})
 	if err == nil {
-		t.Fatalf("writeState into %s succeeded, want an error", dir)
+		t.Fatalf("writeConfig into %s succeeded, want an error", dir)
 	}
-	if !strings.Contains(err.Error(), stateFileName) {
-		t.Errorf("writeState error = %q, want it to name %s", err, stateFileName)
+	if !strings.Contains(err.Error(), configFileName) {
+		t.Errorf("writeConfig error = %q, want it to name %s", err, configFileName)
 	}
 }
 
-func TestStateWriteFailureNamesTheCreatedBin(t *testing.T) {
+func TestConfigWriteFailureNamesTheCreatedBin(t *testing.T) {
 	// The bin exists on the server the moment createBin succeeds, so losing the
-	// state file must still tell the agent which bin was created.
+	// config file must still tell the agent which bin was created.
 	f := newFake(t, "test-key")
 	c, err := newClient(os.Getenv("SANDBIN_URL"), "test-key", "")
 	if err != nil {
 		t.Fatalf("newClient: %v", err)
 	}
-	_, _, _, err = resolveBin(c, filepath.Join(t.TempDir(), "gone"), "", false, "", "")
+	_, _, _, err = resolveBin(c, filepath.Join(t.TempDir(), "gone"), clientConfig{}, false, "", false, "", "")
 	if err == nil {
 		t.Fatalf("resolveBin into a missing directory succeeded, want an error")
 	}
 	if !strings.Contains(err.Error(), "bin bin0001") {
 		t.Errorf("error = %q, want it to name the created bin", err)
 	}
-	if !strings.Contains(err.Error(), stateFileName) {
-		t.Errorf("error = %q, want it to name %s", err, stateFileName)
+	if !strings.Contains(err.Error(), configFileName) {
+		t.Errorf("error = %q, want it to name %s", err, configFileName)
 	}
 	if f.binCount() != 1 {
 		t.Errorf("bins = %d, want the one bin resolveBin created", f.binCount())
@@ -1230,8 +1458,8 @@ func TestMetadataOnlyRunUpdatesAnExistingBin(t *testing.T) {
 	if f.binCount() != 1 {
 		t.Errorf("bins = %d, want only the named bin", f.binCount())
 	}
-	if _, err := os.Stat(stateFileName); !os.IsNotExist(err) {
-		t.Errorf("%s exists after a --bin run, want no state file", stateFileName)
+	if _, err := os.Stat(configFileName); !os.IsNotExist(err) {
+		t.Errorf("%s exists after a --bin run, want no config file", configFileName)
 	}
 
 	// The same run twice is the same PATCH: a metadata flag is not an upload.
@@ -1333,9 +1561,9 @@ func TestMetadataOnlyRunOnAFreshDirectoryCreatesOneBin(t *testing.T) {
 		t.Errorf("stdout =\n%s\nwant the bin URL last", stdout)
 	}
 
-	state, _ := readStateFile(t)
-	if !strings.Contains(string(state), "bin0001") {
-		t.Errorf("state file =\n%s\nwant it to remember the new bin", state)
+	cfgRaw, _ := readConfigFile(t)
+	if !strings.Contains(string(cfgRaw), "bin0001") {
+		t.Errorf("config file =\n%s\nwant it to remember the new bin", cfgRaw)
 	}
 }
 
@@ -1451,7 +1679,7 @@ func TestRefusesBadMetadataLocallyWithNoRequest(t *testing.T) {
 }
 
 // TestDescribeNeedsNoAPIKey is the read-only rule: a run that writes nothing needs no key,
-// reads the bin this directory's state file names, and makes exactly one request.
+// reads the bin this directory's config file names, and makes exactly one request.
 func TestDescribeNeedsNoAPIKey(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
@@ -1478,9 +1706,9 @@ func TestDescribeNeedsNoAPIKey(t *testing.T) {
 		t.Errorf("requests = %d, want the one GET this run made", f.requestsSeen())
 	}
 
-	// --bin reaches the same bin with no key and no state file either.
-	if _, err := os.Stat(stateFileName); err != nil {
-		t.Fatalf("stat %s: %v", stateFileName, err)
+	// --bin reaches the same bin with no key and no config file either.
+	if _, err := os.Stat(configFileName); err != nil {
+		t.Fatalf("stat %s: %v", configFileName, err)
 	}
 	stdout, _, err = runClient(t, nil, "--describe", "--bin", "/"+hash+"/")
 	if err != nil {
@@ -1491,15 +1719,15 @@ func TestDescribeNeedsNoAPIKey(t *testing.T) {
 	}
 }
 
-// TestDescribeHasNoBinToRead is the state file that does not match the url in use: a
+// TestDescribeHasNoBinToRead is the config file that does not match the url in use: a
 // read-only run makes no bin behind the user's back.
 func TestDescribeHasNoBinToRead(t *testing.T) {
 	f := newFake(t, "test-key")
-	writeWorkDirFile(t, stateFileName, `{"url": "http://other.invalid", "bin": "ffffffff", "protected": false}`)
+	writeWorkDirFile(t, configFileName, "sandbin_url: http://other.invalid\nbin: ffffffff\nprotected: false\n")
 
 	stdout, stderr, err := runClient(t, nil, "--describe")
 	if err == nil {
-		t.Fatalf("--describe against a non-matching state file succeeded, want an error")
+		t.Fatalf("--describe against a non-matching config file succeeded, want an error")
 	}
 	if !strings.Contains(stderr, "--describe") {
 		t.Errorf("stderr = %q, want it to name --describe", stderr)
