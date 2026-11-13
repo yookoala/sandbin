@@ -29,7 +29,7 @@ Always invoke `"$SKILL/sandbin-client"` by that full path — never a bare `sand
 
 Get `your-key` from the human; `--api-key` may be left out at an interactive terminal, where `init` prompts instead, but a non-terminal session must pass it or set `SANDBIN_API_KEY` — otherwise the run stops with `no API key: pass --api-key, set SANDBIN_API_KEY or answer the init prompt` and writes nothing.
 
-`init` checks the key against the server first: a wrong key answers `server rejected this API key` and writes nothing. It saves `sandbin_url`, `api_key`, `bin` and `protected` in a mode-`0600` `.sandbin.yaml` the `.gitignore` covers. Resolution order is flag > environment > file: `--url` > `SANDBIN_URL` > `sandbin_url`, `--api-key` > `SANDBIN_API_KEY` > `api_key`.
+`init` checks the key against the server first: a wrong key answers `server rejected this API key` and writes nothing. It saves `sandbin_url`, `api_key`, `bin` and `protected` in a mode-`0600` `.sandbin.yaml` the `.gitignore` covers. Resolution order is flag > environment > file: `--url` > `SANDBIN_URL` > `sandbin_url`, `--api-key` > `SANDBIN_API_KEY` > `api_key`. An already initialized directory (the file holds both `sandbin_url` and `api_key`) refuses a plain `init` with `.sandbin.yaml is already initialized for <url>: pass --reinit to overwrite it, or delete the file to start over` — pass `--reinit` when the overwrite is intended, or delete `.sandbin.yaml` to start over; at an interactive terminal `init` asks `re-initialize? [y/N]: ` instead.
 
 ## Uploading files
 

@@ -356,13 +356,33 @@ setup that cannot upload. The prompt echoes what you type, key included, the way
 prompt does; no client output ever prints the key on its own. Without a terminal — a script, a
 CI job, an agent — the same verb reads flags and variables; a missing url falls back to
 `http://localhost:8080` and a missing key is a refusal naming `--api-key`, `SANDBIN_API_KEY` and
-the prompt. Re-running init re-verifies and rewrites, which is how a key or a server gets
-changed; with unchanged inputs the file comes out byte-identical.
+the prompt.
+
+Re-running `init` in a project whose `.sandbin.yaml` already holds both a url and a key is an
+explicit act. At a terminal it warns `sandbin-client: warning: .sandbin.yaml is already
+initialized for http://localhost:8080` and asks `re-initialize? [y/N]: `; `y` or `yes` continues
+the wizard as before, and anything else — bare Enter included — prints `left the existing
+initialization for http://localhost:8080 untouched` and exits 0 with nothing requested and
+nothing rewritten. Without a terminal nobody is there to answer, so the run refuses with
+`sandbin-client: .sandbin.yaml is already initialized for http://localhost:8080: pass --reinit
+to overwrite it, or delete the file to start over`. Flags and environment are not consent: a
+fresh `--url` or `--api-key` is exactly the overwrite the guard asks about. `--reinit` is the
+consent a script or CI job passes, and on a directory that is not initialized it is a harmless
+no-op. A confirmed re-init re-verifies and rewrites, which is how a key or a server gets
+changed, keeps `bin` and `protected` while the url stays the same, and with unchanged inputs
+the file comes out byte-identical.
+
+```sh
+sandbin-client init
+# sandbin-client: warning: .sandbin.yaml is already initialized for http://localhost:8080
+# re-initialize? [y/N]: n
+# left the existing initialization for http://localhost:8080 untouched
+```
 
 ```sh
 SANDBIN_URL=http://sandbin.example SANDBIN_API_KEY=your-key sandbin-client init
 # initialized http://sandbin.example
-sandbin-client init --url http://other.example --api-key your-key
+sandbin-client init --reinit --url http://other.example --api-key your-key
 # initialized http://other.example
 ```
 
@@ -425,6 +445,21 @@ When the machine has Go, the installer also builds the client binary into the sk
 (`GOBIN` at the skill dir, `go install github.com/yookoala/sandbin/cmd/sandbin-client@latest`);
 without Go, or if that install fails, it says so, exits 0 anyway, and the skill builds the
 client on first use instead.
+
+With the client binary in place the installer also initializes the current directory. At a
+terminal with `/dev/tty` available it runs `sandbin-client init --url http://localhost:8080`
+against the serving address, so the single question it asks is the API key — the url arrives
+with the served script. The re-initialization guard question for an already initialized project
+arrives the same way: answering `n` leaves that project alone and the install still stands; a
+failed init prints a `sandbin-installer:` warning naming the command and `--reinit` and still
+exits 0, because the skill files are installed regardless. Without a terminal nothing is asked
+and the command is printed instead:
+
+```sh
+# sandbin-installer: run "$HOME/.agents/skills/sandbin-preview/sandbin-client init --url http://localhost:8080 --api-key YOUR_KEY" to finish setup
+```
+
+so an agent or a CI job finishes the setup with that one line.
 
 ## API key lockout
 
