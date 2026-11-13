@@ -44,6 +44,9 @@ control socket.
 
 `GET /` answers a small branded front page that says what the service is. Creating a bin stays
 the key-checked `POST /`, and every other method on `/` still answers `405 method not allowed`.
+A `POST /verify-key` answers `key ok` or `403 invalid API key` for the key it is given, charges
+a failure exactly like `POST /` does, and creates nothing; `sandbin-client init` uses it to
+check a key before saving it (see Point sandbin-client at a server).
 
 Create a bin, then PUT files under it. `$BIN` already ends in `/`, so write `${BIN}name` and
 not `$BIN/name`, which asks for a `//` path the server rejects:
@@ -166,9 +169,12 @@ go build -o sandbin-client ./cmd/sandbin-client
 ```
 
 `SANDBIN_URL` (default `http://localhost:8080`), `SANDBIN_API_KEY` and
-`SANDBIN_BIN_PASSWORD` are the settings; `--url` and `--api-key` override their variables,
-and a missing key is a startup error that makes no request at all — `--describe` is the one run
-that asks for no key. `SANDBIN_BIN_PASSWORD`
+`SANDBIN_BIN_PASSWORD` are the settings; `--url` and `--api-key` override their variables, and a
+`.sandbin.yaml` in the working directory can carry the url and key for a whole project (see
+Point sandbin-client at a server). A key missing from flag, environment and file alike is a
+startup error that makes no request at all, and its message names `--api-key`,
+`SANDBIN_API_KEY` and `sandbin-client init` — `--describe` is the one run that asks for no key.
+`SANDBIN_BIN_PASSWORD`
 has no flag on purpose, so a bin password never lands on a command line: when it is set it
 goes out as `X-Bin-Password` on the create and as Basic Auth (user name = bin hash) on every
 upload. `--bin <hash>` uploads into a bin you already have, `--new` forces a fresh one, and
@@ -253,19 +259,16 @@ The two fields show up wherever the bin is read: as `X-Bin-Title` and `X-Bin-Des
 serves when the bin has no `index.html`. A bin with no metadata listed is listed exactly as it
 was before metadata existed.
 
-The bin is remembered in `.sandbin.json` in the working directory:
-
-```json
-{ "url": "http://localhost:8080", "bin": "abc1234", "protected": false }
-```
-
-`--bin` beats that file, a readable file whose `url` matches the url in use comes next, and
-otherwise the client creates a bin and writes it: mode `0600`, renamed in from a temp file in
-the same directory, never holding the API key or the bin password, and gitignored. A corrupt
-or unreadable `.sandbin.json` is an error naming the file, never a silent second bin for the
-same prototype. Change the url in use and the file simply stops matching: the client makes a
-new bin for the new url, and the old bin is orphaned — its files stay readable at the old
-URL, but nothing in this directory points at them any more. Names are checked before anything
+The bin is remembered in `.sandbin.yaml` in the working directory. `--bin` beats that file, a
+readable file whose `sandbin_url` matches the url in use comes next, and otherwise the client
+creates a bin and writes the file: mode `0600`, renamed in from a temp file in the same
+directory, and an upload run never newly persists a key that came from flag or environment —
+the `api_key` line is `sandbin-client init`'s work (below). The file's `bin` and `protected`
+belong to its `sandbin_url`: change the url in use and the file simply stops matching, the
+client makes a new bin for the new url, and the old bin is orphaned — its files stay readable at
+the old URL, but nothing in this directory points at them any more. A corrupt or unreadable
+`.sandbin.yaml` is an error naming the file, never a silent second bin for the same prototype.
+Names are checked before anything
 is sent, so an absolute path, a `..` segment or a file over 1 MiB fails locally instead of
 costing a request.
 
@@ -283,10 +286,68 @@ answers with the directory listing. `sandbin-client prototype/index.html` theref
 listing at `http://localhost:8080/abc1234/` and the page itself at
 `http://localhost:8080/abc1234/prototype/index.html`.
 
+## Point sandbin-client at a server
+
+`sandbin-client init` settles one project: it collects a url and a key, checks them against the
+server before writing anything, and remembers them in `.sandbin.yaml` next to the work. On a
+terminal it prompts for whatever is missing; Enter on the url prompt keeps the shown default:
+
+```sh
+sandbin-client init
+# sandbin_url [http://localhost:8080]:
+# api_key:
+# initialized http://localhost:8080
+```
+
+The check before writing is a `POST /verify-key` with the candidate key: a wrong key answers
+`server rejected this API key` and a locked-out address answers `server is blocking this
+address: too many bad API keys`, and either way init writes nothing — a project never holds a
+setup that cannot upload. The prompt echoes what you type, key included, the way any terminal
+prompt does; no client output ever prints the key on its own. Without a terminal — a script, a
+CI job, an agent — the same verb reads flags and variables; a missing url falls back to
+`http://localhost:8080` and a missing key is a refusal naming `--api-key`, `SANDBIN_API_KEY` and
+the prompt. Re-running init re-verifies and rewrites, which is how a key or a server gets
+changed; with unchanged inputs the file comes out byte-identical.
+
+```sh
+SANDBIN_URL=http://sandbin.example SANDBIN_API_KEY=your-key sandbin-client init
+# initialized http://sandbin.example
+sandbin-client init --url http://other.example --api-key your-key
+# initialized http://other.example
+```
+
+The file `init` writes:
+
+```yaml
+sandbin_url: http://localhost:8080
+api_key: your-key
+bin: abc1234
+protected: false
+```
+
+It is mode `0600`, and `init` makes sure the directory's `.gitignore` names `.sandbin.yaml` —
+creating the file if it is absent, appending the line if it is missing, and leaving an existing
+`.gitignore` exactly as written if the line is already there. `init` is the only run that writes
+an `api_key`, at your explicit request; an ordinary upload run writes `sandbin_url`, `bin` and
+`protected` and keeps whatever key the file already holds. The bin password stays env-only, as
+before.
+
+Settings resolve flag first, environment second, the file third, the built-in default last:
+`--url` > `SANDBIN_URL` > `sandbin_url` > `http://localhost:8080`, and `--api-key` >
+`SANDBIN_API_KEY` > `api_key`. The environment beating the file is what lets a CI job or an
+agent override a project without editing it.
+
+The state file earlier versions of this client kept as JSON is gone without migration or
+fallback: run `init` once in a project that has one and delete the old file.
+
 ## API key lockout
 
-`POST /` and `PUT /{hash}/{path}` are the key-checked requests. A wrong or missing `X-API-Key`
-blocks that address from both for 30 minutes; every further failure adds 30 minutes, capped at
+`POST /`, `PUT /{hash}/{path}` and `POST /verify-key` are the key-checked requests.
+`POST /verify-key` is the pure key check `sandbin-client init` runs before saving a key: it
+answers `200 key ok` or `403 invalid API key`, charges every failure exactly like `POST /`
+does, creates nothing, and answers every method but `POST` with `405 method not allowed`, so no
+`GET` can probe a key for free. A wrong or missing `X-API-Key`
+blocks that address from all of them for 30 minutes; every further failure adds 30 minutes, capped at
 24 hours per block, and the failure count survives a restart. While blocked, a key-checked
 request answers `429` with a `Retry-After` (the remaining wait in seconds) and counts as another
 failure, so hammering only lengthens the wait. `GET` is never charged and never blocked: a

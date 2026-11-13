@@ -1,4 +1,4 @@
 /sandbin
 /sandbin-client
 *.db
-.sandbin.json
+.sandbin.yaml
