@@ -3,7 +3,10 @@
 # {{.Base}} with the address this script was served from, so SKILL.md is fetched from
 # the same server that handed you this script. When go is on PATH the installer also
 # builds the client binary into the skill folder; without go (or if the install
-# fails) the skill builds it on first use instead. Run it as a file or piped:
+# fails) the skill builds it on first use instead. When the client is there and a
+# terminal is available the installer then runs the client's init against this
+# server, asking only for the API key; elsewhere it prints the command that finishes
+# setup instead. Run it as a file or piped:
 #   curl -fsSL https://your.sandbin/skills/sandbin-preview/install.sh | bash
 #   curl -fsSL https://your.sandbin/skills/sandbin-preview/install.sh | bash -s -- --dest "$HOME/.claude/skills"
 set -euo pipefail
@@ -31,4 +34,17 @@ if command -v go >/dev/null 2>&1; then
   fi
 else
   echo "sandbin-installer: no go on PATH; the skill will build the client on first use" >&2
+fi
+
+CLIENT="$DEST/sandbin-preview/sandbin-client"
+if [ -x "$CLIENT" ]; then
+  # init reads from /dev/tty on purpose: this script itself may arrive through
+  # stdin (curl | bash), and an init reading that stdin would eat the rest of the
+  # script. The terminal gate means agents and CI runs never hang on a prompt.
+  if [ -t 1 ] && { : </dev/tty; } 2>/dev/null; then
+    "$CLIENT" init --url "$BASE" </dev/tty ||
+      echo "sandbin-installer: init did not finish; run \"$CLIENT init --url $BASE --api-key YOUR_KEY\" (add --reinit to overwrite an existing setup)" >&2
+  else
+    echo "sandbin-installer: run \"$CLIENT init --url $BASE --api-key YOUR_KEY\" to finish setup" >&2
+  fi
 fi

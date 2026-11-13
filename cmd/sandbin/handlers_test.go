@@ -163,6 +163,7 @@ func TestFrontPageAtRoot(t *testing.T) {
 		"<code>404.html</code> answers every unmatched path under the bin",
 		"<h2>Give the skill to your agent</h2>",
 		"curl -fsSL http://example.com/skills/sandbin-preview/install.sh | bash",
+		"initializes the current directory by asking a single question, the API key",
 		"--dest",
 	} {
 		if !strings.Contains(body, want) {
@@ -256,6 +257,9 @@ func TestInstallScriptRoute(t *testing.T) {
 	}
 	if !strings.Contains(body, `BASE="http://example.com"`) {
 		t.Errorf("install.sh missing the visitor's base in:\n%s", body)
+	}
+	if !strings.Contains(body, `init --url "$BASE" </dev/tty`) {
+		t.Errorf("install.sh missing the init step in:\n%s", body)
 	}
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodHead, http.MethodOptions} {
 		req := httptest.NewRequest(method, "/skills/sandbin-preview/install.sh", nil)

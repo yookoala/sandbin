@@ -772,7 +772,8 @@ through its URL, and a bin can demand its own password on top.</p>
 <p>The <code>sandbin-preview</code> skill teaches an agent to set up <code>sandbin-client</code> in a
 directory and upload files or whole folders for preview. Install it with one command:</p>
 <pre>curl -fsSL https://this.host/skills/sandbin-preview/install.sh | bash</pre>
-<p>That installs into <code>$HOME/.agents/skills/sandbin-preview</code>. For a single project
+<p>That installs into <code>$HOME/.agents/skills/sandbin-preview</code> and, at a terminal,
+initializes the current directory by asking a single question, the API key. For a single project
 instead, hand the installer a destination: <code>| bash -s -- --dest .opencode/skills</code>.</p>
 `
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
