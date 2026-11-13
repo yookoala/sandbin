@@ -17,7 +17,7 @@ func TestNoExtractSendsTheHeaderOnEveryPut(t *testing.T) {
 	writeWorkDirFile(t, "a.zip", "PK fake zip bytes")
 	writeWorkDirFile(t, "b.tar.gz", "not gzip at all")
 
-	if _, _, err := runClient(t, nil, "--no-extract", "a.zip", "b.tar.gz"); err != nil {
+	if _, _, err := runClient(t, nil, "upload", "--no-extract", "a.zip", "b.tar.gz"); err != nil {
 		t.Fatalf("--no-extract run: %v", err)
 	}
 	if got := f.extractValues(); !reflect.DeepEqual(got, []string{"keep", "keep"}) {
@@ -30,7 +30,7 @@ func TestNoExtractSendsTheHeaderOnEveryPut(t *testing.T) {
 	f2 := newFake(t, "test-key")
 	writeWorkDirFile(t, "a.zip", "PK fake zip bytes")
 	writeWorkDirFile(t, "b.tar.gz", "not gzip at all")
-	if _, _, err := runClient(t, nil, "a.zip", "b.tar.gz"); err != nil {
+	if _, _, err := runClient(t, nil, "upload", "a.zip", "b.tar.gz"); err != nil {
 		t.Fatalf("plain run: %v", err)
 	}
 	if got := f2.extractValues(); !reflect.DeepEqual(got, []string{"", ""}) {
@@ -48,7 +48,7 @@ func TestArchiveExtractsIntoTheBin(t *testing.T) {
 	writeWorkDirFile(t, "hello/world.html", "<p>world</p>")
 	writeWorkDirFile(t, "hello/sub/deep.html", "<p>deep</p>")
 
-	stdout, stderr, err := runClient(t, nil, "--archive", "hello")
+	stdout, stderr, err := runClient(t, nil, "upload", "--archive", "hello")
 	if err != nil {
 		t.Fatalf("--archive hello: %v; stderr %s", err, stderr)
 	}
@@ -86,7 +86,7 @@ func TestArchiveNestedFolderIsBinRelative(t *testing.T) {
 	writeWorkDirFile(t, "projects/app/index.html", "the app")
 	writeWorkDirFile(t, "projects/app/css/app.css", "body {}")
 
-	stdout, stderr, err := runClient(t, nil, "--archive", "projects/app")
+	stdout, stderr, err := runClient(t, nil, "upload", "--archive", "projects/app")
 	if err != nil {
 		t.Fatalf("--archive projects/app: %v; stderr %s", err, stderr)
 	}
@@ -120,7 +120,7 @@ func TestArchiveCombinedWithFilesAndStdin(t *testing.T) {
 	writeWorkDirFile(t, "first.txt", "one")
 	writeWorkDirFile(t, "hello/world.html", "two")
 
-	stdout, stderr, err := runClient(t, strings.NewReader("piped"),
+	stdout, stderr, err := runClient(t, strings.NewReader("piped"), "upload",
 		"--archive", "hello", "--name", "piped.txt", "first.txt")
 	if err != nil {
 		t.Fatalf("combined run: %v; stderr %s", err, stderr)
@@ -150,7 +150,7 @@ func TestArchiveRawModeWithNoExtract(t *testing.T) {
 	f.setUnpack(true) // on, so only the X-Extract header can keep it raw
 	writeWorkDirFile(t, "hello/world.html", "two")
 
-	stdout, stderr, err := runClient(t, nil, "--archive", "hello", "--no-extract")
+	stdout, stderr, err := runClient(t, nil, "upload", "--archive", "hello", "--no-extract")
 	if err != nil {
 		t.Fatalf("--archive hello --no-extract: %v; stderr %s", err, stderr)
 	}
@@ -234,7 +234,7 @@ func TestArchivePreflightRefusals(t *testing.T) {
 			if tc.setup != nil {
 				tc.setup(t)
 			}
-			stdout, stderr, err := runClient(t, nil, tc.args...)
+			stdout, stderr, err := runClient(t, nil, append([]string{"upload"}, tc.args...)...)
 			if err == nil {
 				t.Fatalf("run %q succeeded, want a refusal", tc.args)
 			}
@@ -257,16 +257,17 @@ func TestArchivePreflightRefusals(t *testing.T) {
 	}
 }
 
-// TestDescribeRefusedWithArchive keeps --describe read-only when --archive joins.
+// TestDescribeRefusedWithArchive keeps describe read-only when --archive joins: the flag
+// is not even defined on describe, so joining it is a usage refusal with zero requests.
 func TestDescribeRefusedWithArchive(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "hello/world.html", "x")
-	_, stderr, err := runClient(t, nil, "--describe", "--archive", "hello")
+	_, stderr, err := runClient(t, nil, "describe", "--archive", "hello")
 	if err == nil {
-		t.Fatalf("--describe --archive succeeded, want a refusal")
+		t.Fatalf("describe --archive succeeded, want a refusal")
 	}
-	if !strings.Contains(stderr, "--describe") {
-		t.Errorf("stderr = %q, want it to name --describe", stderr)
+	if !strings.Contains(stderr, "flag provided but not defined: -archive") {
+		t.Errorf("stderr = %q, want the usage refusal naming --archive", stderr)
 	}
 	if n := f.requestsSeen(); n != 0 {
 		t.Errorf("requests = %d, want zero", n)
@@ -292,7 +293,7 @@ func TestArchiveRefusesPipedStdinWithoutAName(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "hello/world.html", "x")
 
-	stdout, stderr, err := runClient(t, strings.NewReader("piped in\n"), "--archive", "hello")
+	stdout, stderr, err := runClient(t, strings.NewReader("piped in\n"), "upload", "--archive", "hello")
 	if err == nil {
 		t.Fatalf("--archive with piped stdin and no --name succeeded, want a refusal")
 	}
@@ -314,7 +315,7 @@ func TestArchiveRefusesPipedStdinWithoutAName(t *testing.T) {
 
 	// The same run without --archive refuses with the same words, which is what
 	// "regardless of --archive" has to mean.
-	_, plainStderr, err := runClient(t, strings.NewReader("piped in\n"))
+	_, plainStderr, err := runClient(t, strings.NewReader("piped in\n"), "upload")
 	if err == nil || plainStderr != stderr {
 		t.Errorf("plain run stderr = %q, want the same refusal as the --archive run (%q)", plainStderr, stderr)
 	}
@@ -323,7 +324,7 @@ func TestArchiveRefusesPipedStdinWithoutAName(t *testing.T) {
 	f2 := newFake(t, "test-key")
 	f2.setUnpack(true)
 	writeWorkDirFile(t, "hello/world.html", "x")
-	if _, _, err := runClient(t, strings.NewReader("piped in\n"), "--archive", "hello", "--name", "piped.txt"); err != nil {
+	if _, _, err := runClient(t, strings.NewReader("piped in\n"), "upload", "--archive", "hello", "--name", "piped.txt"); err != nil {
 		t.Fatalf("--archive with --name: %v", err)
 	}
 	want := []string{"/bin0001/piped.txt", "/bin0001/hello.tar.gz"}
@@ -364,7 +365,7 @@ func TestArchiveOverOneMiBRefusesBeforeAnyRequest(t *testing.T) {
 		}
 	}
 
-	stdout, stderr, err := runClient(t, nil, "--archive", "fat")
+	stdout, stderr, err := runClient(t, nil, "upload", "--archive", "fat")
 	if err == nil {
 		t.Fatalf("--archive fat succeeded, want the built archive refused")
 	}
@@ -398,7 +399,7 @@ func TestArchiveTempFileRemoved(t *testing.T) {
 	f := newFake(t, "test-key")
 	f.setUnpack(true)
 	writeWorkDirFile(t, "hello/world.html", "x")
-	if _, _, err := runClient(t, nil, "--archive", "hello"); err != nil {
+	if _, _, err := runClient(t, nil, "upload", "--archive", "hello"); err != nil {
 		t.Fatalf("--archive hello: %v", err)
 	}
 	if got := archiveTempLeftovers(t); len(got) != 0 {
@@ -408,7 +409,7 @@ func TestArchiveTempFileRemoved(t *testing.T) {
 	f2 := newFake(t, "test-key")
 	writeWorkDirFile(t, "hello/world.html", "x")
 	f2.setPutFail(500)
-	if _, _, err := runClient(t, nil, "--archive", "hello"); err == nil {
+	if _, _, err := runClient(t, nil, "upload", "--archive", "hello"); err == nil {
 		t.Fatalf("--archive hello against a 500 server succeeded, want the failure")
 	}
 	if got := archiveTempLeftovers(t); len(got) != 0 {

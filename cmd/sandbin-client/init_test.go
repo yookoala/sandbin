@@ -394,7 +394,7 @@ func TestInitKeepsTheBinOnTheSameUrl(t *testing.T) {
 	url1 := os.Getenv("SANDBIN_URL")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 	t.Setenv("SANDBIN_BIN_PASSWORD", "sesame")
-	stdout, stderr, err := runClient(t, nil, "index.html")
+	stdout, stderr, err := runClient(t, nil, "upload", "index.html")
 	if err != nil {
 		t.Fatalf("protected upload run: %v; stderr %s", err, stderr)
 	}
@@ -636,7 +636,7 @@ func TestInitReinitKeepsBinAndProtected(t *testing.T) {
 	url1 := os.Getenv("SANDBIN_URL")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 	t.Setenv("SANDBIN_BIN_PASSWORD", "sesame")
-	stdout, stderr, err := runClient(t, nil, "index.html")
+	stdout, stderr, err := runClient(t, nil, "upload", "index.html")
 	if err != nil {
 		t.Fatalf("protected upload run: %v; stderr %s", err, stderr)
 	}

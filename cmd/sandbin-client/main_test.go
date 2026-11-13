@@ -537,7 +537,7 @@ func TestUploadsFilesAndPrintsTheBinURLLast(t *testing.T) {
 		writeWorkDirFile(t, name, "body of "+name)
 	}
 
-	stdout, stderr, err := runClient(t, nil, "index.html", "app.js", "style.css")
+	stdout, stderr, err := runClient(t, nil, "upload", "index.html", "app.js", "style.css")
 	if err != nil {
 		t.Fatalf("run: %v; stderr %s", err, stderr)
 	}
@@ -565,14 +565,14 @@ func TestSecondRunReusesTheConfigFileAndReportsUpdated(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "index.html", "<h1>First</h1>")
 
-	stdout, stderr, err := runClient(t, nil, "index.html")
+	stdout, stderr, err := runClient(t, nil, "upload", "index.html")
 	if err != nil {
 		t.Fatalf("first run: %v; stderr %s", err, stderr)
 	}
 	hash := binHashOf(t, stdout)
 
 	writeWorkDirFile(t, "index.html", "<h1>Second</h1>")
-	stdout, stderr, err = runClient(t, nil, "index.html")
+	stdout, stderr, err = runClient(t, nil, "upload", "index.html")
 	if err != nil {
 		t.Fatalf("second run: %v; stderr %s", err, stderr)
 	}
@@ -594,13 +594,13 @@ func TestNewFlagCreatesASecondBin(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 
-	first, _, err := runClient(t, nil, "index.html")
+	first, _, err := runClient(t, nil, "upload", "index.html")
 	if err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	oldHash := binHashOf(t, first)
 
-	second, _, err := runClient(t, nil, "--new", "index.html")
+	second, _, err := runClient(t, nil, "upload", "--new", "index.html")
 	if err != nil {
 		t.Fatalf("run with --new: %v", err)
 	}
@@ -626,7 +626,7 @@ func TestMissingAPIKeyFailsBeforeAnyRequest(t *testing.T) {
 	t.Setenv("SANDBIN_API_KEY", "")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 
-	stdout, stderr, err := runClient(t, nil, "index.html")
+	stdout, stderr, err := runClient(t, nil, "upload", "index.html")
 	if err == nil {
 		t.Fatalf("run without a key succeeded, want a startup error")
 	}
@@ -646,7 +646,7 @@ func TestWrongAPIKeyReports403WithExactlyOneRequest(t *testing.T) {
 	t.Setenv("SANDBIN_API_KEY", "wrong-key")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 
-	stdout, stderr, err := runClient(t, nil, "index.html")
+	stdout, stderr, err := runClient(t, nil, "upload", "index.html")
 	if err == nil {
 		t.Fatalf("run with a wrong key succeeded, want an error")
 	}
@@ -671,12 +671,12 @@ func TestBlockedAddressReports429WithTheWait(t *testing.T) {
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 
 	t.Setenv("SANDBIN_API_KEY", "wrong-key")
-	if _, _, err := runClient(t, nil, "index.html"); err == nil {
+	if _, _, err := runClient(t, nil, "upload", "index.html"); err == nil {
 		t.Fatalf("the wrong-key run should have failed")
 	}
 
 	// The same address now holds the right key and is still blocked by its failure.
-	stdout, stderr, err := runClient(t, nil, "index.html")
+	stdout, stderr, err := runClient(t, nil, "upload", "index.html")
 	if err == nil {
 		t.Fatalf("the blocked run succeeded, want a 429")
 	}
@@ -700,7 +700,7 @@ func TestServerSide413NamesTheSizeLimit(t *testing.T) {
 	f.setBodyLimit(8) // smaller than the client's own cap, so the server gets to answer 413
 	writeWorkDirFile(t, "index.html", strings.Repeat("x", 20))
 
-	_, stderr, err := runClient(t, nil, "index.html")
+	_, stderr, err := runClient(t, nil, "upload", "index.html")
 	if err == nil {
 		t.Fatalf("run against an oversized body succeeded, want a 413")
 	}
@@ -717,7 +717,7 @@ func TestMissingBinPasswordNamesTheEnvironmentVariable(t *testing.T) {
 	t.Setenv("SANDBIN_BIN_PASSWORD", "sesame")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 
-	stdout, _, err := runClient(t, nil, "index.html")
+	stdout, _, err := runClient(t, nil, "upload", "index.html")
 	if err != nil {
 		t.Fatalf("run with the bin password: %v", err)
 	}
@@ -725,7 +725,7 @@ func TestMissingBinPasswordNamesTheEnvironmentVariable(t *testing.T) {
 
 	// The config file now says the bin is protected, and the password is gone.
 	t.Setenv("SANDBIN_BIN_PASSWORD", "")
-	_, stderr, err := runClient(t, nil, "index.html")
+	_, stderr, err := runClient(t, nil, "upload", "index.html")
 	if err == nil {
 		t.Fatalf("run without the bin password succeeded, want a 401")
 	}
@@ -744,7 +744,7 @@ func TestProtectedStateWarnsBeforeTheRequest(t *testing.T) {
 	f := newFake(t, "test-key")
 	t.Setenv("SANDBIN_BIN_PASSWORD", "sesame")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
-	if _, _, err := runClient(t, nil, "index.html"); err != nil {
+	if _, _, err := runClient(t, nil, "upload", "index.html"); err != nil {
 		t.Fatalf("run with the bin password: %v", err)
 	}
 
@@ -754,7 +754,7 @@ func TestProtectedStateWarnsBeforeTheRequest(t *testing.T) {
 	f.setLog(log)
 	t.Setenv("SANDBIN_BIN_PASSWORD", "")
 	var out bytes.Buffer
-	err := run([]string{"index.html"}, nil, &out, log)
+	err := run([]string{"upload", "index.html"}, nil, &out, log)
 	if err == nil {
 		t.Fatalf("run without the bin password succeeded, want a 401")
 	}
@@ -774,7 +774,7 @@ func TestProtectedStateWarnsBeforeTheRequest(t *testing.T) {
 func TestStdinNeedsAName(t *testing.T) {
 	f := newFake(t, "test-key")
 
-	stdout, stderr, err := runClient(t, strings.NewReader("make: nothing to be done\n"))
+	stdout, stderr, err := runClient(t, strings.NewReader("make: nothing to be done\n"), "upload")
 	if err == nil {
 		t.Fatalf("run with piped stdin and no --name succeeded, want an error")
 	}
@@ -794,7 +794,7 @@ func TestNoArgumentsAndNoStdinIsAnError(t *testing.T) {
 	}
 	defer devNull.Close()
 
-	stdout, stderr, err := runClient(t, devNull)
+	stdout, stderr, err := runClient(t, devNull, "upload")
 	if err == nil {
 		t.Fatalf("run with no files and no stdin succeeded, want an error")
 	}
@@ -814,7 +814,7 @@ func TestNamedStdinNeedsAPipe(t *testing.T) {
 	}
 	defer devNull.Close()
 
-	stdout, stderr, err := runClient(t, devNull, "--name", "build.ansi")
+	stdout, stderr, err := runClient(t, devNull, "upload", "--name", "build.ansi")
 	if err == nil {
 		t.Fatalf("run with --name and no stdin piped in succeeded, want an error")
 	}
@@ -826,7 +826,7 @@ func TestNamedStdinNeedsAPipe(t *testing.T) {
 	}
 
 	// A real pipe carrying no bytes is still a deliberate empty upload.
-	stdout, stderr, err = runClient(t, strings.NewReader(""), "--name", "empty.txt")
+	stdout, stderr, err = runClient(t, strings.NewReader(""), "upload", "--name", "empty.txt")
 	if err != nil {
 		t.Fatalf("run with an empty pipe: %v; stderr %s", err, stderr)
 	}
@@ -838,7 +838,7 @@ func TestNamedStdinNeedsAPipe(t *testing.T) {
 func TestUploadsStdinAsANamedPath(t *testing.T) {
 	f := newFake(t, "test-key")
 
-	stdout, stderr, err := runClient(t, strings.NewReader("\x1b[1mmake\x1b[0m ok\n"), "--name", "build.ansi")
+	stdout, stderr, err := runClient(t, strings.NewReader("\x1b[1mmake\x1b[0m ok\n"), "upload", "--name", "build.ansi")
 	if err != nil {
 		t.Fatalf("run: %v; stderr %s", err, stderr)
 	}
@@ -850,7 +850,7 @@ func TestUploadsStdinAsANamedPath(t *testing.T) {
 		t.Errorf("stored build.ansi = %q, want the piped bytes", got)
 	}
 
-	stdout, _, err = runClient(t, strings.NewReader("second run\n"), "--name", "build.ansi")
+	stdout, _, err = runClient(t, strings.NewReader("second run\n"), "upload", "--name", "build.ansi")
 	if err != nil {
 		t.Fatalf("second run: %v", err)
 	}
@@ -876,7 +876,7 @@ func TestRefusesBadNamesLocallyWithNoRequest(t *testing.T) {
 		{".", "empty path"},
 		{"bad\nname", "path may not contain control characters"},
 	} {
-		stdout, stderr, err := runClient(t, nil, bad.name)
+		stdout, stderr, err := runClient(t, nil, "upload", bad.name)
 		if err == nil {
 			t.Errorf("run with %q succeeded, want a local refusal", bad.name)
 			continue
@@ -900,7 +900,7 @@ func TestLengthLimitCountsTheUploadedName(t *testing.T) {
 	name := strings.Repeat("l", 251) + ".txt"
 	writeWorkDirFile(t, name, "at the limit")
 
-	stdout, stderr, err := runClient(t, nil, "./"+name)
+	stdout, stderr, err := runClient(t, nil, "upload", "./"+name)
 	if err != nil {
 		t.Fatalf("run: %v; stderr %s", err, stderr)
 	}
@@ -910,7 +910,7 @@ func TestLengthLimitCountsTheUploadedName(t *testing.T) {
 	}
 
 	// One character past the limit is refused locally, measured the way the server measures it.
-	_, stderr, err = runClient(t, nil, "./"+strings.Repeat("x", maxPathLen+1))
+	_, stderr, err = runClient(t, nil, "upload", "./"+strings.Repeat("x", maxPathLen+1))
 	if err == nil {
 		t.Fatalf("run with a %d character name succeeded, want a local refusal", maxPathLen+1)
 	}
@@ -923,7 +923,7 @@ func TestRefusesALargeFileLocallyWithNoRequest(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "huge.txt", strings.Repeat("x", 2*maxBodyBytes))
 
-	_, stderr, err := runClient(t, nil, "huge.txt")
+	_, stderr, err := runClient(t, nil, "upload", "huge.txt")
 	if err == nil {
 		t.Fatalf("run with a 2 MiB file succeeded, want a local refusal")
 	}
@@ -939,7 +939,7 @@ func TestAcceptsAFileAtTheSizeLimit(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "exact.txt", strings.Repeat("x", maxBodyBytes))
 
-	if _, stderr, err := runClient(t, nil, "exact.txt"); err != nil {
+	if _, stderr, err := runClient(t, nil, "upload", "exact.txt"); err != nil {
 		t.Fatalf("run at the 1 MiB limit: %v; stderr %s", err, stderr)
 	}
 	if len(f.stored("bin0001/exact.txt")) != maxBodyBytes {
@@ -950,7 +950,7 @@ func TestAcceptsAFileAtTheSizeLimit(t *testing.T) {
 func TestRefusesOversizedStdinLocallyWithNoRequest(t *testing.T) {
 	f := newFake(t, "test-key")
 
-	_, stderr, err := runClient(t, strings.NewReader(strings.Repeat("x", 2*maxBodyBytes)), "--name", "stream.txt")
+	_, stderr, err := runClient(t, strings.NewReader(strings.Repeat("x", 2*maxBodyBytes)), "upload", "--name", "stream.txt")
 	if err == nil {
 		t.Fatalf("run with 2 MiB of stdin succeeded, want a local refusal")
 	}
@@ -967,7 +967,7 @@ func TestCorruptConfigFileIsAnErrorNamingIt(t *testing.T) {
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 	writeWorkDirFile(t, configFileName, "not: [valid")
 
-	_, stderr, err := runClient(t, nil, "index.html")
+	_, stderr, err := runClient(t, nil, "upload", "index.html")
 	if err == nil {
 		t.Fatalf("run against a corrupt config file succeeded, want an error")
 	}
@@ -987,7 +987,7 @@ func TestConfigFileWithoutABinGetsAFreshBin(t *testing.T) {
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 	writeWorkDirFile(t, configFileName, "sandbin_url: "+os.Getenv("SANDBIN_URL")+"\n")
 
-	stdout, stderr, err := runClient(t, nil, "index.html")
+	stdout, stderr, err := runClient(t, nil, "upload", "index.html")
 	if err != nil {
 		t.Fatalf("run against a bin-less config file: %v; stderr %s", err, stderr)
 	}
@@ -1010,7 +1010,7 @@ func TestConfigFileForAnotherUrlStartsAFreshBin(t *testing.T) {
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 	writeWorkDirFile(t, configFileName, "sandbin_url: http://other.invalid\nbin: ffffffff\nprotected: false\n")
 
-	stdout, _, err := runClient(t, nil, "index.html")
+	stdout, _, err := runClient(t, nil, "upload", "index.html")
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -1038,7 +1038,7 @@ func TestURLPrecedenceFlagEnvFileDefault(t *testing.T) {
 	// file > default: with no env the file's url is the one in use.
 	t.Setenv("SANDBIN_URL", "")
 	writeWorkDirFile(t, configFileName, "sandbin_url: "+url1+"\n")
-	if _, stderr, err := runClient(t, nil, "index.html"); err != nil {
+	if _, stderr, err := runClient(t, nil, "upload", "index.html"); err != nil {
 		t.Fatalf("file-url run: %v; stderr %s", err, stderr)
 	}
 	if f1.requestsSeen() != 2 || f2.requestsSeen() != 0 {
@@ -1047,7 +1047,7 @@ func TestURLPrecedenceFlagEnvFileDefault(t *testing.T) {
 
 	// env > file: the env points at the other server, and the file follows it.
 	t.Setenv("SANDBIN_URL", url2)
-	if _, stderr, err := runClient(t, nil, "index.html"); err != nil {
+	if _, stderr, err := runClient(t, nil, "upload", "index.html"); err != nil {
 		t.Fatalf("env-url run: %v; stderr %s", err, stderr)
 	}
 	if f1.requestsSeen() != 2 || f2.requestsSeen() != 2 {
@@ -1055,7 +1055,7 @@ func TestURLPrecedenceFlagEnvFileDefault(t *testing.T) {
 	}
 
 	// flag > env: the flag points back at the first server.
-	if _, stderr, err := runClient(t, nil, "--url", url1, "index.html"); err != nil {
+	if _, stderr, err := runClient(t, nil, "upload", "--url", url1, "index.html"); err != nil {
 		t.Fatalf("flag-url run: %v; stderr %s", err, stderr)
 	}
 	if f1.requestsSeen() != 4 || f2.requestsSeen() != 2 {
@@ -1067,7 +1067,7 @@ func TestURLPrecedenceFlagEnvFileDefault(t *testing.T) {
 	if err := os.Remove(configFileName); err != nil {
 		t.Fatalf("remove %s: %v", configFileName, err)
 	}
-	_, stderr, err := runClient(t, nil, "index.html")
+	_, stderr, err := runClient(t, nil, "upload", "index.html")
 	if err == nil {
 		t.Fatalf("run against the default url succeeded, want an error")
 	}
@@ -1089,7 +1089,7 @@ func TestAPIKeyPrecedenceFlagEnvFile(t *testing.T) {
 	// file alone: with no env the file's key is the one sent.
 	t.Setenv("SANDBIN_API_KEY", "")
 	writeWorkDirFile(t, configFileName, "sandbin_url: "+url1+"\napi_key: test-key\n")
-	if _, stderr, err := runClient(t, nil, "index.html"); err != nil {
+	if _, stderr, err := runClient(t, nil, "upload", "index.html"); err != nil {
 		t.Fatalf("file-key run: %v; stderr %s", err, stderr)
 	}
 	if f.requestsSeen() != 2 {
@@ -1099,7 +1099,7 @@ func TestAPIKeyPrecedenceFlagEnvFile(t *testing.T) {
 	// env > file: the file holds a wrong key, the env the right one.
 	writeWorkDirFile(t, configFileName, "sandbin_url: "+url1+"\napi_key: wrong-file-key\n")
 	t.Setenv("SANDBIN_API_KEY", "test-key")
-	if _, stderr, err := runClient(t, nil, "index.html"); err != nil {
+	if _, stderr, err := runClient(t, nil, "upload", "index.html"); err != nil {
 		t.Fatalf("env-key run: %v; stderr %s", err, stderr)
 	}
 	if f.requestsSeen() != 4 {
@@ -1108,7 +1108,7 @@ func TestAPIKeyPrecedenceFlagEnvFile(t *testing.T) {
 
 	// flag > env: the env holds a wrong key, the flag the right one.
 	t.Setenv("SANDBIN_API_KEY", "wrong-env-key")
-	if _, stderr, err := runClient(t, nil, "--api-key", "test-key", "index.html"); err != nil {
+	if _, stderr, err := runClient(t, nil, "upload", "--api-key", "test-key", "index.html"); err != nil {
 		t.Fatalf("flag-key run: %v; stderr %s", err, stderr)
 	}
 	// One PUT only: the flag key is accepted and the file's bin is the one reused.
@@ -1124,7 +1124,7 @@ func TestEnvUrlOverrideDoesNotReuseTheConfigBin(t *testing.T) {
 	url1 := os.Getenv("SANDBIN_URL")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 
-	first, _, err := runClient(t, nil, "index.html")
+	first, _, err := runClient(t, nil, "upload", "index.html")
 	if err != nil {
 		t.Fatalf("first run: %v", err)
 	}
@@ -1134,7 +1134,7 @@ func TestEnvUrlOverrideDoesNotReuseTheConfigBin(t *testing.T) {
 
 	f2, url2 := newFakeAt(t, "test-key")
 	t.Setenv("SANDBIN_URL", url2)
-	second, stderr, err := runClient(t, nil, "index.html")
+	second, stderr, err := runClient(t, nil, "upload", "index.html")
 	if err != nil {
 		t.Fatalf("run on the other url: %v; stderr %s", err, stderr)
 	}
@@ -1151,7 +1151,7 @@ func TestEnvUrlOverrideDoesNotReuseTheConfigBin(t *testing.T) {
 
 	// Back under the file's url the new bin is reused as the file's own.
 	t.Setenv("SANDBIN_URL", "")
-	third, _, err := runClient(t, nil, "index.html")
+	third, _, err := runClient(t, nil, "upload", "index.html")
 	if err != nil {
 		t.Fatalf("run back on the file's url: %v", err)
 	}
@@ -1172,13 +1172,13 @@ func TestNewRunKeepsTheConfigFileAPIKey(t *testing.T) {
 	writeWorkDirFile(t, configFileName, "sandbin_url: "+url1+"\napi_key: test-key\n")
 	t.Setenv("SANDBIN_API_KEY", "") // the key must come from the file for the run to work at all
 
-	first, _, err := runClient(t, nil, "index.html")
+	first, _, err := runClient(t, nil, "upload", "index.html")
 	if err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	hash1 := binHashOf(t, first)
 
-	second, _, err := runClient(t, nil, "--new", "index.html")
+	second, _, err := runClient(t, nil, "upload", "--new", "index.html")
 	if err != nil {
 		t.Fatalf("run with --new: %v", err)
 	}
@@ -1207,7 +1207,7 @@ func TestUploadRunNeverStoresAnEnvOrFlagKey(t *testing.T) {
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 
 	// The env key is spent on the request, never saved.
-	if _, stderr, err := runClient(t, nil, "index.html"); err != nil {
+	if _, stderr, err := runClient(t, nil, "upload", "index.html"); err != nil {
 		t.Fatalf("env-key run: %v; stderr %s", err, stderr)
 	}
 	var cfg clientConfig
@@ -1221,7 +1221,7 @@ func TestUploadRunNeverStoresAnEnvOrFlagKey(t *testing.T) {
 
 	// The same for a flag key, with the env empty and the file holding none.
 	t.Setenv("SANDBIN_API_KEY", "")
-	if _, stderr, err := runClient(t, nil, "--api-key", "test-key", "index.html"); err != nil {
+	if _, stderr, err := runClient(t, nil, "upload", "--api-key", "test-key", "index.html"); err != nil {
 		t.Fatalf("flag-key run: %v; stderr %s", err, stderr)
 	}
 	cfgRaw, _ = readConfigFile(t)
@@ -1241,7 +1241,7 @@ func TestBinAndUrlFlagsNeedNoConfigFile(t *testing.T) {
 	hash := f.addBin("")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 
-	stdout, stderr, err := runClient(t, nil, "--bin", hash, "index.html")
+	stdout, stderr, err := runClient(t, nil, "upload", "--bin", hash, "index.html")
 	if err != nil {
 		t.Fatalf("run with --bin: %v; stderr %s", err, stderr)
 	}
@@ -1256,7 +1256,7 @@ func TestBinAndUrlFlagsNeedNoConfigFile(t *testing.T) {
 	}
 
 	// The "/abc1234/" shape a created bin was printed as is accepted too.
-	stdout, _, err = runClient(t, nil, "--bin", "/"+hash+"/", "index.html")
+	stdout, _, err = runClient(t, nil, "upload", "--bin", "/"+hash+"/", "index.html")
 	if err != nil {
 		t.Fatalf("run with --bin /hash/: %v", err)
 	}
@@ -1275,7 +1275,7 @@ func TestConfigFileIsPrivateAndHoldsNoBinPassword(t *testing.T) {
 	t.Setenv("SANDBIN_BIN_PASSWORD", binPassword)
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 
-	stdout, _, err := runClient(t, nil, "index.html")
+	stdout, _, err := runClient(t, nil, "upload", "index.html")
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -1304,7 +1304,7 @@ func TestFailureAfterASuccessfulUploadPrintsNothingOnStdout(t *testing.T) {
 	writeWorkDirFile(t, "small.txt", "fits")
 	writeWorkDirFile(t, "big.txt", strings.Repeat("x", 20))
 
-	stdout, _, err := runClient(t, nil, "small.txt", "big.txt")
+	stdout, _, err := runClient(t, nil, "upload", "small.txt", "big.txt")
 	if err == nil {
 		t.Fatalf("run with a refused second file succeeded, want an error")
 	}
@@ -1321,7 +1321,7 @@ func TestRefusedServerGivesAReadableError(t *testing.T) {
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 
 	// A url with nothing behind it: the client must answer, not hang.
-	stdout, stderr, err := runClient(t, nil, "--url", "http://127.0.0.1:1", "index.html")
+	stdout, stderr, err := runClient(t, nil, "upload", "--url", "http://127.0.0.1:1", "index.html")
 	if err == nil {
 		t.Fatalf("run against a dead url succeeded, want an error")
 	}
@@ -1338,7 +1338,7 @@ func TestRejectsAnInvalidBaseUrlBeforeAnyRequest(t *testing.T) {
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 
 	for _, bad := range []string{"not-a-url", "ftp://localhost:8080", "http://localhost:8080/?next=1", "http://localhost:8080/#top"} {
-		_, stderr, err := runClient(t, nil, "--url", bad, "index.html")
+		_, stderr, err := runClient(t, nil, "upload", "--url", bad, "index.html")
 		if err == nil {
 			t.Errorf("--url %q succeeded, want a startup error", bad)
 			continue
@@ -1357,7 +1357,7 @@ func TestOddFileNamesReachTheServerAsAPath(t *testing.T) {
 
 	for _, name := range []string{"a b#c.js", "quote's.md", "percent%20.md", "ünïcödé.md", "sub dir/page 1.html", "./-dash.md"} {
 		writeWorkDirFile(t, name, "body of "+name)
-		stdout, stderr, err := runClient(t, nil, name)
+		stdout, stderr, err := runClient(t, nil, "upload", name)
 		if err != nil {
 			t.Errorf("run with %q: %v; stderr %s", name, err, stderr)
 			continue
@@ -1377,7 +1377,7 @@ func TestSubdirectoryNamesAreUploadedAsGiven(t *testing.T) {
 	}
 	writeWorkDirFile(t, "prototype/app.js", "console.log(1)\n")
 
-	stdout, stderr, err := runClient(t, nil, "prototype/app.js", "./prototype/app.js")
+	stdout, stderr, err := runClient(t, nil, "upload", "prototype/app.js", "./prototype/app.js")
 	if err != nil {
 		t.Fatalf("run: %v; stderr %s", err, stderr)
 	}
@@ -1398,7 +1398,7 @@ func TestBinAndNewTogetherAreRefused(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 
-	_, stderr, err := runClient(t, nil, "--bin", "bin0001", "--new", "index.html")
+	_, stderr, err := runClient(t, nil, "upload", "--bin", "bin0001", "--new", "index.html")
 	if err == nil {
 		t.Fatalf("run with both --bin and --new succeeded, want an error")
 	}
@@ -1415,7 +1415,7 @@ func TestRejectsADotAsABinHash(t *testing.T) {
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 
 	for _, bad := range []string{".", "..", "./.."} {
-		stdout, _, err := runClient(t, nil, "--bin", bad, "index.html")
+		stdout, _, err := runClient(t, nil, "upload", "--bin", bad, "index.html")
 		if err == nil {
 			t.Errorf("run with --bin %q succeeded, want a refusal", bad)
 			continue
@@ -1434,7 +1434,7 @@ func TestConfigFileWhoseBinNoLongerExistsReports404(t *testing.T) {
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 	writeWorkDirFile(t, configFileName, "sandbin_url: "+os.Getenv("SANDBIN_URL")+"\nbin: ffffffff\nprotected: false\n")
 
-	stdout, stderr, err := runClient(t, nil, "index.html")
+	stdout, stderr, err := runClient(t, nil, "upload", "index.html")
 	if err == nil {
 		t.Fatalf("run against a vanished bin succeeded, want a 404")
 	}
@@ -1455,7 +1455,7 @@ func TestRejectsACreateBinBodyThatIsNotABinPath(t *testing.T) {
 	f.setCreateBody("4f8a2b1c") // the slashes are missing, so this is not a bin path
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 
-	stdout, stderr, err := runClient(t, nil, "index.html")
+	stdout, stderr, err := runClient(t, nil, "upload", "index.html")
 	if err == nil {
 		t.Fatalf("run accepted a create-bin body that is not a bin path, want an error")
 	}
@@ -1481,7 +1481,7 @@ func TestUnreadableConfigFileIsAnErrorNamingIt(t *testing.T) {
 		t.Fatalf("mkdir %s: %v", configFileName, err)
 	}
 
-	stdout, stderr, err := runClient(t, nil, "index.html")
+	stdout, stderr, err := runClient(t, nil, "upload", "index.html")
 	if err == nil {
 		t.Fatalf("run against an unreadable config file succeeded, want an error")
 	}
@@ -1531,12 +1531,12 @@ func TestConfigWriteFailureNamesTheCreatedBin(t *testing.T) {
 }
 
 // TestMetadataOnlyRunUpdatesAnExistingBin is a run that uploads nothing and says what the
-// bin holds: one PATCH, one line on stdout, and --describe reads it back.
+// bin holds: one PATCH, one line on stdout, and describe reads it back.
 func TestMetadataOnlyRunUpdatesAnExistingBin(t *testing.T) {
 	f := newFake(t, "test-key")
 	hash := f.addBin("")
 
-	stdout, stderr, err := runClient(t, nil, "--bin", hash, "--title", "Audit notes", "--description", "findings of the audit")
+	stdout, stderr, err := runClient(t, nil, "upload", "--bin", hash, "--title", "Audit notes", "--description", "findings of the audit")
 	if err != nil {
 		t.Fatalf("metadata-only run: %v; stderr %s", err, stderr)
 	}
@@ -1562,23 +1562,23 @@ func TestMetadataOnlyRunUpdatesAnExistingBin(t *testing.T) {
 	}
 
 	// The same run twice is the same PATCH: a metadata flag is not an upload.
-	if _, _, err := runClient(t, nil, "--bin", hash, "--description", "findings of the audit, again"); err != nil {
+	if _, _, err := runClient(t, nil, "upload", "--bin", hash, "--description", "findings of the audit, again"); err != nil {
 		t.Fatalf("second metadata-only run: %v", err)
 	}
 	if title, description := f.binMeta(hash); title != "Audit notes" || description != "findings of the audit, again" {
 		t.Errorf("stored metadata = %q / %q, want the title kept and the description replaced", title, description)
 	}
 
-	// Reading it back is --describe's job.
-	stdout, stderr, err = runClient(t, nil, "--describe", "--bin", hash)
+	// Reading it back is describe's job.
+	stdout, stderr, err = runClient(t, nil, "describe", "--bin", hash)
 	if err != nil {
-		t.Fatalf("--describe: %v; stderr %s", err, stderr)
+		t.Fatalf("describe: %v; stderr %s", err, stderr)
 	}
 	if want := "title: Audit notes\ndescription: findings of the audit, again\n"; stdout != want {
-		t.Errorf("--describe stdout =\n%s\nwant\n%s", stdout, want)
+		t.Errorf("describe stdout =\n%s\nwant\n%s", stdout, want)
 	}
 	if stderr != "" {
-		t.Errorf("--describe stderr = %q, want nothing", stderr)
+		t.Errorf("describe stderr = %q, want nothing", stderr)
 	}
 	if f.requestsSeen() != 3 || f.patchesSeen() != 2 {
 		t.Errorf("requests = %d (PATCHes %d), want two PATCHes and the one GET", f.requestsSeen(), f.patchesSeen())
@@ -1591,10 +1591,10 @@ func TestMetadataFlagClearsAField(t *testing.T) {
 	f := newFake(t, "test-key")
 	hash := f.addBin("")
 
-	if _, _, err := runClient(t, nil, "--bin", hash, "--title", "kept title", "--description", "cleared description"); err != nil {
+	if _, _, err := runClient(t, nil, "upload", "--bin", hash, "--title", "kept title", "--description", "cleared description"); err != nil {
 		t.Fatalf("run setting both fields: %v", err)
 	}
-	if _, stderr, err := runClient(t, nil, "--bin", hash, "--description", ""); err != nil {
+	if _, stderr, err := runClient(t, nil, "upload", "--bin", hash, "--description", ""); err != nil {
 		t.Fatalf("run clearing the description: %v; stderr %s", err, stderr)
 	}
 	if title, description := f.binMeta(hash); title != "kept title" || description != "" {
@@ -1604,12 +1604,12 @@ func TestMetadataFlagClearsAField(t *testing.T) {
 		t.Errorf("PATCHes = %d, want one per metadata run", f.patchesSeen())
 	}
 
-	stdout, _, err := runClient(t, nil, "--describe", "--bin", hash)
+	stdout, _, err := runClient(t, nil, "describe", "--bin", hash)
 	if err != nil {
-		t.Fatalf("--describe after the clear: %v", err)
+		t.Fatalf("describe after the clear: %v", err)
 	}
 	if stdout != "title: kept title\ndescription: \n" {
-		t.Errorf("--describe stdout = %q, want the cleared field printed as empty", stdout)
+		t.Errorf("describe stdout = %q, want the cleared field printed as empty", stdout)
 	}
 }
 
@@ -1619,7 +1619,7 @@ func TestCreatingABinCarriesMetadataInItsPOST(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 
-	stdout, stderr, err := runClient(t, nil, "--title", "Prototype", "--description", "the JS prototype", "index.html")
+	stdout, stderr, err := runClient(t, nil, "upload", "--title", "Prototype", "--description", "the JS prototype", "index.html")
 	if err != nil {
 		t.Fatalf("run: %v; stderr %s", err, stderr)
 	}
@@ -1643,7 +1643,7 @@ func TestCreatingABinCarriesMetadataInItsPOST(t *testing.T) {
 func TestMetadataOnlyRunOnAFreshDirectoryCreatesOneBin(t *testing.T) {
 	f := newFake(t, "test-key")
 
-	stdout, stderr, err := runClient(t, nil, "--title", "Notes only", "--description", "no files yet")
+	stdout, stderr, err := runClient(t, nil, "upload", "--title", "Notes only", "--description", "no files yet")
 	if err != nil {
 		t.Fatalf("metadata-only run: %v; stderr %s", err, stderr)
 	}
@@ -1672,7 +1672,7 @@ func TestMetadataPATCHComesBeforeTheUploads(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "index.html", "<h1>one</h1>")
 
-	first, _, err := runClient(t, nil, "index.html")
+	first, _, err := runClient(t, nil, "upload", "index.html")
 	if err != nil {
 		t.Fatalf("first run: %v", err)
 	}
@@ -1680,7 +1680,7 @@ func TestMetadataPATCHComesBeforeTheUploads(t *testing.T) {
 
 	log := &orderLog{}
 	f.setLog(log)
-	stdout, stderr, err := runClient(t, nil, "--title", "Audit notes", "index.html")
+	stdout, stderr, err := runClient(t, nil, "upload", "--title", "Audit notes", "index.html")
 	if err != nil {
 		t.Fatalf("run with metadata: %v; stderr %s", err, stderr)
 	}
@@ -1710,7 +1710,7 @@ func TestFailedUploadStillLeavesTheBinDescribed(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "index.html", "<h1>one</h1>")
 
-	first, _, err := runClient(t, nil, "index.html")
+	first, _, err := runClient(t, nil, "upload", "index.html")
 	if err != nil {
 		t.Fatalf("first run: %v", err)
 	}
@@ -1718,7 +1718,7 @@ func TestFailedUploadStillLeavesTheBinDescribed(t *testing.T) {
 
 	f.setBodyLimit(8)
 	writeWorkDirFile(t, "index.html", strings.Repeat("x", 20))
-	stdout, _, err := runClient(t, nil, "--description", "what this bin was for", "index.html")
+	stdout, _, err := runClient(t, nil, "upload", "--description", "what this bin was for", "index.html")
 	if err == nil {
 		t.Fatalf("run against an oversized body succeeded, want a 413")
 	}
@@ -1751,7 +1751,7 @@ func TestRefusesBadMetadataLocallyWithNoRequest(t *testing.T) {
 		{"--title", "a\tb", "title may not contain control characters"},
 		{"--description", "a\x7fb", "description may not contain control characters"},
 	} {
-		stdout, stderr, err := runClient(t, nil, bad.flag, bad.value, "--bin", hash, "index.html")
+		stdout, stderr, err := runClient(t, nil, "upload", bad.flag, bad.value, "--bin", hash, "index.html")
 		if err == nil {
 			t.Errorf("run with %s %q succeeded, want a local refusal", bad.flag, bad.value)
 			continue
@@ -1768,7 +1768,7 @@ func TestRefusesBadMetadataLocallyWithNoRequest(t *testing.T) {
 	}
 
 	// Exactly at the cap is accepted, by the same measure.
-	if _, stderr, err := runClient(t, nil, "--bin", hash,
+	if _, stderr, err := runClient(t, nil, "upload", "--bin", hash,
 		"--title", strings.Repeat("t", maxTitleBytes), "--description", strings.Repeat("d", maxDescriptionBytes)); err != nil {
 		t.Fatalf("run at the caps: %v; stderr %s", err, stderr)
 	}
@@ -1783,7 +1783,7 @@ func TestDescribeNeedsNoAPIKey(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 
-	stdout, _, err := runClient(t, nil, "--title", "Audit notes", "--description", "findings of the audit", "index.html")
+	stdout, _, err := runClient(t, nil, "upload", "--title", "Audit notes", "--description", "findings of the audit", "index.html")
 	if err != nil {
 		t.Fatalf("run with metadata: %v", err)
 	}
@@ -1791,9 +1791,9 @@ func TestDescribeNeedsNoAPIKey(t *testing.T) {
 	requestsBefore := f.requestsSeen()
 
 	t.Setenv("SANDBIN_API_KEY", "")
-	stdout, stderr, err := runClient(t, nil, "--describe")
+	stdout, stderr, err := runClient(t, nil, "describe")
 	if err != nil {
-		t.Fatalf("--describe without an API key: %v; stderr %s", err, stderr)
+		t.Fatalf("describe without an API key: %v; stderr %s", err, stderr)
 	}
 	if want := "title: Audit notes\ndescription: findings of the audit\n"; stdout != want {
 		t.Errorf("stdout =\n%s\nwant\n%s", stdout, want)
@@ -1809,12 +1809,12 @@ func TestDescribeNeedsNoAPIKey(t *testing.T) {
 	if _, err := os.Stat(configFileName); err != nil {
 		t.Fatalf("stat %s: %v", configFileName, err)
 	}
-	stdout, _, err = runClient(t, nil, "--describe", "--bin", "/"+hash+"/")
+	stdout, _, err = runClient(t, nil, "describe", "--bin", "/"+hash+"/")
 	if err != nil {
-		t.Fatalf("--describe --bin: %v", err)
+		t.Fatalf("describe --bin: %v", err)
 	}
 	if want := "title: Audit notes\ndescription: findings of the audit\n"; stdout != want {
-		t.Errorf("--describe --bin stdout =\n%s\nwant\n%s", stdout, want)
+		t.Errorf("describe --bin stdout =\n%s\nwant\n%s", stdout, want)
 	}
 }
 
@@ -1824,12 +1824,12 @@ func TestDescribeHasNoBinToRead(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, configFileName, "sandbin_url: http://other.invalid\nbin: ffffffff\nprotected: false\n")
 
-	stdout, stderr, err := runClient(t, nil, "--describe")
+	stdout, stderr, err := runClient(t, nil, "describe")
 	if err == nil {
-		t.Fatalf("--describe against a non-matching config file succeeded, want an error")
+		t.Fatalf("describe against a non-matching config file succeeded, want an error")
 	}
-	if !strings.Contains(stderr, "--describe") {
-		t.Errorf("stderr = %q, want it to name --describe", stderr)
+	if !strings.Contains(stderr, "describe has no bin for this directory") {
+		t.Errorf("stderr = %q, want it to name describe and where a bin could come from", stderr)
 	}
 	if stdout != "" || f.requestsSeen() != 0 || f.binCount() != 0 {
 		t.Errorf("stdout = %q, requests = %d, bins = %d; want none of them", stdout, f.requestsSeen(), f.binCount())
@@ -1843,14 +1843,14 @@ func TestDescribeProtectedBinHonoursBinPassword(t *testing.T) {
 	hash := f.addBin("sesame")
 	t.Setenv("SANDBIN_BIN_PASSWORD", "sesame")
 
-	if _, stderr, err := runClient(t, nil, "--bin", hash, "--title", "Secret notes"); err != nil {
+	if _, stderr, err := runClient(t, nil, "upload", "--bin", hash, "--title", "Secret notes"); err != nil {
 		t.Fatalf("run setting the title: %v; stderr %s", err, stderr)
 	}
 
 	t.Setenv("SANDBIN_BIN_PASSWORD", "")
-	stdout, stderr, err := runClient(t, nil, "--describe", "--bin", hash)
+	stdout, stderr, err := runClient(t, nil, "describe", "--bin", hash)
 	if err == nil {
-		t.Fatalf("--describe on a protected bin without the password succeeded, want a 401")
+		t.Fatalf("describe on a protected bin without the password succeeded, want a 401")
 	}
 	if stdout != "" {
 		t.Errorf("stdout = %q, want nothing", stdout)
@@ -1863,39 +1863,46 @@ func TestDescribeProtectedBinHonoursBinPassword(t *testing.T) {
 	}
 
 	t.Setenv("SANDBIN_BIN_PASSWORD", "sesame")
-	stdout, stderr, err = runClient(t, nil, "--describe", "--bin", hash)
+	stdout, stderr, err = runClient(t, nil, "describe", "--bin", hash)
 	if err != nil {
-		t.Fatalf("--describe with the bin password: %v; stderr %s", err, stderr)
+		t.Fatalf("describe with the bin password: %v; stderr %s", err, stderr)
 	}
 	if stdout != "title: Secret notes\ndescription: \n" {
 		t.Errorf("stdout = %q, want the two lines", stdout)
 	}
 }
 
-// TestDescribeRefusedWithWriteFlags keeps --describe to one job: it reads a bin, so the
-// flags that make or write one have no place next to it.
+// TestDescribeRefusedWithWriteFlags keeps describe to one job: it reads a bin, so the
+// flags that make or write one have no place next to it. Those flags are not even
+// defined on describe, so joining one is a usage refusal; a stray file argument is
+// describe's own refusal.
 func TestDescribeRefusedWithWriteFlags(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
 
-	for _, args := range [][]string{
-		{"--describe", "--new"},
-		{"--describe", "index.html"},
-		{"--describe", "--name", "x.txt"},
-		{"--describe", "--title", "t"},
-		{"--describe", "--description", "d"},
-		{"--describe", "--bin", "bin0001", "index.html"},
-	} {
-		stdout, stderr, err := runClient(t, nil, args...)
+	cases := []struct {
+		what string
+		args []string
+		want string
+	}{
+		{"--new", []string{"describe", "--new"}, "flag provided but not defined: -new"},
+		{"a file argument", []string{"describe", "index.html"}, "describe takes no arguments"},
+		{"--name", []string{"describe", "--name", "x.txt"}, "flag provided but not defined: -name"},
+		{"--title", []string{"describe", "--title", "t"}, "flag provided but not defined: -title"},
+		{"--description", []string{"describe", "--description", "d"}, "flag provided but not defined: -description"},
+		{"a file argument after --bin", []string{"describe", "--bin", "bin0001", "index.html"}, "describe takes no arguments"},
+	}
+	for _, tc := range cases {
+		stdout, stderr, err := runClient(t, nil, tc.args...)
 		if err == nil {
-			t.Errorf("run %q succeeded, want a refusal", args)
+			t.Errorf("%s: run %v succeeded, want a refusal", tc.what, tc.args)
 			continue
 		}
-		if !strings.Contains(stderr, "--describe") {
-			t.Errorf("stderr for %q = %q, want it to name --describe", args, stderr)
+		if !strings.Contains(stderr, tc.want) {
+			t.Errorf("%s: stderr = %q, want it to carry %q", tc.what, stderr, tc.want)
 		}
 		if stdout != "" {
-			t.Errorf("stdout for %q = %q, want nothing", args, stdout)
+			t.Errorf("%s: stdout = %q, want nothing", tc.what, stdout)
 		}
 	}
 	if f.requestsSeen() != 0 {
@@ -1909,7 +1916,7 @@ func TestRunWithNoTargetAndNoMetadataFlagIsStillRefused(t *testing.T) {
 	f := newFake(t, "test-key")
 	hash := f.addBin("")
 
-	stdout, stderr, err := runClient(t, nil, "--bin", hash)
+	stdout, stderr, err := runClient(t, nil, "upload", "--bin", hash)
 	if err == nil {
 		t.Fatalf("run with no file, no stdin and no metadata flag succeeded, want an error")
 	}
@@ -1956,14 +1963,14 @@ func TestDeleteFilePrintsDeletedLineAndKeepsTheBin(t *testing.T) {
 	writeWorkDirFile(t, "notes.md", "# Notes")
 	writeWorkDirFile(t, "other.md", "# Other")
 
-	stdout, stderr, err := runClient(t, nil, "notes.md", "other.md")
+	stdout, stderr, err := runClient(t, nil, "upload", "notes.md", "other.md")
 	if err != nil {
 		t.Fatalf("upload run: %v; stderr %s", err, stderr)
 	}
 	hash := binHashOf(t, stdout)
 	base := os.Getenv("SANDBIN_URL")
 
-	stdout, stderr, err = runClient(t, nil, "--delete", "notes.md")
+	stdout, stderr, err = runClient(t, nil, "delete", "notes.md")
 	if err != nil {
 		t.Fatalf("delete run: %v; stderr %s", err, stderr)
 	}
@@ -1994,21 +2001,21 @@ func TestDeleteFilePrintsDeletedLineAndKeepsTheBin(t *testing.T) {
 	}
 }
 
-// TestDeleteKeepsTheOrderGiven is why the flags collect their values instead of being
-// plain bools: repeats keep the order the run was written in.
+// TestDeleteKeepsTheOrderGiven is why delete takes its paths as positional arguments:
+// they keep the order the run was written in.
 func TestDeleteKeepsTheOrderGiven(t *testing.T) {
 	f := newFake(t, "test-key")
 	for _, name := range []string{"a.md", "b.md", "c.md"} {
 		writeWorkDirFile(t, name, "body of "+name)
 	}
-	stdout, stderr, err := runClient(t, nil, "a.md", "b.md", "c.md")
+	stdout, stderr, err := runClient(t, nil, "upload", "a.md", "b.md", "c.md")
 	if err != nil {
 		t.Fatalf("upload run: %v; stderr %s", err, stderr)
 	}
 	hash := binHashOf(t, stdout)
 	base := os.Getenv("SANDBIN_URL")
 
-	stdout, stderr, err = runClient(t, nil, "--delete", "c.md", "--delete", "a.md")
+	stdout, stderr, err = runClient(t, nil, "delete", "c.md", "a.md")
 	if err != nil {
 		t.Fatalf("delete run: %v; stderr %s", err, stderr)
 	}
@@ -2020,10 +2027,92 @@ func TestDeleteKeepsTheOrderGiven(t *testing.T) {
 	}
 	order := f.deleteOrder()
 	if len(order) != 2 || order[0] != "/"+hash+"/c.md" || order[1] != "/"+hash+"/a.md" {
-		t.Errorf("DELETE paths = %v, want c.md then a.md in the order the flags were given", order)
+		t.Errorf("DELETE paths = %v, want c.md then a.md in the order the arguments were given", order)
 	}
 	if got := f.stored(hash + "/b.md"); got != "body of b.md" {
 		t.Errorf("b.md = %q, want it untouched", got)
+	}
+}
+
+// TestDeleteFlagsMayFollowTheFileArguments pins the spelling a user reaches for first:
+// `delete <path> --folder <folder>`. urfave stops flag parsing at the first file argument,
+// so the run reorders the flags ahead of them and the deletions come out exactly like the
+// flags-first spelling: files first, then the folder, with --folder=value accepted too.
+func TestDeleteFlagsMayFollowTheFileArguments(t *testing.T) {
+	f := newFake(t, "test-key")
+	seed := []string{"build.ansi", "a.md", "drafts/one.md", "drafts/two.md", "draftsX/keep.md"}
+	for _, name := range seed {
+		writeWorkDirFile(t, name, "body of "+name)
+	}
+	stdout, stderr, err := runClient(t, nil, append([]string{"upload"}, seed...)...)
+	if err != nil {
+		t.Fatalf("upload run: %v; stderr %s", err, stderr)
+	}
+	hash := binHashOf(t, stdout)
+	base := os.Getenv("SANDBIN_URL")
+
+	stdout, stderr, err = runClient(t, nil, "delete", "build.ansi", "--folder", "drafts")
+	if err != nil {
+		t.Fatalf("delete run: %v; stderr %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want nothing on a successful delete run", stderr)
+	}
+	want := "deleted " + base + "/" + hash + "/build.ansi\n" +
+		"deleted " + base + "/" + hash + "/drafts/one.md\n" +
+		"deleted " + base + "/" + hash + "/drafts/two.md\n" +
+		base + "/" + hash + "/\n"
+	if stdout != want {
+		t.Errorf("delete stdout =\n%s\nwant\n%s", stdout, want)
+	}
+	order := f.deleteOrder()
+	if len(order) != 2 || order[0] != "/"+hash+"/build.ansi" || order[1] != "/"+hash+"/drafts/" {
+		t.Errorf("DELETE paths = %v, want build.ansi then the drafts/ folder", order)
+	}
+
+	// --folder=value behind a file argument is the same run in one token.
+	stdout, stderr, err = runClient(t, nil, "delete", "a.md", "--folder=draftsX")
+	if err != nil {
+		t.Fatalf("--folder=value delete run: %v; stderr %s", err, stderr)
+	}
+	if got := f.stored(hash + "/a.md"); got != "" {
+		t.Errorf("a.md = %q, want it gone", got)
+	}
+	if got := f.stored(hash + "/draftsX/keep.md"); got != "" {
+		t.Errorf("draftsX/keep.md = %q, want it gone with the folder", got)
+	}
+}
+
+// TestDeleteFlagAfterAPathThatIsNotAFlagIsUsageError keeps a misused verb a usage error:
+// a --token after the file arguments that delete does not define is reported as one before
+// any request, never handed to the server as a path to delete.
+func TestDeleteFlagAfterAPathThatIsNotAFlagIsUsageError(t *testing.T) {
+	f := newFake(t, "test-key")
+	seed := []string{"drafts/one.md", "notes.md"}
+	for _, name := range seed {
+		writeWorkDirFile(t, name, "body of "+name)
+	}
+	stdout, stderr, err := runClient(t, nil, append([]string{"upload"}, seed...)...)
+	if err != nil {
+		t.Fatalf("upload run: %v; stderr %s", err, stderr)
+	}
+
+	before := f.requestsSeen()
+	stdout, stderr, err = runClient(t, nil, "delete", "notes.md", "--bogus", "x")
+	if err == nil {
+		t.Fatalf("delete with an undefined flag after the path returned no error; stdout %s", stdout)
+	}
+	if !strings.Contains(stderr, "flag provided but not defined: -bogus") {
+		t.Errorf("stderr = %q, want the usage refusal naming --bogus", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want nothing from a refused run", stdout)
+	}
+	if got := f.requestsSeen() - before; got != 0 {
+		t.Errorf("requests = %d, want a usage refusal to make none", got)
+	}
+	if f.deletesSeen() != 0 {
+		t.Errorf("DELETEs = %d, want the refused run to delete nothing", f.deletesSeen())
 	}
 }
 
@@ -2036,14 +2125,14 @@ func TestDeleteFolderSendsTheSlashAndPrintsEveryPath(t *testing.T) {
 	for _, name := range seed {
 		writeWorkDirFile(t, name, "body of "+name)
 	}
-	stdout, stderr, err := runClient(t, nil, seed...)
+	stdout, stderr, err := runClient(t, nil, append([]string{"upload"}, seed...)...)
 	if err != nil {
 		t.Fatalf("upload run: %v; stderr %s", err, stderr)
 	}
 	hash := binHashOf(t, stdout)
 	base := os.Getenv("SANDBIN_URL")
 
-	stdout, stderr, err = runClient(t, nil, "--delete-folder", "drafts")
+	stdout, stderr, err = runClient(t, nil, "delete", "--folder", "drafts")
 	if err != nil {
 		t.Fatalf("delete run: %v; stderr %s", err, stderr)
 	}
@@ -2074,13 +2163,13 @@ func TestDeleteFolderSendsTheSlashAndPrintsEveryPath(t *testing.T) {
 func TestDeleteUnknownPathNamesThePathAndMakesOneRequest(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "notes.md", "# Notes")
-	stdout, stderr, err := runClient(t, nil, "notes.md")
+	stdout, stderr, err := runClient(t, nil, "upload", "notes.md")
 	if err != nil {
 		t.Fatalf("upload run: %v; stderr %s", err, stderr)
 	}
 	hash := binHashOf(t, stdout)
 
-	stdout, stderr, err = runClient(t, nil, "--delete", "missing.txt")
+	stdout, stderr, err = runClient(t, nil, "delete", "missing.txt")
 	if err == nil {
 		t.Fatalf("delete of an unknown path returned no error; stdout %s", stdout)
 	}
@@ -2098,22 +2187,20 @@ func TestDeleteUnknownPathNamesThePathAndMakesOneRequest(t *testing.T) {
 	}
 }
 
-// TestDeleteRefusesEveryUploadShape is the standalone rule: a run that deletes files does
-// not upload any, and each refusal names the flag it refuses.
+// TestDeleteRefusesEveryUploadShape is the standalone rule: a delete run uploads nothing,
+// so the flags that upload are not even defined on delete and each misuse is a usage
+// refusal naming the flag.
 func TestDeleteRefusesEveryUploadShape(t *testing.T) {
 	cases := []struct {
 		what string
 		args []string
 		want string
 	}{
-		{"a file argument", []string{"--delete", "notes.md", "extra.md"}, "--delete uploads nothing: pass no file arguments"},
-		{"piped stdin through --name", []string{"--delete", "notes.md", "--name", "piped.txt"}, "--delete uploads nothing: pass no --name"},
-		{"a folder through --archive", []string{"--delete", "notes.md", "--archive", "hello"}, "--delete uploads nothing: pass no --archive"},
-		{"a fresh bin through --new", []string{"--delete", "notes.md", "--new"}, "--delete reuses this directory's bin: --new makes a fresh one"},
-		{"the read-only --describe", []string{"--delete", "notes.md", "--describe"}, "--describe only reads: --delete and --delete-folder write the bin"},
-		{"a file argument for the folder flag", []string{"--delete-folder", "drafts", "extra.md"}, "--delete-folder uploads nothing: pass no file arguments"},
-		{"--name for the folder flag", []string{"--delete-folder", "drafts", "--name", "piped.txt"}, "--delete-folder uploads nothing: pass no --name"},
-		{"--new for the folder flag", []string{"--delete-folder", "drafts", "--new"}, "--new makes a fresh one"},
+		{"piped stdin through --name", []string{"delete", "--name", "piped.txt"}, "flag provided but not defined: -name"},
+		{"a folder through --archive", []string{"delete", "--archive", "hello"}, "flag provided but not defined: -archive"},
+		{"a fresh bin through --new", []string{"delete", "--new"}, "flag provided but not defined: -new"},
+		{"the old read-only flag", []string{"delete", "--describe"}, "flag provided but not defined: -describe"},
+		{"--name after the folder flag", []string{"delete", "--folder", "drafts", "--name", "piped.txt"}, "flag provided but not defined: -name"},
 	}
 	for _, tc := range cases {
 		f := newFake(t, "test-key")
@@ -2137,21 +2224,21 @@ func TestDeleteRefusesEveryUploadShape(t *testing.T) {
 }
 
 // TestDeleteNamesAreCheckedBeforeAnyRequest reuses the local upload-name rules and the
-// pointer from the file flag to the folder flag.
+// pointer from a slash-terminated path to --folder.
 func TestDeleteNamesAreCheckedBeforeAnyRequest(t *testing.T) {
 	cases := []struct {
 		what string
 		args []string
 		want string
 	}{
-		{"a slash-terminated path", []string{"--delete", "hello/"}, `--delete "hello/" names a folder: use --delete-folder hello`},
-		{"the folder flag with the slash it adds itself", []string{"--delete-folder", "hello/"}, `--delete-folder "hello/" needs no trailing slash`},
-		{"an absolute path", []string{"--delete", "/etc/passwd"}, `--delete "/etc/passwd": path must be relative`},
-		{"an escaping path", []string{"--delete", "../secret"}, `--delete "../secret": path must not escape the bin`},
-		{"a control character", []string{"--delete", "bad\tname"}, "--delete \"bad\\tname\": path may not contain control characters"},
-		{"an empty path", []string{"--delete", ""}, `--delete "": empty path`},
-		{"an escaping folder", []string{"--delete-folder", ".."}, `--delete-folder "..": path must not escape the bin`},
-		{"the current directory as a folder", []string{"--delete-folder", "."}, `--delete-folder "."`},
+		{"a slash-terminated path", []string{"delete", "hello/"}, `delete "hello/" names a folder: use --folder hello`},
+		{"the folder flag with the slash it adds itself", []string{"delete", "--folder", "hello/"}, `--folder "hello/" needs no trailing slash`},
+		{"an absolute path", []string{"delete", "/etc/passwd"}, `delete "/etc/passwd": path must be relative`},
+		{"an escaping path", []string{"delete", "../secret"}, `delete "../secret": path must not escape the bin`},
+		{"a control character", []string{"delete", "bad\tname"}, "delete \"bad\\tname\": path may not contain control characters"},
+		{"an empty path", []string{"delete", ""}, `delete "": empty path`},
+		{"an escaping folder", []string{"delete", "--folder", ".."}, `--folder "..": path must not escape the bin`},
+		{"the current directory as a folder", []string{"delete", "--folder", "."}, `--folder "."`},
 	}
 	for _, tc := range cases {
 		f := newFake(t, "test-key")
@@ -2174,11 +2261,11 @@ func TestDeleteNamesAreCheckedBeforeAnyRequest(t *testing.T) {
 func TestDeleteNeedsABinAndSaysWhereToFindIt(t *testing.T) {
 	f := newFake(t, "test-key")
 
-	stdout, stderr, err := runClient(t, nil, "--delete", "notes.md")
+	stdout, stderr, err := runClient(t, nil, "delete", "notes.md")
 	if err == nil {
 		t.Fatalf("a delete run with no bin returned no error; stdout %s", stdout)
 	}
-	if !strings.Contains(stderr, "--delete has no bin for this directory: pass --bin or upload something first") {
+	if !strings.Contains(stderr, "delete has no bin for this directory: pass --bin or upload something first") {
 		t.Errorf("stderr = %q, want it to name --bin and an upload as the two ways to find a bin", stderr)
 	}
 	if f.requestsSeen() != 0 {
@@ -2188,7 +2275,7 @@ func TestDeleteNeedsABinAndSaysWhereToFindIt(t *testing.T) {
 	// --bin names one, and the run does not write a config file or create a bin.
 	hash := f.addBin("")
 	f.seedFile(hash+"/notes.md", "# Notes")
-	stdout, stderr, err = runClient(t, nil, "--bin", hash, "--delete", "notes.md")
+	stdout, stderr, err = runClient(t, nil, "delete", "--bin", hash, "notes.md")
 	if err != nil {
 		t.Fatalf("--bin delete run: %v; stderr %s", err, stderr)
 	}
@@ -2211,7 +2298,7 @@ func TestDeleteNeedsTheAPIKeyLikeEveryWrite(t *testing.T) {
 	f.seedFile(hash+"/notes.md", "# Notes")
 	t.Setenv("SANDBIN_API_KEY", "")
 
-	stdout, stderr, err := runClient(t, nil, "--bin", hash, "--delete", "notes.md")
+	stdout, stderr, err := runClient(t, nil, "delete", "--bin", hash, "notes.md")
 	if err == nil {
 		t.Fatalf("a delete run without a key returned no error; stdout %s", stdout)
 	}
@@ -2230,13 +2317,13 @@ func TestDeleteCarriesTheBinPasswordAsBasicAuth(t *testing.T) {
 	t.Setenv("SANDBIN_BIN_PASSWORD", "sesame")
 	writeWorkDirFile(t, "secret.txt", "protected body")
 
-	stdout, stderr, err := runClient(t, nil, "secret.txt")
+	stdout, stderr, err := runClient(t, nil, "upload", "secret.txt")
 	if err != nil {
 		t.Fatalf("upload run: %v; stderr %s", err, stderr)
 	}
 	hash := binHashOf(t, stdout)
 
-	stdout, stderr, err = runClient(t, nil, "--delete", "secret.txt")
+	stdout, stderr, err = runClient(t, nil, "delete", "secret.txt")
 	if err != nil {
 		t.Fatalf("delete run: %v; stderr %s", err, stderr)
 	}
@@ -2252,7 +2339,7 @@ func TestDeleteCarriesTheBinPasswordAsBasicAuth(t *testing.T) {
 
 	// Without the password the delete is the 401 that names the environment variable.
 	t.Setenv("SANDBIN_BIN_PASSWORD", "")
-	stdout, stderr, err = runClient(t, nil, "--delete", "secret.txt")
+	stdout, stderr, err = runClient(t, nil, "delete", "secret.txt")
 	if err == nil {
 		t.Fatalf("a delete run without the bin password returned no error; stdout %s", stdout)
 	}
@@ -2267,12 +2354,13 @@ func TestDeleteCarriesTheBinPasswordAsBasicAuth(t *testing.T) {
 	}
 }
 
-// TestDeleteWithMetadataPatchesFirst is the combine rule: the metadata answer comes first,
-// then the deleted lines, and the server saw the PATCH before the DELETE.
+// TestDeleteWithMetadataPatchesFirst is the combine rule: metadata flags ride along with
+// delete, the metadata answer comes first, then the deleted lines, and the server saw the
+// PATCH before the DELETE.
 func TestDeleteWithMetadataPatchesFirst(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "notes.md", "# Notes")
-	stdout, stderr, err := runClient(t, nil, "notes.md")
+	stdout, stderr, err := runClient(t, nil, "upload", "notes.md")
 	if err != nil {
 		t.Fatalf("upload run: %v; stderr %s", err, stderr)
 	}
@@ -2281,7 +2369,7 @@ func TestDeleteWithMetadataPatchesFirst(t *testing.T) {
 
 	var logged bytes.Buffer
 	f.setLog(&logged)
-	stdout, stderr, err = runClient(t, nil, "--title", "New title", "--delete", "notes.md")
+	stdout, stderr, err = runClient(t, nil, "delete", "--title", "New title", "notes.md")
 	if err != nil {
 		t.Fatalf("delete run: %v; stderr %s", err, stderr)
 	}
@@ -2300,11 +2388,11 @@ func TestDeleteWithMetadataPatchesFirst(t *testing.T) {
 }
 
 // TestDeleteEmptiedBinStaysThisDirectoriesBin is the reuse rule after the bin is emptied:
-// the config file still names it and --describe still reads it.
+// the config file still names it and describe still reads it.
 func TestDeleteEmptiedBinStaysThisDirectoriesBin(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "notes.md", "# Notes")
-	stdout, stderr, err := runClient(t, nil, "--title", "Kept", "notes.md")
+	stdout, stderr, err := runClient(t, nil, "upload", "--title", "Kept", "notes.md")
 	if err != nil {
 		t.Fatalf("upload run: %v; stderr %s", err, stderr)
 	}
@@ -2313,7 +2401,7 @@ func TestDeleteEmptiedBinStaysThisDirectoriesBin(t *testing.T) {
 		t.Fatalf("the config file does not name bin %s:\n%s", hash, raw)
 	}
 
-	stdout, stderr, err = runClient(t, nil, "--delete", "notes.md")
+	stdout, stderr, err = runClient(t, nil, "delete", "notes.md")
 	if err != nil {
 		t.Fatalf("delete run: %v; stderr %s", err, stderr)
 	}
@@ -2321,32 +2409,153 @@ func TestDeleteEmptiedBinStaysThisDirectoriesBin(t *testing.T) {
 		t.Fatalf("bins = %d, want the emptied bin to be the one bin", f.binCount())
 	}
 
-	stdout, stderr, err = runClient(t, nil, "--describe")
+	stdout, stderr, err = runClient(t, nil, "describe")
 	if err != nil {
-		t.Fatalf("--describe after the delete: %v; stderr %s", err, stderr)
+		t.Fatalf("describe after the delete: %v; stderr %s", err, stderr)
 	}
 	if !strings.Contains(stdout, "title: Kept") {
-		t.Errorf("--describe stdout = %q, want it to read the emptied bin", stdout)
+		t.Errorf("describe stdout = %q, want it to read the emptied bin", stdout)
 	}
 	if f.binCount() != 1 {
 		t.Errorf("bins = %d, want no new bin after the delete", f.binCount())
 	}
 }
 
-// TestDeleteFlagsAreInHelp keeps the usage text honest about the two new flags.
+// TestDeleteFlagsAreInHelp keeps the usage text honest about the verbs and delete's
+// folder flag: --help is a help request, so its answer lands on stdout and costs nothing.
 func TestDeleteFlagsAreInHelp(t *testing.T) {
-	newFake(t, "test-key")
+	f := newFake(t, "test-key")
 
 	stdout, stderr, err := runClient(t, nil, "--help")
 	if err != nil {
 		t.Fatalf("--help: %v; stderr %s", err, stderr)
 	}
-	if stdout != "" {
-		t.Errorf("stdout = %q, want the usage on stderr only", stdout)
+	if stderr != "" {
+		t.Errorf("stderr = %q, want the usage on stdout only", stderr)
 	}
-	for _, want := range []string{"-delete", "-delete-folder"} {
-		if !strings.Contains(stderr, want) {
-			t.Errorf("the usage does not name %s:\n%s", want, stderr)
+	for _, want := range []string{"upload", "init", "delete", "describe"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the usage does not name the verb %s:\n%s", want, stdout)
 		}
+	}
+
+	// delete's own help names its folder flag.
+	stdout, stderr, err = runClient(t, nil, "delete", "--help")
+	if err != nil {
+		t.Fatalf("delete --help: %v; stderr %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want the usage on stdout only", stderr)
+	}
+	if !strings.Contains(stdout, "--folder") {
+		t.Errorf("the delete usage does not name --folder:\n%s", stdout)
+	}
+	if f.requestsSeen() != 0 {
+		t.Errorf("requests = %d, want none", f.requestsSeen())
+	}
+}
+
+// TestBareRunPrintsVerbHelp: with no verb at all the client prints its usage on stdout,
+// asks nothing of the server and exits like a success — the way a bare sandbin-client run
+// has always answered.
+func TestBareRunPrintsVerbHelp(t *testing.T) {
+	f := newFake(t, "test-key")
+	stdout, stderr, err := runClient(t, nil)
+	if err != nil {
+		t.Fatalf("bare run: %v; stderr %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want the usage on stdout only", stderr)
+	}
+	for _, want := range []string{"upload", "init", "delete", "describe"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the usage does not name the verb %s:\n%s", want, stdout)
+		}
+	}
+	if f.requestsSeen() != 0 {
+		t.Errorf("requests = %d, want none", f.requestsSeen())
+	}
+}
+
+// TestFileArgumentIsNotAVerb is the renamed command line speaking: a bare file name is no
+// longer an upload, it is a request for a verb, and the refusal says so with zero requests.
+func TestFileArgumentIsNotAVerb(t *testing.T) {
+	f := newFake(t, "test-key")
+	writeWorkDirFile(t, "notes.md", "# Notes")
+	stdout, stderr, err := runClient(t, nil, "notes.md")
+	if err == nil {
+		t.Fatalf("run with a bare file name succeeded, want the verb refusal")
+	}
+	if !strings.Contains(stderr, "No help topic for 'notes.md'") {
+		t.Errorf("stderr = %q, want the no-help-topic refusal naming notes.md", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want nothing", stdout)
+	}
+	if f.requestsSeen() != 0 {
+		t.Errorf("requests = %d, want none", f.requestsSeen())
+	}
+}
+
+// TestUploadMisuseIsAUsageError: a bad flag on a verb is rendered on stderr — never on
+// stdout, which is for help requests — with the verb's own usage after it, and it makes
+// no request.
+func TestUploadMisuseIsAUsageError(t *testing.T) {
+	f := newFake(t, "test-key")
+	stdout, stderr, err := runClient(t, nil, "upload", "--bogus")
+	if err == nil {
+		t.Fatalf("upload --bogus succeeded, want the usage refusal")
+	}
+	if !strings.Contains(stderr, "Incorrect Usage: flag provided but not defined: -bogus") {
+		t.Errorf("stderr = %q, want the Incorrect Usage line", stderr)
+	}
+	if !strings.Contains(stderr, "sandbin-client upload") {
+		t.Errorf("stderr = %q, want the upload usage after it", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want a misuse answered on stderr only", stdout)
+	}
+	if f.requestsSeen() != 0 {
+		t.Errorf("requests = %d, want none", f.requestsSeen())
+	}
+}
+
+// TestUploadHelpIsNotAFailure: --help on a verb prints that verb's usage on stdout and
+// exits like a success.
+func TestUploadHelpIsNotAFailure(t *testing.T) {
+	f := newFake(t, "test-key")
+	stdout, stderr, err := runClient(t, nil, "upload", "--help")
+	if err != nil {
+		t.Fatalf("upload --help: %v; stderr %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want the usage on stdout only", stderr)
+	}
+	for _, want := range []string{"--name", "--archive", "--no-extract"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the upload usage does not name %s:\n%s", want, stdout)
+		}
+	}
+	if f.requestsSeen() != 0 {
+		t.Errorf("requests = %d, want none", f.requestsSeen())
+	}
+}
+
+// TestDeleteWithoutNamesRefuses keeps delete to paths: with nothing to take out the run
+// says what it needs before it ever looks for a bin.
+func TestDeleteWithoutNamesRefuses(t *testing.T) {
+	f := newFake(t, "test-key")
+	stdout, stderr, err := runClient(t, nil, "delete")
+	if err == nil {
+		t.Fatalf("bare delete succeeded, want the refusal")
+	}
+	if !strings.Contains(stderr, "delete names the paths to take out: pass file arguments or --folder NAME") {
+		t.Errorf("stderr = %q, want the refusal naming file arguments and --folder", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want nothing", stdout)
+	}
+	if f.requestsSeen() != 0 {
+		t.Errorf("requests = %d, want none", f.requestsSeen())
 	}
 }
