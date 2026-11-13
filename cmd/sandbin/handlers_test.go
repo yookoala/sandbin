@@ -2348,3 +2348,167 @@ func TestDeleteEmptiedBinSurvives(t *testing.T) {
 		t.Errorf("the store holds %d bins after the deletes, want 1", count)
 	}
 }
+
+// fallbackBody is the page a bin with a root 404.html answers an unmatched path with. The
+// escape byte is there to prove the fallback is served raw: the name is .html, so nothing
+// is wrapped or rendered.
+const fallbackBody = "<!doctype html>\n<h1>Not in this bin</h1>\n<script>route(location.pathname)</script>\x1b[0m\n"
+
+// TestNotFoundServesTheBinsFallback is the fallback itself: the status stays 404, the body is
+// the stored 404.html byte for byte, and a bin without one keeps the plain answer.
+func TestNotFoundServesTheBinsFallback(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBinWithMetadata(t, s, "test-key", "kept title", "kept description")
+
+	// Before the bin holds a 404.html, an unmatched path is the plain 404 it always was.
+	if rec := get(t, s, base+"missing.txt"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
+		t.Fatalf("GET missing.txt before the fallback = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
+	}
+
+	if rec := put(t, s, base+"404.html", "test-key", fallbackBody); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT 404.html = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	for _, p := range []string{"missing.txt", "deep/missing.txt", "route/with/segments"} {
+		rec := get(t, s, base+p)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404: the fallback is a 404 answer, not a 200 one", p, rec.Code)
+			continue
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+			t.Errorf("GET %s Content-Type = %q, want text/html; charset=utf-8", p, ct)
+		}
+		if rec.Body.String() != fallbackBody {
+			t.Errorf("GET %s body = %q, want the stored 404.html byte for byte", p, rec.Body.String())
+		}
+		// The bin's own words ride the bin base, not a path answer.
+		if title := rec.Header().Get("X-Bin-Title"); title != "" {
+			t.Errorf("GET %s carries X-Bin-Title %q, want none on a fallback answer", p, title)
+		}
+	}
+
+	// A bin whose files include 404.html still answers a DELETE of a missing path with the
+	// plain text refusal, and the fallback itself is an ordinary file.
+	if rec := del(t, s, base+"missing.txt", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
+		t.Errorf("DELETE missing.txt = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
+	}
+	rec := get(t, s, base+"404.html")
+	if rec.Code != http.StatusOK || rec.Body.String() != fallbackBody {
+		t.Errorf("GET 404.html = %d, body %q; want 200 and the stored bytes", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Errorf("GET 404.html Content-Type = %q, want text/html; charset=utf-8", ct)
+	}
+}
+
+// TestFallbackNeverShadowsAnything is the review focus as a matrix: a real file wins, only the
+// root 404.html counts, the bin base is untouched, and only GET falls back.
+func TestFallbackNeverShadowsAnything(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+
+	seed := map[string]string{
+		"app/route.js":   "a real file",
+		"hello/404.html": "<h1>an ordinary nested file</h1>",
+		"index.html":     "<h1>The bin front page</h1>",
+		"notes.md":       "# Notes",
+	}
+	for name, body := range seed {
+		if rec := put(t, s, base+name, "test-key", body); rec.Code != http.StatusCreated {
+			t.Fatalf("PUT %s = %d, want %d", name, rec.Code, http.StatusCreated)
+		}
+	}
+
+	// No root 404.html yet: every unmatched path is the plain answer, and the base is the
+	// stored index.html.
+	if rec := get(t, s, base+"app/missing.js"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
+		t.Errorf("GET app/missing.js without a fallback = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
+	}
+	if rec := get(t, s, base+"hello/404.html"); rec.Code != http.StatusOK || rec.Body.String() != "<h1>an ordinary nested file</h1>" {
+		t.Errorf("GET hello/404.html = %d, body %q; want 200 and the stored file", rec.Code, rec.Body.String())
+	}
+	if rec := get(t, s, base); rec.Code != http.StatusOK || rec.Body.String() != "<h1>The bin front page</h1>" {
+		t.Errorf("GET the bin base = %d, body %q; want 200 and the stored index.html", rec.Code, rec.Body.String())
+	}
+
+	if rec := put(t, s, base+"404.html", "test-key", fallbackBody); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT 404.html = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	// A real file still wins, the base still serves index.html, and the nested 404.html is
+	// still just a file.
+	if rec := get(t, s, base+"app/route.js"); rec.Code != http.StatusOK || rec.Body.String() != "a real file" {
+		t.Errorf("GET app/route.js after the fallback = %d, body %q; want 200 and the stored file", rec.Code, rec.Body.String())
+	}
+	if rec := get(t, s, base); rec.Code != http.StatusOK || rec.Body.String() != "<h1>The bin front page</h1>" {
+		t.Errorf("GET the bin base after the fallback = %d, body %q; want 200 and the stored index.html", rec.Code, rec.Body.String())
+	}
+	if rec := get(t, s, base+"hello/404.html"); rec.Code != http.StatusOK || rec.Body.String() != "<h1>an ordinary nested file</h1>" {
+		t.Errorf("GET hello/404.html after the fallback = %d, body %q; want 200 and the stored file", rec.Code, rec.Body.String())
+	}
+	if rec := get(t, s, base+"hello/missing.txt"); rec.Code != http.StatusNotFound || rec.Body.String() != fallbackBody {
+		t.Errorf("GET hello/missing.txt = %d, body %q; want 404 and the root fallback", rec.Code, rec.Body.String())
+	}
+
+	// The other methods under a bin never fall back: their answers are their own.
+	if rec := put(t, s, base+"app/new.js", "test-key", "written"); rec.Code != http.StatusCreated {
+		t.Errorf("PUT app/new.js in a bin with a fallback = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if rec := patchFrom(t, s, "198.51.100.44:1234", base+"notes.md", "test-key", map[string]string{"X-Bin-Title": "no"}); rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != "method not allowed\n" {
+		t.Errorf("PATCH a file path in a bin with a fallback = %d, body %q; want 405", rec.Code, rec.Body.String())
+	}
+	if rec := del(t, s, base+"gone.txt", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
+		t.Errorf("DELETE a missing path in a bin with a fallback = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
+	}
+
+	// Delete the index.html and the base is the directory listing, still not the fallback.
+	if rec := del(t, s, base+"index.html", "test-key"); rec.Code != http.StatusOK {
+		t.Fatalf("DELETE index.html = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	rec := get(t, s, base)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET the base without index.html = %d, want 200", rec.Code)
+	}
+	if rec.Body.String() == fallbackBody {
+		t.Errorf("the bin base answered with the fallback page:\n%s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "app/route.js") {
+		t.Errorf("the base without index.html does not list the bin:\n%s", rec.Body.String())
+	}
+}
+
+// TestFallbackInAProtectedBin puts the bin password first: a protected bin answers 401 before
+// any fallback byte is looked up or sent.
+func TestFallbackInAProtectedBin(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBinWithPassword(t, s, "sesame")
+	hash := strings.Trim(base, "/")
+
+	req := httptest.NewRequest(http.MethodPut, base+"404.html", strings.NewReader(fallbackBody))
+	req.Header.Set("X-API-Key", "test-key")
+	req.SetBasicAuth(hash, "sesame")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("PUT 404.html with the bin password = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	rec = get(t, s, base+"missing.txt")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET a missing path without the bin password = %d, want 401", rec.Code)
+	}
+	if rec.Body.String() != "bin password required\n" {
+		t.Errorf("the 401 body = %q, want the plain refusal, not fallback bytes", rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); strings.Contains(ct, "text/html") {
+		t.Errorf("the 401 Content-Type = %q, want no html on a protected refusal", ct)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, base+"missing.txt", nil)
+	req.SetBasicAuth(hash, "sesame")
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound || rec.Body.String() != fallbackBody {
+		t.Errorf("GET a missing path with the bin password = %d, body %q; want 404 and the fallback", rec.Code, rec.Body.String())
+	}
+}

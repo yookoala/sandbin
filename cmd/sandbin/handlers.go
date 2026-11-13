@@ -302,6 +302,22 @@ func (s *server) getFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 		return
 	}
 	if !ok {
+		// A bin whose files include a root 404.html answers an unmatched path with that page
+		// and keeps the status 404, which is how a single-page app serves its own routes out
+		// of a bin. Only the root file counts, mirroring the index.html check above, and only
+		// a GET gets here at all.
+		fallback, have, err := s.store.GetFile(hash, "404.html")
+		if err != nil {
+			log.Printf("get the fallback of bin %q: %v", hash, err)
+			http.Error(w, "could not read file", http.StatusInternalServerError)
+			return
+		}
+		if have {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write(fallback)
+			return
+		}
 		http.Error(w, "unknown path", http.StatusNotFound)
 		return
 	}
