@@ -114,6 +114,24 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	hash, sub, ok := splitBinPath(r.URL.Path)
 	if !ok {
+		// "/{hash}" without its trailing slash redirects to "/{hash}/" (301) when that
+		// bin exists, so relative links inside the bin resolve. GitHub does the same for
+		// its pages. Unknown hashes and every method other than GET keep the plain 404:
+		// a redirect would silently change what a PUT or DELETE meant.
+		if r.Method == http.MethodGet {
+			if seg, single := singleSegment(r.URL.Path); single {
+				if _, exists, err := s.store.GetBin(seg); err != nil {
+					log.Printf("get bin %q: %v", seg, err)
+				} else if exists {
+					target := r.URL.Path + "/"
+					if r.URL.RawQuery != "" {
+						target += "?" + r.URL.RawQuery
+					}
+					http.Redirect(w, r, target, http.StatusMovedPermanently)
+					return
+				}
+			}
+		}
 		http.Error(w, "unknown bin", http.StatusNotFound)
 		return
 	}
@@ -132,6 +150,16 @@ func splitBinPath(urlPath string) (hash, sub string, ok bool) {
 		return "", "", false
 	}
 	return first, rest, true
+}
+
+// singleSegment reports the lone segment when urlPath is exactly "/seg" with a
+// non-empty segment — the shape "/{hash}" missing its trailing slash.
+func singleSegment(urlPath string) (string, bool) {
+	seg := strings.TrimPrefix(urlPath, "/")
+	if seg == "" || strings.Contains(seg, "/") {
+		return "", false
+	}
+	return seg, true
 }
 
 // binRoutes serves GET, PUT, DELETE and PATCH under one bin hash.

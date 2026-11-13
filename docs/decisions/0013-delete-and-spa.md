@@ -15,6 +15,12 @@ as five atomic commits in `docs/plans/0013-delete-and-spa.md`.
 | Client delete flags | `--delete PATH` and `--delete-folder NAME`, both repeatable (a `flag.Var` collecting values, so order as given is kept). `--delete` takes a file path and refuses one ending in `/` with a pointer to `--delete-folder`; `--delete-folder` validates the name with the existing local name rules and sends `NAME + "/"`. A delete run uploads nothing: file arguments, piped stdin with `--name`, `--archive` and `--new` are each a loud refusal, the way `--describe` is its own run; `--describe` with a delete is refused too. Bin metadata flags combine: they apply first, then the deletes. The bin comes from `.sandbin.yaml` / `--bin` as always; `SANDBIN_BIN_PASSWORD` goes as Basic Auth. Output is one `deleted <url>` line per path; a `404` surfaces as an error naming the path. Exactly one request per delete, no retries, same lockout warning as uploads. |
 | Docs ripple | README: DELETE + fallback paragraphs in the API section, DELETE added to the key-checked verb list in the lockout section, a delete subsection in the client section. Front page: one clause in the bin paragraph naming both behaviors; `TestFrontPageAtRoot` marker updated. SKILL.md: a short "Deleting files and folders" section and a fallback sentence in the intro. |
 
+## Added after shipping: the missing slash on a bin base
+
+| Point | Decision |
+|---|---|
+| `GET /{hash}` without its slash | GitHub-style 301 to `/{hash}/`, the query string carried into the `Location`. Only for GET and only when the hash is an existing bin; unknown hashes and every other method (PUT/PATCH/DELETE/HEAD/OPTIONS) keep the old `404 unknown bin` — redirecting a write would silently change what it meant, and answering 301 for unknown hashes too would turn every mistyped URL into a cheaper existence oracle. A protected bin redirects too: its existence is already public at `/{hash}/` (401 against 404), so the redirect leaks nothing new. Nothing charges: the whole feature is GETs and 404s. Lives in `ServeHTTP`'s no-bin-segment branch beside a `singleSegment` helper; static routes and the `.`/`..` refusals keep answering first. |
+
 ## Skipped on purpose
 
 Deleting the bin itself (any form), recursive delete without the slash marker, fallback for

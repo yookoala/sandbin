@@ -2014,6 +2014,63 @@ func TestOtherSkillPathsAreUnknownBins(t *testing.T) {
 
 // TestSkillRouteDoesNotShadowBins is the review focus: a bin's own skills/... paths are
 // ordinary files, stored, listed and served, although the root answers one skill path.
+// TestBinBaseWantsItsTrailingSlash is the GitHub-style redirect: GET /<hash> on an
+// existing bin moves to /<hash>/ so relative paths inside the bin resolve. Unknown
+// hashes, every other method, and the query-preserving shape are all pinned here.
+func TestBinBaseWantsItsTrailingSlash(t *testing.T) {
+	h := newTestServer(t, "test-key")
+
+	hash := strings.Trim(createTestBin(t, h, "test-key"), "/")
+
+	rec := get(t, h, "/"+hash)
+	if rec.Code != http.StatusMovedPermanently {
+		t.Fatalf("GET /%s = %d, want %d; body %q", hash, rec.Code, http.StatusMovedPermanently, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != "/"+hash+"/" {
+		t.Errorf("Location = %q, want %q", got, "/"+hash+"/")
+	}
+
+	// The query survives the hop.
+	req := httptest.NewRequest(http.MethodGet, "/"+hash+"?a=1", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Location"); got != "/"+hash+"/?a=1" {
+		t.Errorf("query-carrying Location = %q, want %q", got, "/"+hash+"/?a=1")
+	}
+
+	// A protected bin redirects too: existence is already public at /<hash>/ (401
+	// against 404), so the redirect leaks nothing new.
+	protectedHash := strings.Trim(createTestBinWithPassword(t, h, "sesame"), "/")
+	rec = get(t, h, "/"+protectedHash)
+	if rec.Code != http.StatusMovedPermanently {
+		t.Errorf("GET /%s (protected) = %d, want %d", protectedHash, rec.Code, http.StatusMovedPermanently)
+	}
+
+	// Unknown hashes keep the plain 404, and so does every other method on /<hash>:
+	// a redirect would silently change what PUT or DELETE meant.
+	rec = get(t, h, "/deadbeef")
+	if rec.Code != http.StatusNotFound || strings.TrimSpace(rec.Body.String()) != "unknown bin" {
+		t.Errorf("GET /deadbeef = %d %q, want 404 unknown bin", rec.Code, rec.Body.String())
+	}
+	for _, method := range []string{http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead, http.MethodOptions} {
+		req := httptest.NewRequest(method, "/"+hash, nil)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s /%s = %d, want 404 (no redirect outside GET)", method, hash, rec.Code)
+		}
+	}
+
+	// Nothing about this is charged: it is a GET, and the refusals are 404s.
+	rows, err := h.store.ListBlocks()
+	if err != nil {
+		t.Fatalf("read block table: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("block table has %d rows after the redirect battery, want 0", len(rows))
+	}
+}
+
 func TestSkillRouteDoesNotShadowBins(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	base := createTestBin(t, s, "test-key")

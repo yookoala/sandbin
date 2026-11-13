@@ -74,6 +74,10 @@ curl http://localhost:8080${BIN}notes.md
 curl http://localhost:8080${BIN}build.ansi
 ```
 
+A `GET` of a bin without its trailing slash (`http://localhost:8080/abc1234`) is redirected
+with a 301 to the slashed path, so relative links inside the bin resolve; unknown hashes keep
+answering 404.
+
 Give a bin its own password and send it as Basic Auth (user name = bin hash) on every
 GET, PUT and DELETE below it:
 
