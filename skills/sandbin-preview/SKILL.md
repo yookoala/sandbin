@@ -5,8 +5,9 @@ description: Upload files or whole folders to the sandbin server at {{.Base}} so
 
 # Sandbin preview
 
-`"$SKILL/sandbin-client"` uploads files to the sandbin server at {{.Base}}, takes them back out
-again, and prints preview URLs. `$SKILL` is this skill's directory — the folder holding this SKILL.md, which OpenCode names when it loads the skill; start every shell command for this skill by setting `SKILL=<that directory>`. Replace `your-key` with the real API key; `/<bin>/` is a created bin.
+`"$SKILL/sandbin-client"` always names its verb — `upload` sends files and folders to the sandbin
+server at {{.Base}}, `delete` takes them back out again, `describe` reads the bin's metadata and
+`init` settles this directory's settings — and prints preview URLs. `$SKILL` is this skill's directory — the folder holding this SKILL.md, which OpenCode names when it loads the skill; start every shell command for this skill by setting `SKILL=<that directory>`. Replace `your-key` with the real API key; `/<bin>/` is a created bin.
 A bin holding a `404.html` answers every unmatched path under the bin with that file, so a
 one-page app can serve its own routes.
 
@@ -29,12 +30,12 @@ Always invoke `"$SKILL/sandbin-client"` by that full path — never a bare `sand
 
 Get `your-key` from the human; `--api-key` may be left out at an interactive terminal, where `init` prompts instead, but a non-terminal session must pass it or set `SANDBIN_API_KEY` — otherwise the run stops with `no API key: pass --api-key, set SANDBIN_API_KEY or answer the init prompt` and writes nothing.
 
-`init` checks the key against the server first: a wrong key answers `server rejected this API key` and writes nothing. It saves `sandbin_url`, `api_key`, `bin` and `protected` in a mode-`0600` `.sandbin.yaml` the `.gitignore` covers. Resolution order is flag > environment > file: `--url` > `SANDBIN_URL` > `sandbin_url`, `--api-key` > `SANDBIN_API_KEY` > `api_key`. An already initialized directory (the file holds both `sandbin_url` and `api_key`) refuses a plain `init` with `.sandbin.yaml is already initialized for <url>: pass --reinit to overwrite it, or delete the file to start over` — pass `--reinit` when the overwrite is intended, or delete `.sandbin.yaml` to start over; at an interactive terminal `init` asks `re-initialize? [y/N]: ` instead.
+`init` checks the key against the server first: a wrong key answers `server rejected this API key` and writes nothing. It saves `sandbin_url`, `api_key`, `bin` and `protected` in a mode-`0600` `.sandbin.yaml` the `.gitignore` covers. Resolution order is flag > environment > file: `--url` > `SANDBIN_URL` > `sandbin_url`, `--api-key` > `SANDBIN_API_KEY` > `api_key`. An already initialized directory (the file holds both `sandbin_url` and `api_key`) refuses a plain `init` with `.sandbin.yaml is already initialized for <url>: pass --reinit to overwrite it, or delete the file to start over` — pass `--reinit` when the overwrite is intended, or delete `.sandbin.yaml` to start over; at an interactive terminal `init` asks `re-initialize? [y/N]: ` instead. A stdin redirected from `/dev/null` still reads as a terminal but answers that question with nothing: the run cancels as `no` and leaves the file untouched, so a script that means to re-initialize must pass `--reinit` deliberately.
 
 ## Uploading files
 
 ```sh
-"$SKILL/sandbin-client" page.html style.css
+"$SKILL/sandbin-client" upload page.html style.css
 # created {{.Base}}/<bin>/page.html
 # created {{.Base}}/<bin>/style.css
 # {{.Base}}/<bin>/
@@ -45,7 +46,7 @@ New paths answer `created`, replaced ones `updated`, and the bin base URL comes 
 ## Uploading a whole folder
 
 ```sh
-"$SKILL/sandbin-client" --archive hello
+"$SKILL/sandbin-client" upload --archive hello
 # extracted 2 files into {{.Base}}/<bin>/hello.tar.gz
 # {{.Base}}/<bin>/
 ```
@@ -55,9 +56,9 @@ The folder uploads as one tar.gz the server unpacks: `hello/index.html` lands as
 ## Piping stdin, keeping an archive raw
 
 ```sh
-make 2>&1 | "$SKILL/sandbin-client" --name build.ansi
+make 2>&1 | "$SKILL/sandbin-client" upload --name build.ansi
 # created {{.Base}}/<bin>/build.ansi
-"$SKILL/sandbin-client" --no-extract --archive hello
+"$SKILL/sandbin-client" upload --no-extract --archive hello
 # created {{.Base}}/<bin>/hello.tar.gz
 ```
 
@@ -66,27 +67,27 @@ Piped stdin needs `--name` to say what it uploads; a `.ansi` file comes back ren
 ## Deleting files and folders
 
 ```sh
-"$SKILL/sandbin-client" --delete build.ansi --delete-folder drafts
+"$SKILL/sandbin-client" delete build.ansi --folder drafts
 # deleted {{.Base}}/<bin>/build.ansi
 # deleted {{.Base}}/<bin>/drafts/one.md
 # deleted {{.Base}}/<bin>/drafts/two.md
 # {{.Base}}/<bin>/
 ```
 
-Each flag repeats; `--delete` names one file and `--delete-folder` names a folder and takes everything under it. A delete run reuses this directory's bin and never makes one, and it never uploads: file arguments, `--name`, `--archive`, `--new` or `--describe` together with a delete flag are refusals. A path the bin does not hold is refused with `delete "missing.txt": 404 unknown path`.
+File arguments name files and a repeatable `--folder` names a folder and takes everything under it; flags may be written before or after the file arguments. A delete run reuses this directory's bin and never makes one, and it never uploads: `--name`, `--archive`, `--new` and `--no-extract` are not delete flags, so a run written with them is a usage error that makes no request. A path the bin does not hold is refused with `delete "missing.txt": 404 unknown path`.
 
 ## Saying what the bin holds
 
 ```sh
-"$SKILL/sandbin-client" --title 'Button grid' --description 'A grid of pressable buttons'
+"$SKILL/sandbin-client" upload --title 'Button grid' --description 'A grid of pressable buttons'
 # updated /<bin>/
 # {{.Base}}/<bin>/
-"$SKILL/sandbin-client" --describe
+"$SKILL/sandbin-client" describe
 # title: Button grid
 # description: A grid of pressable buttons
 ```
 
-A run with only the metadata flags uploads nothing. `--describe` only reads and needs no API key.
+An `upload` with only the metadata flags uploads nothing. `describe` only reads and needs no API key.
 
 ## Caps and what a refusal looks like
 
