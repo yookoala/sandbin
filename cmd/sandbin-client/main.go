@@ -359,12 +359,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 // url and key the server has just accepted. Values come from flag, then env, then the
 // existing file; what is still missing on a terminal is asked, what is missing without
 // one falls back (the url) or refuses (the key). Nothing is written until the server
-// has verified the key, so init never saves a broken setup.
+// has verified the key, so init never saves a broken setup. A project whose file
+// already holds both a url and a key is re-initialized only by consent: a y at the
+// terminal question, or --reinit for a script.
 func runInit(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	fs := flag.NewFlagSet("sandbin-client init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	urlFlag := fs.String("url", "", "sandbin server base URL")
 	apiKeyFlag := fs.String("api-key", "", "pre-shared API key to verify as X-API-Key")
+	reinit := fs.Bool("reinit", false, "overwrite an existing .sandbin.yaml instead of refusing")
 	if perr := fs.Parse(args); perr != nil {
 		if errors.Is(perr, flag.ErrHelp) {
 			// The usage has already been printed; asking for it is not a failure.
@@ -390,6 +393,25 @@ func runInit(args []string, stdin io.Reader, stdout, stderr io.Writer) (err erro
 		return err
 	}
 
+	// The re-initialization guard: the file holding both a sandbin_url and an api_key
+	// is the marker — a partial file is not initialized, and neither are flags or the
+	// environment, because supplying new values is exactly the overwrite the guard
+	// exists to confirm. It sits before the ladder, any prompt, the verification and
+	// any write, so a refusal or a cancel requests and writes nothing.
+	reader := bufio.NewReader(stdin)
+	if cfgFound && cfg.URL != "" && cfg.APIKey != "" && !*reinit {
+		if !isTerminal(stdin) {
+			return fmt.Errorf(".sandbin.yaml is already initialized for %s: pass --reinit to overwrite it, or delete the file to start over", cfg.URL)
+		}
+		fmt.Fprintf(stderr, "sandbin-client: warning: .sandbin.yaml is already initialized for %s\n", cfg.URL)
+		fmt.Fprint(stdout, "re-initialize? [y/N]: ")
+		line, _ := reader.ReadString('\n')
+		if answer := strings.ToLower(strings.TrimRight(line, "\r\n")); answer != "y" && answer != "yes" {
+			fmt.Fprintf(stdout, "left the existing initialization for %s untouched\n", cfg.URL)
+			return nil
+		}
+	}
+
 	// The flag > env > file ladder, same as an upload run; init's flags default to
 	// the empty string precisely so a value the flag does not carry can fall through
 	// to a prompt.
@@ -408,7 +430,6 @@ func runInit(args []string, stdin io.Reader, stdout, stderr io.Writer) (err erro
 		key = cfg.APIKey
 	}
 
-	reader := bufio.NewReader(stdin)
 	if base == "" && isTerminal(stdin) {
 		fmt.Fprintf(stdout, "sandbin_url [%s]: ", defaultURL)
 		line, _ := reader.ReadString('\n')
