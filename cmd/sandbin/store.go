@@ -258,16 +258,23 @@ func (s *Store) DeleteFile(binHash, path string) (bool, error) {
 // name merely starts with it both stay. Nothing under it deletes nothing, and the answer
 // is empty.
 func (s *Store) DeleteFolder(binHash, folder string) ([]string, error) {
-	rows, err := s.db.Query(`SELECT path FROM files WHERE bin_hash=? ORDER BY path`, binHash)
+	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer tx.Rollback()
 
+	// Listing and deletes share one transaction, so an upload landing between them
+	// cannot survive the folder removal.
+	rows, err := tx.Query(`SELECT path FROM files WHERE bin_hash=? ORDER BY path`, binHash)
+	if err != nil {
+		return nil, err
+	}
 	var deleted []string
 	for rows.Next() {
 		var path string
 		if err := rows.Scan(&path); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		if strings.HasPrefix(path, folder+"/") {
@@ -275,17 +282,14 @@ func (s *Store) DeleteFolder(binHash, folder string) ([]string, error) {
 		}
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, err
 	}
+	rows.Close()
 	if len(deleted) == 0 {
 		return nil, nil
 	}
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
 	for _, path := range deleted {
 		if _, err := tx.Exec(`DELETE FROM files WHERE bin_hash=? AND path=?`, binHash, path); err != nil {
 			return nil, err

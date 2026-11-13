@@ -6,7 +6,9 @@ description: Upload files or whole folders to the sandbin server at {{.Base}} so
 # Sandbin preview
 
 `"$SKILL/sandbin-client"` uploads files to the sandbin server at {{.Base}}, takes them back out
-again, and prints preview URLs. `$SKILL` is this skill's directory — the folder holding this SKILL.md, which OpenCode names when it loads the skill; start every shell command for this skill by setting `SKILL=<that directory>`. Replace `your-key` with the real API key; `/<bin>/` is a created bin. A bin holding a `404.html` answers every unmatched path under the bin with that file, so a one-page app can serve its own routes.
+again, and prints preview URLs. `$SKILL` is this skill's directory — the folder holding this SKILL.md, which OpenCode names when it loads the skill; start every shell command for this skill by setting `SKILL=<that directory>`. Replace `your-key` with the real API key; `/<bin>/` is a created bin.
+A bin holding a `404.html` answers every unmatched path under the bin with that file, so a
+one-page app can serve its own routes.
 
 ## The client binary lives in this skill's directory
 
@@ -90,4 +92,5 @@ A run with only the metadata flags uploads nothing. `--describe` only reads and 
 
 - A file over 1 MiB is refused locally before any request: `sandbin-client: big.html: body over 1 MiB`; piped stdin over 1 MiB is `stdin over 1 MiB`.
 - `--archive` checks the folder locally first: `hello/big.bin is over 1 MiB` (per entry), `folder has over 1000 files`, `folder unpacks over 32 MiB`, `archive is over 1 MiB`, `folder contains no files`.
+- Hand-built archive uploads obey the server's caps: `413 extracted file over 1 MiB`, `413 archive has over 1000 files`, `413 archive unpacks over 32 MiB`, `413 body over 1 MiB`; each refusal leaves the bin exactly as it was.
 - A wrong API key blocks this address from writes for 30 minutes, every further failure adds 30 more, and an attempt while already blocked counts as one too. Never rerun a failing `sandbin-client` in a loop; `GET` is never charged.
