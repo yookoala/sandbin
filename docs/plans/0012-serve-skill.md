@@ -1,8 +1,8 @@
 # Plan: serve the sandbin-preview agent skill
 
-Status: planned. Decisions in `docs/decisions/0012-serve-skill.md` — they are the spec; this
-plan implements them. Sits beside `docs/plans/0011-client-config.md` (the client the skill
-documents) and extends the front page from the root-page plan.
+Status: closed. Implemented on `main` (`ba17b36`, `4c7da24`, `4179b73`), reviewed with verdict
+**ship** and no blockers. Decisions in `docs/decisions/0012-serve-skill.md`. Sits beside
+`docs/plans/0011-client-config.md` (the client the skill documents).
 
 **Goal:** the repo ships `skills/sandbin-preview/SKILL.md`, the server embeds and serves it at
 `GET /skills/sandbin-preview/SKILL.md`, and front page + README show a one-snippet install for
@@ -126,3 +126,33 @@ gain the curl install snippet.
 Serving other files under `skills/`, an HTTP catalog (`index.json`) endpoint for OpenCode's
 catalog source, per-user skill config, auth on the skill route, HTML rendering of the markdown,
 `GET /skill` aliases, versioning the skill content, install scripts beyond the two-line snippet.
+
+## Outcome
+
+Tests went 157 + 2 to 161 + 2 in `cmd/sandbin`; the client package untouched at 79 (+13
+subtests); `gofmt -l .`, `go vet`, `go build ./...`, `go test -count=1` and `go test -race`
+green at HEAD, run by both implementer and reviewer.
+
+The review proved live: the served skill is byte-identical to the repo file from both the
+HEAD binary and the container; all six non-GET methods 405 with the 405 firing **before** auth
+(a wrong-key POST left no ip row, while a wrong-key `POST /` from the same run charged as
+always); `/skills/other`, the trailing-slash and case variants all fall through to `unknown
+bin`; `PUT /<hash>/skills/x.txt` stores, serves and lists normally. Every command shown inside
+SKILL.md ran verbatim against a live server — init, upload, bin reuse, `--archive` round trip
+with listing diff, stdin with the ANSI-rendering claim confirmed, `--no-extract`, metadata —
+and every refusal the skill quotes matched the client's real stderr word-for-word, with the
+server's four 413 archive caps leaving the bin byte-unchanged. Both install snippets ran into
+scratch `.opencode/skills/` layouts, the fetched file's frontmatter parses with exactly `name`
++ `description`, and the layout matches opencode.ai/docs/skills directory-form rules. The
+front-page diff against the `14dcd06` binary is exactly the five new install-block lines;
+everything else — healthz, verify-key, bin round trips, listing, PATCH, the whole ip verb
+family, plain client stdout — came back identical. Container rebuild with the two new COPY
+lines works and persists through restart; quadlet dryrun unchanged.
+
+Accepted as they are: SKILL.md quotes some local refusals without the `sandbin-client: ` stderr
+prefix (verbatim substrings of the real lines); trailing-slash probes on the skill path answer
+the router's long-standing `400` rather than a 404; and one true fact ("names are checked
+locally before any request") was dropped from the file during the 80-line trim rather than
+reworded — no sentence in the skill contradicts the code. Left unproven: discovery by a live
+OpenCode model session (the CLI here exposes no skills-discovery endpoint, so the structure was
+validated against the docs instead).
