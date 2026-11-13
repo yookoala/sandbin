@@ -730,8 +730,11 @@ prototype files, and hand a human plain preview URLs.</p>
 <p>A bin is a collection of files under a random eight-hex path. Create one with a key-checked
 <code>POST /</code>, <code>PUT</code> files under its subpaths, and <code>GET</code> them back:
 the bin base serves its <code>index.html</code> or lists its files, a <code>.ansi</code> file
-comes back rendered, a title and description can say what a bin holds, and an archive upload
-unpacks into the bin. The <code>sandbin-client</code> command does the same in one line.</p>
+comes back rendered, a title and description can say what a bin holds, an archive upload unpacks
+into the bin, and a key-checked <code>DELETE</code> takes a file or a whole folder back out of
+the bin. A bin holding a <code>404.html</code> answers every unmatched path under the bin with
+that file, so a one-page app can serve its own routes. The <code>sandbin-client</code> command
+does the same in one line.</p>
 <pre>curl -X POST -H "X-API-Key: your-key" https://this.host/                        -&gt; /abc1234/
 curl -X PUT  -H "X-API-Key: your-key" -d '&lt;h1&gt;Hello&lt;/h1&gt;' https://this.host/abc1234/index.html
 open https://this.host/abc1234/</pre>

@@ -75,7 +75,7 @@ curl http://localhost:8080${BIN}build.ansi
 ```
 
 Give a bin its own password and send it as Basic Auth (user name = bin hash) on every
-GET and PUT below it:
+GET, PUT and DELETE below it:
 
 ```sh
 PBIN=$(curl -s -X POST -H "X-API-Key: your-key" -H "X-Bin-Password: sesame" http://localhost:8080/)
@@ -107,6 +107,19 @@ serves a raw `index.html` byte for byte (metadata visible in the response header
 document), and only the directory listing page carries it, as a `<p class="bin-meta">` line
 above the file list. A public bin's metadata is public: anyone who can read the bin can read
 what it says it holds.
+
+A file is removed with `DELETE /{hash}/{path}`, and a folder with `DELETE /{hash}/{folder}/`
+— the trailing slash marks the folder and takes everything under it. The answer is JSON
+listing what was removed, like `{"deleted":["drafts/one.md","drafts/two.md"]}`. `DELETE` is
+key-checked like `PUT`, carries no body, and answers `405` against a bin without a path and
+`404` for a path the bin does not hold. A bin whose files include a `404.html` answers every
+unmatched path under it with that file and a `404` status, which lets a single-page app serve
+its own error page from the bin; a bin without one answers the plain `404 unknown path`.
+
+```sh
+curl -X DELETE -H "X-API-Key: your-key" "http://localhost:8080${BIN}build.ansi"  # -> {"deleted":["build.ansi"]}
+curl -X DELETE -H "X-API-Key: your-key" "http://localhost:8080${BIN}drafts/"     # -> {"deleted":["drafts/one.md","drafts/two.md"]}
+```
 
 PUT bodies are capped at 1 MiB. `403` is a bad API key, `401` a missing bin password,
 `404` an unknown bin or path, `405` an unsupported method, `400` a rejected path or metadata,
@@ -266,6 +279,32 @@ The two fields show up wherever the bin is read: as `X-Bin-Title` and `X-Bin-Des
 serves when the bin has no `index.html`. A bin with no metadata listed is listed exactly as it
 was before metadata existed.
 
+`--delete <path>` and `--delete-folder <folder>` take files and folders back out of the bin.
+Each flag repeats, one path per flag, and a delete run uploads nothing: a file argument with
+`--delete` is a refusal, as are `--name` or `--archive` with it, `--new`, and `--describe`
+together with either, since one writes and the other only reads; a delete run reads no stdin
+even when a pipe is attached. The names follow the upload
+name rules: a trailing slash on `--delete` is a refusal pointing at `--delete-folder`, a trailing
+slash on `--delete-folder` is a refusal saying the client sends that slash itself, and a name
+that would escape the bin is refused the way an upload name is. The names are checked against
+the bin by the server: a path the bin does not hold is a `404` naming it, and a folder the bin
+does not hold is a `404` too. Deletions are sent in the order written, files before folders, and
+one failing name stops the run — the deletions already sent stay done. Every delete is exactly
+one `DELETE` request, so a refused run costs nothing. The run prints one line per deleted file
+and ends with the bin URL:
+
+```sh
+sandbin-client --delete build.ansi --delete-folder drafts
+# deleted http://localhost:8080/abc1234/build.ansi
+# deleted http://localhost:8080/abc1234/drafts/one.md
+# deleted http://localhost:8080/abc1234/drafts/two.md
+# http://localhost:8080/abc1234/
+```
+
+A protected bin is deleted from with `SANDBIN_BIN_PASSWORD` the way it is uploaded to, and a
+delete run finds its bin in `.sandbin.yaml` or `--bin` exactly like an upload run — with neither
+it is a refusal naming both ways, never a fresh bin.
+
 The bin is remembered in `.sandbin.yaml` in the working directory. `--bin` beats that file, a
 readable file whose `sandbin_url` matches the url in use comes next, and otherwise the client
 creates a bin and writes the file: mode `0600`, renamed in from a temp file in the same
@@ -281,7 +320,7 @@ costing a request.
 
 **Do not retry a failing `sandbin-client` from a script.** It makes exactly one request per
 operation and never retries, because a wrong or missing API key blocks the client's address
-from `POST` and `PUT` for 30 minutes, every further failure adds 30 minutes (to a 24 hour
+from `POST`, `PUT` and `DELETE` for 30 minutes, every further failure adds 30 minutes (to a 24 hour
 cap per block), and an attempt while already blocked counts as another failure too. A loop
 that reruns the client after a `403` only digs that wait deeper; read the `429` and its
 `Retry-After`, fix the key, and wait out the stated seconds. `GET` is never charged or
@@ -385,7 +424,8 @@ client on first use instead.
 
 ## API key lockout
 
-`POST /`, `PUT /{hash}/{path}` and `POST /verify-key` are the key-checked requests.
+`POST /`, `PUT /{hash}/{path}`, `DELETE /{hash}/{path}` and `POST /verify-key` are the
+key-checked requests.
 `POST /verify-key` is the pure key check `sandbin-client init` runs before saving a key: it
 answers `200 key ok` or `403 invalid API key`, charges every failure exactly like `POST /`
 does, creates nothing, and answers every method but `POST` with `405 method not allowed`, so no

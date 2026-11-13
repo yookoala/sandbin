@@ -159,6 +159,8 @@ func TestFrontPageAtRoot(t *testing.T) {
 	// The request is a plain loopback GET with Host example.com, so its own address is
 	// what the examples echo.
 	for _, want := range []string{"<title>Sandbin</title>", "<h1>Sandbin</h1>", "POST /", "&lt;h1&gt;Hello&lt;/h1&gt;",
+		"key-checked <code>DELETE</code> takes a file or a whole folder",
+		"<code>404.html</code> answers every unmatched path under the bin",
 		"<h2>Give the skill to your agent</h2>",
 		"curl -fsSL http://example.com/skills/sandbin-preview/install.sh | bash",
 		"--dest",
