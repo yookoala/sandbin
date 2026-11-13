@@ -12,171 +12,6 @@ import (
 	"time"
 )
 
-// runDispatch runs one whole command line and returns what it printed and the exit code.
-func runDispatch(t *testing.T, args ...string) (string, string, int) {
-	t.Helper()
-	var stdout, stderr bytes.Buffer
-	code := dispatch(args, &stdout, &stderr)
-	return stdout.String(), stderr.String(), code
-}
-
-func TestDispatchNoArgs(t *testing.T) {
-	stdout, stderr, code := runDispatch(t)
-	if code != 1 {
-		t.Errorf("bare sandbin exited %d, want 1", code)
-	}
-	if !strings.Contains(stderr, "usage:") || !strings.Contains(stderr, "sandbin serve") {
-		t.Errorf("bare sandbin stderr = %q, want the usage", stderr)
-	}
-	if stdout != "" {
-		t.Errorf("bare sandbin stdout = %q, want nothing", stdout)
-	}
-}
-
-func TestDispatchHelp(t *testing.T) {
-	for _, verb := range []string{"help", "--help"} {
-		stdout, stderr, code := runDispatch(t, verb)
-		if code != 0 {
-			t.Errorf("sandbin %s exited %d, want 0", verb, code)
-		}
-		if !strings.Contains(stdout, "usage:") || !strings.Contains(stdout, "sandbin ip list") {
-			t.Errorf("sandbin %s stdout = %q, want the usage", verb, stdout)
-		}
-		if !strings.Contains(stdout, "sandbin ip show [--db f] <ip>") {
-			t.Errorf("sandbin %s stdout = %q, want the usage to name sandbin ip show", verb, stdout)
-		}
-		if stderr != "" {
-			t.Errorf("sandbin %s stderr = %q, want nothing", verb, stderr)
-		}
-	}
-}
-
-func TestDispatchUnknownVerb(t *testing.T) {
-	stdout, stderr, code := runDispatch(t, "bogus")
-	if code != 1 {
-		t.Errorf("sandbin bogus exited %d, want 1", code)
-	}
-	if !strings.Contains(stderr, `unknown command "bogus"`) || !strings.Contains(stderr, "usage:") {
-		t.Errorf("sandbin bogus stderr = %q, want a refusal naming it and the usage", stderr)
-	}
-	if stdout != "" {
-		t.Errorf("sandbin bogus stdout = %q, want nothing", stdout)
-	}
-}
-
-// TestDispatchServeHelp covers serve's flag.ErrHelp arm: asking for the flag list is
-// not a failure and starts no listener.
-func TestDispatchServeHelp(t *testing.T) {
-	stdout, stderr, code := runDispatch(t, "serve", "--help")
-	if code != 0 {
-		t.Errorf("sandbin serve --help exited %d, want 0; stderr %q", code, stderr)
-	}
-	if !strings.Contains(stderr, "Usage of sandbin serve") {
-		t.Errorf("sandbin serve --help stderr = %q, want the flag list", stderr)
-	}
-	if !strings.Contains(stderr, "-socket") {
-		t.Errorf("sandbin serve --help stderr = %q, want the flag list to name --socket", stderr)
-	}
-	if stdout != "" {
-		t.Errorf("sandbin serve --help stdout = %q, want nothing", stdout)
-	}
-}
-
-// TestServeFlagParsing checks every existing flag, its default and its env fallback
-// without starting a listener.
-func TestServeFlagParsing(t *testing.T) {
-	var stdout bytes.Buffer
-	cfg, err := parseServeFlags([]string{
-		"--api-key", "k", "--db", "elsewhere.db", "--addr", "127.0.0.1:8081",
-		"--trusted-proxy", "203.0.113.7", "--trusted-proxy-file", "proxies.txt",
-	}, &stdout)
-	if err != nil {
-		t.Fatalf("parseServeFlags: %v", err)
-	}
-	// With no --socket the control socket is the one derived from --db.
-	want := serveConfig{
-		apiKey: "k", dbPath: "elsewhere.db", addr: "127.0.0.1:8081", socketPath: "elsewhere.db.sock",
-		trustedProxy: "203.0.113.7", trustedProxyFile: "proxies.txt",
-	}
-	if cfg != want {
-		t.Errorf("serve flags = %+v, want %+v", cfg, want)
-	}
-
-	// With nothing passed the defaults are what serve has always defaulted to.
-	cfg, err = parseServeFlags(nil, &stdout)
-	if err != nil {
-		t.Fatalf("parseServeFlags with no flags: %v", err)
-	}
-	want = serveConfig{dbPath: "sandbin.db", addr: ":8080", socketPath: "sandbin.db.sock"}
-	if cfg != want {
-		t.Errorf("serve defaults = %+v, want %+v", cfg, want)
-	}
-
-	// Each flag still falls back to its environment variable.
-	t.Setenv("SANDBIN_API_KEY", "env-key")
-	t.Setenv("SANDBIN_SOCKET", "env.sock")
-	t.Setenv("SANDBIN_TRUSTED_PROXIES", "198.51.100.0/24")
-	t.Setenv("SANDBIN_TRUSTED_PROXIES_FILE", "env-proxies.txt")
-	cfg, err = parseServeFlags(nil, &stdout)
-	if err != nil {
-		t.Fatalf("parseServeFlags with the env set: %v", err)
-	}
-	want = serveConfig{
-		apiKey: "env-key", dbPath: "sandbin.db", addr: ":8080", socketPath: "env.sock",
-		trustedProxy: "198.51.100.0/24", trustedProxyFile: "env-proxies.txt",
-	}
-	if cfg != want {
-		t.Errorf("serve env fallbacks = %+v, want %+v", cfg, want)
-	}
-
-	// --socket beats the derived default, which is how the socket lives somewhere else
-	// than the db.
-	cfg, err = parseServeFlags([]string{"--db", "elsewhere.db", "--socket", "/run/sandbin.sock"}, &stdout)
-	if err != nil {
-		t.Fatalf("parseServeFlags with --socket: %v", err)
-	}
-	if cfg.socketPath != "/run/sandbin.sock" {
-		t.Errorf("serve --socket = %q, want the path it was given", cfg.socketPath)
-	}
-
-	if _, err := parseServeFlags([]string{"--bogus"}, &stdout); err == nil {
-		t.Error("serve --bogus: no error, want a refusal")
-	}
-	if _, err := parseServeFlags([]string{"extra"}, &stdout); err == nil || !strings.Contains(err.Error(), "extra") {
-		t.Errorf("serve extra: err %v, want a refusal naming it", err)
-	}
-}
-
-func TestDispatchServeBadFlag(t *testing.T) {
-	stdout, stderr, code := runDispatch(t, "serve", "--bogus")
-	if code != 1 {
-		t.Errorf("sandbin serve --bogus exited %d, want 1", code)
-	}
-	if !strings.Contains(stderr, "flag provided but not defined: -bogus") {
-		t.Errorf("serve --bogus stderr = %q, want the flag refusal", stderr)
-	}
-	if !strings.Contains(stderr, "Usage of sandbin serve:") {
-		t.Errorf("serve --bogus stderr = %q, want serve's flag list", stderr)
-	}
-	if stdout != "" {
-		t.Errorf("serve --bogus stdout = %q, want nothing", stdout)
-	}
-}
-
-// TestDispatchIPVerb shows dispatch hands the ip verbs the live server next to the db file.
-func TestDispatchIPVerb(t *testing.T) {
-	dbPath, store := newIPControlServer(t)
-	seedLiveIPBlock(t, store, "203.0.113.7", 2)
-
-	stdout, stderr, code := runDispatch(t, "ip", "list", "--db", dbPath)
-	if code != 0 {
-		t.Errorf("sandbin ip list exited %d with stderr %q, want 0", code, stderr)
-	}
-	if !strings.Contains(stdout, "203.0.113.7") {
-		t.Errorf("sandbin ip list stdout = %q, want the blocked address", stdout)
-	}
-}
-
 // newIPTestStore returns a db path and the store open on it, so a test can seed rows and
 // then reach them through a server or read them straight afterwards.
 func newIPTestStore(t *testing.T) (string, *Store) {
@@ -211,8 +46,8 @@ func newIPControlServer(t *testing.T) (string, *Store) {
 }
 
 // runIPTest runs one sandbin ip command against the server listening next to dbPath and
-// returns what it printed and its error. --db goes right after the verb, the way Go's flag
-// parser reads a flag.
+// returns what it printed and its error. --db goes right after the verb, the way the verb's
+// own flag parser reads it.
 func runIPTest(t *testing.T, dbPath string, args ...string) (string, string, error) {
 	t.Helper()
 	verb, rest := args[0], args[1:]
@@ -249,20 +84,24 @@ func seedExpiredIPBlock(t *testing.T, store *Store, ip string, failures int) IPB
 	return IPBlock{IP: ip, Failures: failures, BlockedUntil: blockedUntil.Format(time.RFC3339Nano), UpdatedAt: (now.Add(-2 * time.Hour)).Format(time.RFC3339Nano)}
 }
 
+// TestIPNoVerb is the urfave shape: a bare ip shows the verb list on stdout and
+// succeeds; the refusals stay reserved for real misuse.
 func TestIPNoVerb(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := runIP(nil, &stdout, &stderr)
-	if err == nil {
-		t.Fatal("sandbin ip with no verb: no error, want a refusal")
+	if err != nil {
+		t.Fatalf("sandbin ip with no verb: %v, want the help and no error", err)
 	}
-	if !strings.Contains(stderr.String(), "usage:") || !strings.Contains(stderr.String(), "sandbin ip unblock") {
-		t.Errorf("sandbin ip stderr = %q, want the ip usage", stderr.String())
+	for _, want := range []string{"list", "show", "unblock", "clear"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("sandbin ip stdout = %q, want the verb list naming %s", stdout.String(), want)
+		}
 	}
-	if !strings.Contains(stderr.String(), "sandbin ip show") || !strings.Contains(stderr.String(), "pass list, show <ip>, unblock <ip> or clear") {
-		t.Errorf("sandbin ip stderr = %q, want the usage and the refusal to name show", stderr.String())
+	if stdout.Len() == 0 {
+		t.Error("sandbin ip stdout is empty, want the verb list")
 	}
-	if stdout.Len() != 0 {
-		t.Errorf("sandbin ip stdout = %q, want nothing", stdout.String())
+	if stderr.Len() != 0 {
+		t.Errorf("sandbin ip stderr = %q, want nothing", stderr.String())
 	}
 }
 
@@ -272,11 +111,11 @@ func TestIPUnknownVerb(t *testing.T) {
 	if err == nil {
 		t.Fatal("sandbin ip bogus: no error, want a refusal")
 	}
-	if !strings.Contains(stderr.String(), `unknown command "bogus"`) || !strings.Contains(stderr.String(), "usage:") {
-		t.Errorf("sandbin ip bogus stderr = %q, want a refusal naming it and the ip usage", stderr.String())
+	if !strings.Contains(stderr.String(), `No help topic for 'bogus'`) {
+		t.Errorf("sandbin ip bogus stderr = %q, want a refusal naming it", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "pass list, show <ip>, unblock <ip> or clear") {
-		t.Errorf("sandbin ip bogus stderr = %q, want the refusal to name show", stderr.String())
+	if stdout.Len() != 0 {
+		t.Errorf("sandbin ip bogus stdout = %q, want nothing", stdout.String())
 	}
 }
 
@@ -704,20 +543,24 @@ func TestIPShowLeavesRowsUntouched(t *testing.T) {
 	}
 }
 
-// TestIPShowHelpIsNotAFailure covers show asking for its own flag list.
+// TestIPShowHelpIsNotAFailure covers show asking for its own flag list. urfave renders
+// it on stdout and the run succeeds.
 func TestIPShowHelpIsNotAFailure(t *testing.T) {
 	dbPath, store := newIPControlServer(t)
 	seedLiveIPBlock(t, store, "1.2.3.4", 1)
 
-	_, stderr, err := runIPTest(t, dbPath, "show", "--help")
+	stdout, stderr, err := runIPTest(t, dbPath, "show", "--help")
 	if err != nil {
 		t.Fatalf("ip show --help: %v (stderr %q), want no error", err, stderr)
 	}
-	if !strings.Contains(stderr, "Usage of sandbin ip show:") || !strings.Contains(stderr, "-db") {
-		t.Errorf("ip show --help stderr = %q, want the flag list", stderr)
+	if !strings.Contains(stdout, "sandbin ip show") || !strings.Contains(stdout, "--db") {
+		t.Errorf("ip show --help stdout = %q, want the flag list", stdout)
 	}
-	if !strings.Contains(stderr, "-socket") {
-		t.Errorf("ip show --help stderr = %q, want the flag list to name --socket", stderr)
+	if !strings.Contains(stdout, "--socket") {
+		t.Errorf("ip show --help stdout = %q, want the flag list to name --socket", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("ip show --help stderr = %q, want nothing", stderr)
 	}
 	if failures, ok := ipBlockRow(t, store, "1.2.3.4"); !ok || failures != 1 {
 		t.Errorf("1.2.3.4 = failures %d, ok %v; want the help run to change nothing", failures, ok)

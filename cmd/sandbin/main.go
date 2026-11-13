@@ -4,52 +4,68 @@ package main
 
 import (
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"strings"
-)
 
-// usage is what every run without a working verb gets.
-const usage = `usage:
-  sandbin serve [--api-key k] [--db f] [--addr a] [--socket s] [--trusted-proxy l] [--trusted-proxy-file f]
-  sandbin ip list [--db f] [--json]
-  sandbin ip show [--db f] <ip>
-  sandbin ip unblock [--db f] <ip>
-  sandbin ip clear [--db f]
-  sandbin help | --help
-`
+	"github.com/urfave/cli/v2"
+)
 
 func main() {
 	os.Exit(dispatch(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// dispatch picks the verb from the first argument and hands the rest to that verb's
-// flags. A run with no verb is refused: every invocation says which verb it means.
+// dispatch runs one whole command line on a fresh urfave app: apps are stateful, so a fresh
+// one per call keeps every test invocation independent. Failures are reported by the verbs
+// themselves; dispatch only maps a returned error to an exit code.
 func dispatch(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprint(stderr, usage)
+	if err := newServerApp(stdout, stderr).Run(append([]string{"sandbin"}, args...)); err != nil {
 		return 1
 	}
-	switch args[0] {
-	case "serve":
-		return runServe(args[1:], stderr)
-	case "ip":
-		// runIP has already reported its own failure on stderr.
-		if err := runIP(args[1:], stdout, stderr); err != nil {
-			return 1
+	return 0
+}
+
+// newServerApp builds the app and its verbs with the writers wired: Writer takes --help and
+// bare runs, ErrWriter takes the usage-error rendering and every operational failure.
+func newServerApp(stdout, stderr io.Writer) *cli.App {
+	hook := usageError(stderr)
+	return &cli.App{
+		Name:         "sandbin",
+		Usage:        "publish HTML, markdown and ANSI previews; serve runs the server, ip reads and changes its block table",
+		Version:      "dev",
+		Writer:       stdout,
+		ErrWriter:    stderr,
+		OnUsageError: hook,
+		// urfave's own cli.Exit errors (the "No help topic for ..." refusals) would otherwise
+		// print through HandleExitCoder and os.Exit inside app.Run. Swallowing the exit here
+		// lets dispatch map the error to an exit code like every other failure. A verb's own
+		// failures have already been printed by the verb, so only ExitCoder messages echo.
+		ExitErrHandler: func(_ *cli.Context, err error) {
+			if exitErr, ok := err.(cli.ExitCoder); ok && exitErr.Error() != "" {
+				fmt.Fprintln(stderr, exitErr.Error())
+			}
+		},
+		Commands: []*cli.Command{serveCommand(stderr, hook), ipCommand(stdout, stderr, hook)},
+	}
+}
+
+// usageError renders urfave's usage failures onto stderr: v2's default renderer writes them
+// to the app's stdout Writer, and a misuse is not a help request.
+func usageError(stderr io.Writer) cli.OnUsageErrorFunc {
+	return func(c *cli.Context, err error, isCommand bool) error {
+		fmt.Fprintf(stderr, "Incorrect Usage: %s\n\n", err)
+		switch {
+		case !isCommand:
+			cli.HelpPrinter(stderr, cli.AppHelpTemplate, c.App)
+		case len(c.Command.Subcommands) > 0:
+			cli.HelpPrinter(stderr, cli.SubcommandHelpTemplate, c.Command)
+		default:
+			cli.HelpPrinter(stderr, cli.CommandHelpTemplate, c.Command)
 		}
-		return 0
-	case "help", "--help":
-		fmt.Fprint(stdout, usage)
-		return 0
-	default:
-		fmt.Fprintf(stderr, "sandbin: unknown command %q\n", args[0])
-		fmt.Fprint(stderr, usage)
-		return 1
+		return err
 	}
 }
 
@@ -58,52 +74,98 @@ type serveConfig struct {
 	apiKey, dbPath, addr, socketPath, trustedProxy, trustedProxyFile string
 }
 
-// parseServeFlags parses serve's flags on their own FlagSet, so a test can check the
-// parsing without a listening server. Every flag still falls back to its environment
-// variable, which is how the container sets its settings without a command line.
-func parseServeFlags(args []string, stderr io.Writer) (serveConfig, error) {
-	fs := flag.NewFlagSet("sandbin serve", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	var cfg serveConfig
-	fs.StringVar(&cfg.apiKey, "api-key", os.Getenv("SANDBIN_API_KEY"), "pre-shared API key clients send as X-API-Key")
-	fs.StringVar(&cfg.dbPath, "db", "sandbin.db", "sqlite file holding all bins")
-	fs.StringVar(&cfg.addr, "addr", ":8080", "address to listen on")
-	fs.StringVar(&cfg.socketPath, "socket", os.Getenv("SANDBIN_SOCKET"),
-		"control socket the ip commands reach this server through")
-	fs.StringVar(&cfg.trustedProxy, "trusted-proxy", os.Getenv("SANDBIN_TRUSTED_PROXIES"),
-		"comma-separated proxy IPs and CIDRs whose X-Forwarded-For is believed")
-	fs.StringVar(&cfg.trustedProxyFile, "trusted-proxy-file", os.Getenv("SANDBIN_TRUSTED_PROXIES_FILE"),
-		"file of trusted proxy IPs and CIDRs, one per line, # comments allowed")
-	if err := fs.Parse(args); err != nil {
-		return serveConfig{}, err
+// serveFlags are serve's flags, built fresh for every app because a urfave flag carries its
+// parsed value. Every flag falls back to its environment variable through EnvVars, which is
+// how the container sets its settings without a command line.
+func serveFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "api-key", EnvVars: []string{"SANDBIN_API_KEY"},
+			Usage: "pre-shared API key clients send as X-API-Key"},
+		&cli.StringFlag{Name: "db", Value: "sandbin.db", Usage: "sqlite file holding all bins"},
+		&cli.StringFlag{Name: "addr", Value: ":8080", Usage: "address to listen on"},
+		&cli.StringFlag{Name: "socket", EnvVars: []string{"SANDBIN_SOCKET"},
+			Usage: "control socket the ip commands reach this server through"},
+		&cli.StringFlag{Name: "trusted-proxy", EnvVars: []string{"SANDBIN_TRUSTED_PROXIES"},
+			Usage: "comma-separated proxy IPs and CIDRs whose X-Forwarded-For is believed"},
+		&cli.StringFlag{Name: "trusted-proxy-file", EnvVars: []string{"SANDBIN_TRUSTED_PROXIES_FILE"},
+			Usage: "file of trusted proxy IPs and CIDRs, one per line, # comments allowed"},
 	}
-	if extra := fs.Args(); len(extra) > 0 {
-		// A stray argument says nothing the server reads, so it is refused like an
-		// unknown flag rather than ignored.
-		err := fmt.Errorf("serve takes no arguments, got %q", strings.Join(extra, " "))
-		fmt.Fprintln(stderr, err)
-		return serveConfig{}, err
+}
+
+// serveConfigFromContext reads serve's settings off a parsed context. The control socket
+// rides next to the db it manages, so a run that only names --db can never drift away from
+// what the ip verbs look for.
+func serveConfigFromContext(c *cli.Context) serveConfig {
+	cfg := serveConfig{
+		apiKey:           c.String("api-key"),
+		dbPath:           c.String("db"),
+		addr:             c.String("addr"),
+		socketPath:       c.String("socket"),
+		trustedProxy:     c.String("trusted-proxy"),
+		trustedProxyFile: c.String("trusted-proxy-file"),
 	}
-	// The control socket rides next to the db it manages, so a run that only names --db
-	// can never drift away from what the ip verbs look for.
 	if cfg.socketPath == "" {
 		cfg.socketPath = cfg.dbPath + ".sock"
+	}
+	return cfg
+}
+
+// serveRefusal reports one of serve's own failures on stderr and returns it, so each
+// failure is reported once.
+func serveRefusal(stderr io.Writer, format string, args ...any) error {
+	err := fmt.Errorf(format, args...)
+	fmt.Fprintln(stderr, err)
+	return err
+}
+
+// serveCommand is sandbin serve: its flags, then the server. A stray argument says nothing
+// the server reads, so it is refused like an unknown flag rather than ignored.
+func serveCommand(stderr io.Writer, hook cli.OnUsageErrorFunc) *cli.Command {
+	cmd := &cli.Command{
+		Name:  "serve",
+		Usage: "run the publish/read server",
+		Flags: serveFlags(),
+		Action: func(c *cli.Context) error {
+			if extra := c.Args().Slice(); len(extra) > 0 {
+				return serveRefusal(stderr, "serve takes no arguments, got %q", strings.Join(extra, " "))
+			}
+			return runServe(serveConfigFromContext(c))
+		},
+	}
+	cmd.OnUsageError = hook
+	return cmd
+}
+
+// parseServeFlags parses serve's flags on an app of their own, so a test can check the
+// parsing without a listening server: the action captures the settings instead of starting
+// the server.
+func parseServeFlags(args []string, stderr io.Writer) (serveConfig, error) {
+	var cfg serveConfig
+	app := &cli.App{
+		Name:           "sandbin serve",
+		Writer:         io.Discard,
+		ErrWriter:      stderr,
+		OnUsageError:   usageError(stderr),
+		ExitErrHandler: func(_ *cli.Context, _ error) {},
+		Flags:          serveFlags(),
+		Action: func(c *cli.Context) error {
+			if extra := c.Args().Slice(); len(extra) > 0 {
+				return serveRefusal(stderr, "serve takes no arguments, got %q", strings.Join(extra, " "))
+			}
+			cfg = serveConfigFromContext(c)
+			return nil
+		},
+	}
+	if err := app.Run(append([]string{"sandbin serve"}, args...)); err != nil {
+		return serveConfig{}, err
 	}
 	return cfg, nil
 }
 
-// runServe starts the server with the parsed settings. The refuse-to-start guards and
-// the log line are the ones main() has always had.
-func runServe(args []string, stderr io.Writer) int {
-	cfg, err := parseServeFlags(args, stderr)
-	if err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			// serve's flag list has already been printed; asking for it is not a failure.
-			return 0
-		}
-		return 1
-	}
-
+// runServe starts the server with the parsed settings. The refuse-to-start guards and the
+// log lines are the ones main() has always had; since log.Fatal exits the process, runServe
+// never returns.
+func runServe(cfg serveConfig) error {
 	// Without a key there is no way to tell clients apart, so refuse to start.
 	if cfg.apiKey == "" {
 		log.Fatal("sandbin: no API key: pass --api-key or set SANDBIN_API_KEY")
@@ -139,5 +201,5 @@ func runServe(args []string, stderr io.Writer) int {
 	srv := &server{store: store, apiKey: []byte(cfg.apiKey), trustedProxies: proxies}
 	log.Printf("sandbin listening on %s", cfg.addr)
 	log.Fatal(http.ListenAndServe(cfg.addr, srv))
-	return 1 // unreachable: log.Fatal exits the process first
+	return nil // unreachable: log.Fatal exits the process first
 }

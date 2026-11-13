@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -14,61 +13,64 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/urfave/cli/v2"
 )
 
-// ipUsage is what an ip run without a working verb gets.
-const ipUsage = `usage:
-  sandbin ip list [--json]     every row of the block table
-  sandbin ip show <ip>         one address's row in the block table
-  sandbin ip unblock <ip>      delete one address's block
-  sandbin ip clear             delete every block
-Each verb reaches the running serve through its control socket, which serve keeps next to
---db (default sandbin.db, so sandbin.db.sock); --socket <path> names another socket. A live
-serve is required and no API key is sent: with nothing listening the verb changes nothing.
-`
-
-// runIP is the whole sandbin ip family, so a test can hand it args and writers.
-// Every failure is reported on stderr; runIP's caller only maps it to an exit code.
-func runIP(args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		fmt.Fprint(stderr, ipUsage)
-		return ipError(stderr, "no command: pass list, show <ip>, unblock <ip> or clear")
+// ipCommand is the sandbin ip family on urfave: the four verbs as subcommands, each with its
+// own --db/--socket flags (--json on list), so every verb reads its flags right after its
+// name the way it always did.
+func ipCommand(stdout, stderr io.Writer, hook cli.OnUsageErrorFunc) *cli.Command {
+	verb := func(name, usage, argsUsage string, jsonOut bool, action cli.ActionFunc) *cli.Command {
+		flags := []cli.Flag{
+			&cli.StringFlag{Name: "db", Value: "sandbin.db",
+				Usage: "serve's db; its control socket <db>.sock is what this verb asks"},
+			&cli.StringFlag{Name: "socket", Usage: "control socket of the running serve (default <db>.sock)"},
+		}
+		if jsonOut {
+			flags = append(flags, &cli.BoolFlag{Name: "json", Usage: "print the rows as a json array"})
+		}
+		cmd := &cli.Command{Name: name, Usage: usage, ArgsUsage: argsUsage, Flags: flags, Action: action}
+		cmd.OnUsageError = hook
+		return cmd
 	}
 
-	var err error
-	switch args[0] {
-	case "list":
-		err = ipList(args[1:], stdout, stderr)
-	case "show":
-		err = ipShow(args[1:], stdout, stderr)
-	case "unblock":
-		err = ipUnblock(args[1:], stdout, stderr)
-	case "clear":
-		err = ipClear(args[1:], stdout, stderr)
-	case "help", "--help":
-		fmt.Fprint(stdout, ipUsage)
-	default:
-		fmt.Fprint(stderr, ipUsage)
-		err = ipError(stderr, "unknown command %q: pass list, show <ip>, unblock <ip> or clear", args[0])
+	cmd := &cli.Command{
+		Name:        "ip",
+		Usage:       "read and change the block table of a running serve",
+		Description: `Each verb reaches the running serve through its control socket, which serve keeps next to --db (default sandbin.db, so sandbin.db.sock); --socket <path> names another socket. A live serve is required and no API key is sent: with nothing listening the verb changes nothing.`,
+		Subcommands: []*cli.Command{
+			verb("list", "every row of the block table", "", true, func(c *cli.Context) error {
+				return ipList(c.String("db"), c.String("socket"), c.Bool("json"), c.Args().Slice(), stdout, stderr)
+			}),
+			verb("show", "one address's row in the block table", "<ip>", false, func(c *cli.Context) error {
+				return ipShow(c.String("db"), c.String("socket"), c.Args().Slice(), stdout, stderr)
+			}),
+			verb("unblock", "delete one address's block", "<ip>", false, func(c *cli.Context) error {
+				return ipUnblock(c.String("db"), c.String("socket"), c.Args().Slice(), stdout, stderr)
+			}),
+			verb("clear", "delete every block", "", false, func(c *cli.Context) error {
+				return ipClear(c.String("db"), c.String("socket"), c.Args().Slice(), stdout, stderr)
+			}),
+		},
 	}
-	if errors.Is(err, flag.ErrHelp) {
-		// The verb's flag list has already been printed; asking for it is not a failure.
-		return nil
-	}
-	return err
+	cmd.OnUsageError = hook
+	return cmd
 }
 
-func ipList(args []string, stdout, stderr io.Writer) error {
-	fs, dbPath, socketPath := ipFlagSet("list", stderr)
-	jsonOut := fs.Bool("json", false, "print the rows as a json array")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if extra := fs.Args(); len(extra) > 0 {
+// runIP is the test-callable half of the sandbin ip family: hand it the arguments after the
+// verb and it runs the whole app. Every failure is reported on stderr; runIP's caller only
+// maps the error to an exit code.
+func runIP(args []string, stdout, stderr io.Writer) error {
+	return newServerApp(stdout, stderr).Run(append([]string{"sandbin", "ip"}, args...))
+}
+
+func ipList(dbPath, socketPath string, jsonOut bool, args []string, stdout, stderr io.Writer) error {
+	if extra := args; len(extra) > 0 {
 		return ipError(stderr, "list takes no arguments, got %q", strings.Join(extra, " "))
 	}
 
-	socket := controlSocketPath(*dbPath, *socketPath)
+	socket := controlSocketPath(dbPath, socketPath)
 	code, body, err := controlRequest(stderr, http.MethodGet, socket, "/ip")
 	if err != nil {
 		return err
@@ -77,7 +79,7 @@ func ipList(args []string, stdout, stderr io.Writer) error {
 		return controlFailure(stderr, "list blocks", socket, code, body)
 	}
 
-	if *jsonOut {
+	if jsonOut {
 		// The server's array is already the four-field shape --json prints.
 		if _, err := stdout.Write(body); err != nil {
 			return ipError(stderr, "write json: %v", err)
@@ -99,27 +101,22 @@ func ipList(args []string, stdout, stderr io.Writer) error {
 
 // ipShow names one address's row: the same table as list, one row, and the same refusal as
 // unblock when the row is not there.
-func ipShow(args []string, stdout, stderr io.Writer) error {
-	fs, dbPath, socketPath := ipFlagSet("show", stderr)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	rest := fs.Args()
-	if len(rest) == 0 {
+func ipShow(dbPath, socketPath string, args []string, stdout, stderr io.Writer) error {
+	if len(args) == 0 {
 		return ipError(stderr, "show needs an IP address")
 	}
-	if len(rest) > 1 {
+	if len(args) > 1 {
 		// shortcut: Go's flag parser stops at the first non-flag argument, so a verb's
 		// flags have to be typed before the address it takes.
-		return ipError(stderr, "show takes one IP address after its flags, got %q", strings.Join(rest, " "))
+		return ipError(stderr, "show takes one IP address after its flags, got %q", strings.Join(args, " "))
 	}
 
-	ip, err := canonicalIP(rest[0])
+	ip, err := canonicalIP(args[0])
 	if err != nil {
 		return ipError(stderr, "%s", err)
 	}
 
-	socket := controlSocketPath(*dbPath, *socketPath)
+	socket := controlSocketPath(dbPath, socketPath)
 	code, body, err := controlRequest(stderr, http.MethodGet, socket, "/ip/"+ip)
 	if err != nil {
 		return err
@@ -138,27 +135,22 @@ func ipShow(args []string, stdout, stderr io.Writer) error {
 	return writeBlocksTable(stdout, []IPBlock{block}, time.Now())
 }
 
-func ipUnblock(args []string, stdout, stderr io.Writer) error {
-	fs, dbPath, socketPath := ipFlagSet("unblock", stderr)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	rest := fs.Args()
-	if len(rest) == 0 {
+func ipUnblock(dbPath, socketPath string, args []string, stdout, stderr io.Writer) error {
+	if len(args) == 0 {
 		return ipError(stderr, "unblock needs an IP address")
 	}
-	if len(rest) > 1 {
+	if len(args) > 1 {
 		// shortcut: Go's flag parser stops at the first non-flag argument, so a verb's
 		// flags have to be typed before the address it takes.
-		return ipError(stderr, "unblock takes one IP address after its flags, got %q", strings.Join(rest, " "))
+		return ipError(stderr, "unblock takes one IP address after its flags, got %q", strings.Join(args, " "))
 	}
 
-	ip, err := canonicalIP(rest[0])
+	ip, err := canonicalIP(args[0])
 	if err != nil {
 		return ipError(stderr, "%s", err)
 	}
 
-	socket := controlSocketPath(*dbPath, *socketPath)
+	socket := controlSocketPath(dbPath, socketPath)
 	code, body, err := controlRequest(stderr, http.MethodDelete, socket, "/ip/"+ip)
 	if err != nil {
 		return err
@@ -174,16 +166,12 @@ func ipUnblock(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-func ipClear(args []string, stdout, stderr io.Writer) error {
-	fs, dbPath, socketPath := ipFlagSet("clear", stderr)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if extra := fs.Args(); len(extra) > 0 {
+func ipClear(dbPath, socketPath string, args []string, stdout, stderr io.Writer) error {
+	if extra := args; len(extra) > 0 {
 		return ipError(stderr, "clear takes no arguments, got %q", strings.Join(extra, " "))
 	}
 
-	socket := controlSocketPath(*dbPath, *socketPath)
+	socket := controlSocketPath(dbPath, socketPath)
 	code, body, err := controlRequest(stderr, http.MethodDelete, socket, "/ip")
 	if err != nil {
 		return err
@@ -198,17 +186,6 @@ func ipClear(args []string, stdout, stderr io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "cleared %d blocks\n", answer.Cleared)
 	return nil
-}
-
-// ipFlagSet is one verb's flags. --db names the same file serve opens, and the control
-// socket of that db is what the verb asks; --socket names a socket somewhere else. Reading
-// or writing the db file is not part of any verb: the running server is asked instead.
-func ipFlagSet(verb string, stderr io.Writer) (*flag.FlagSet, *string, *string) {
-	fs := flag.NewFlagSet("sandbin ip "+verb, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	dbPath := fs.String("db", "sandbin.db", "serve's db; its control socket <db>.sock is what this verb asks")
-	socketPath := fs.String("socket", "", "control socket of the running serve (default <db>.sock)")
-	return fs, dbPath, socketPath
 }
 
 // controlSocketPath is where a verb looks for the live serve: --socket when it is given,
