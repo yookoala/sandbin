@@ -46,7 +46,9 @@ control socket.
 the key-checked `POST /`, and every other method on `/` still answers `405 method not allowed`.
 A `POST /verify-key` answers `key ok` or `403 invalid API key` for the key it is given, charges
 a failure exactly like `POST /` does, and creates nothing; `sandbin-client init` uses it to
-check a key before saving it (see Point sandbin-client at a server).
+check a key before saving it (see Point sandbin-client at a server). `GET /skills/sandbin-preview/SKILL.md`
+answers the agent skill file as `200` `text/markdown`, needs no key and charges nothing, and every
+other method on that path answers `405` (see Give the skill to your agent).
 
 Create a bin, then PUT files under it. `$BIN` already ends in `/`, so write `${BIN}name` and
 not `$BIN/name`, which asks for a `//` path the server rejects:
@@ -339,6 +341,22 @@ agent override a project without editing it.
 
 The state file earlier versions of this client kept as JSON is gone without migration or
 fallback: run `init` once in a project that has one and delete the old file.
+
+### Give the skill to your agent
+
+The repo ships `skills/sandbin-preview/SKILL.md`: an agent skill that teaches an agent to run
+this client — first-time `init` in a project directory, uploading files, uploading a whole
+folder with `--archive`, and what the caps refuse. The server answers that exact file at
+`GET /skills/sandbin-preview/SKILL.md`, so installing it into a project is two commands, run
+in the project directory:
+
+```sh
+mkdir -p .opencode/skills/sandbin-preview
+curl -fsSL http://localhost:8080/skills/sandbin-preview/SKILL.md -o .opencode/skills/sandbin-preview/SKILL.md
+```
+
+A global install, shared by every project, goes in `~/.config/opencode/skills/sandbin-preview`
+instead.
 
 ## API key lockout
 
