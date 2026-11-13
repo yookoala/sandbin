@@ -109,6 +109,18 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/verify-key" {
+		// The real server's contract: only POST answers, and the key guard above is
+		// what charged any wrong key before this point.
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		io.WriteString(w, "key ok")
+		return
+	}
+
 	if r.Method == http.MethodPost {
 		hash := fmt.Sprintf("bin%04d", len(f.bins)+1)
 		f.bins[hash] = fakeBin{

@@ -5,11 +5,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
-const configFileName = ".sandbin.yaml"
+const (
+	configFileName    = ".sandbin.yaml"
+	gitignoreFileName = ".gitignore"
+)
 
 // clientConfig is what .sandbin.yaml remembers about this project's sandbin setup.
 // Only init writes an api_key into the file, at the user's explicit request; an
@@ -63,6 +67,38 @@ func writeConfig(dir string, cfg clientConfig) error {
 	if err := os.Rename(tmp.Name(), path); err != nil {
 		os.Remove(tmp.Name())
 		return fmt.Errorf("config file %s: %v", path, err)
+	}
+	return nil
+}
+
+// ensureGitignore keeps the .gitignore beside the config listing configFileName: a
+// missing file is created, a missing line is appended, and a file that already names
+// the file is left byte for byte as the human wrote it. The .gitignore is the human's
+// file, so it is edited in place rather than replaced behind a rename.
+func ensureGitignore(dir string) error {
+	path := filepath.Join(dir, gitignoreFileName)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read %s: %v", path, err)
+		}
+		if err := os.WriteFile(path, []byte(configFileName+"\n"), 0644); err != nil {
+			return fmt.Errorf("write %s: %v", path, err)
+		}
+		return nil
+	}
+
+	text := string(raw)
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) == configFileName {
+			return nil // the file already names the config file
+		}
+	}
+	if text != "" && !strings.HasSuffix(text, "\n") {
+		text += "\n" // the appended line starts on a line of its own
+	}
+	if err := os.WriteFile(path, []byte(text+configFileName+"\n"), 0644); err != nil {
+		return fmt.Errorf("append to %s: %v", path, err)
 	}
 	return nil
 }

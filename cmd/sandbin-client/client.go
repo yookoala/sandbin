@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -222,6 +223,35 @@ func (c *client) describeBin(bin string) (string, string, error) {
 		return "", "", newAPIError(resp, body)
 	}
 	return resp.Header.Get(binTitleHeader), resp.Header.Get(binDescriptionHeader), nil
+}
+
+// verifyKey POSTs /verify-key with the API key and asks only "is this key ok?". A 200
+// is the ok, a 403 is the wrong key, and a 429 is this address already locked out by
+// bad keys. One attempt, no retry: a retry would only deepen the lockout.
+func (c *client) verifyKey() error {
+	req, err := http.NewRequest(http.MethodPost, c.base.String()+"/verify-key", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set(apiKeyHeader, c.apiKey)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("cannot reach %s: %v", c.base, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	if err != nil {
+		return fmt.Errorf("cannot reach %s: read response: %v", c.base, err)
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusForbidden:
+		return errors.New("server rejected this API key")
+	case http.StatusTooManyRequests:
+		return errors.New("server is blocking this address: too many bad API keys")
+	}
+	return fmt.Errorf("checking the API key: %v", newAPIError(resp, body))
 }
 
 // do runs one request once and returns a 2xx status, headers and body. Anything

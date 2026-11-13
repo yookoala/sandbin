@@ -4,6 +4,7 @@ package main
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"errors"
@@ -40,6 +41,12 @@ func main() {
 // run is the whole client, so main is only the exit code and a test can hand it
 // args, a stdin and writers. Failures are written to stderr and never to stdout.
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
+	// The init verb is the first argument and brings its own flags, so it dispatches
+	// before this run's FlagSet ever parses.
+	if len(args) > 0 && args[0] == "init" {
+		return runInit(args[1:], stdin, stdout, stderr)
+	}
+
 	fs := flag.NewFlagSet("sandbin-client", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	urlFlag := fs.String("url", envOr("SANDBIN_URL", defaultURL), "sandbin server base URL")
@@ -258,6 +265,102 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	for _, line := range lines {
 		fmt.Fprintln(stdout, line)
 	}
+	return nil
+}
+
+// runInit is `sandbin-client init`: it settles this project's .sandbin.yaml with a
+// url and key the server has just accepted. Values come from flag, then env, then the
+// existing file; what is still missing on a terminal is asked, what is missing without
+// one falls back (the url) or refuses (the key). Nothing is written until the server
+// has verified the key, so init never saves a broken setup.
+func runInit(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
+	fs := flag.NewFlagSet("sandbin-client init", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	urlFlag := fs.String("url", "", "sandbin server base URL")
+	apiKeyFlag := fs.String("api-key", "", "pre-shared API key to verify as X-API-Key")
+	if perr := fs.Parse(args); perr != nil {
+		if errors.Is(perr, flag.ErrHelp) {
+			// The usage has already been printed; asking for it is not a failure.
+			return nil
+		}
+		return perr
+	}
+	defer func() {
+		if err != nil {
+			fmt.Fprintln(stderr, "sandbin-client:", err)
+		}
+	}()
+	if fs.NArg() > 0 {
+		return errors.New("init takes no file arguments: its settings are --url and --api-key")
+	}
+
+	dir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	cfg, cfgFound, err := readConfig(dir)
+	if err != nil {
+		return err
+	}
+
+	// The flag > env > file ladder, same as an upload run; init's flags default to
+	// the empty string precisely so a value the flag does not carry can fall through
+	// to a prompt.
+	base := *urlFlag
+	if base == "" {
+		base = os.Getenv("SANDBIN_URL")
+	}
+	if base == "" && cfgFound {
+		base = cfg.URL
+	}
+	key := *apiKeyFlag
+	if key == "" {
+		key = os.Getenv("SANDBIN_API_KEY")
+	}
+	if key == "" && cfgFound {
+		key = cfg.APIKey
+	}
+
+	reader := bufio.NewReader(stdin)
+	if base == "" && isTerminal(stdin) {
+		fmt.Fprintf(stdout, "sandbin_url [%s]: ", defaultURL)
+		line, _ := reader.ReadString('\n')
+		base = strings.TrimRight(line, "\r\n")
+	}
+	if base == "" {
+		base = defaultURL
+	}
+	if key == "" && isTerminal(stdin) {
+		// shortcut: visible echo for the key prompt; upgrade with golang.org/x/term ReadPassword if agents ever need masking
+		fmt.Fprint(stdout, "api_key: ")
+		line, _ := reader.ReadString('\n')
+		key = strings.TrimRight(line, "\r\n")
+	}
+	if key == "" {
+		return errors.New("no API key: pass --api-key, set SANDBIN_API_KEY or answer the init prompt")
+	}
+
+	c, err := newClient(base, key, "")
+	if err != nil {
+		return err
+	}
+	if err := c.verifyKey(); err != nil {
+		return err
+	}
+
+	// The file's bin and protected belong to its url: they survive only when that url
+	// is the one being saved. Writing the verified key is init's job and only init's.
+	next := clientConfig{URL: base, APIKey: key, Bin: cfg.Bin, Protected: cfg.Protected}
+	if !cfgFound || cfg.URL != base {
+		next.Bin, next.Protected = "", false
+	}
+	if err := writeConfig(dir, next); err != nil {
+		return err
+	}
+	if err := ensureGitignore(dir); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "initialized %s\n", base)
 	return nil
 }
 
