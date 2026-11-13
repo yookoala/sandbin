@@ -590,6 +590,11 @@ curl -X PUT  -H "X-API-Key: your-key" -d '&lt;h1&gt;Hello&lt;/h1&gt;' https://th
 open https://this.host/abc1234/</pre>
 <p>Bins are private in the ordinary way: the root lists nothing, so a bin is reachable only
 through its URL, and a bin can demand its own password on top.</p>
+<h2>Give the skill to your agent</h2>
+<p>The <code>sandbin-preview</code> skill teaches an agent to set up <code>sandbin-client</code> in a
+directory and upload files or whole folders for preview. Install it into a project directory:</p>
+<pre>mkdir -p .opencode/skills/sandbin-preview
+curl -fsSL https://this.host/skills/sandbin-preview/SKILL.md -o .opencode/skills/sandbin-preview/SKILL.md</pre>
 `
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	io.WriteString(w, page)

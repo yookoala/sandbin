@@ -152,7 +152,11 @@ func TestFrontPageAtRoot(t *testing.T) {
 		t.Errorf("GET / Content-Type = %q, want %q", got, "text/html; charset=utf-8")
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"<title>Sandbin</title>", "<h1>Sandbin</h1>", "POST /", "&lt;h1&gt;Hello&lt;/h1&gt;"} {
+	for _, want := range []string{"<title>Sandbin</title>", "<h1>Sandbin</h1>", "POST /", "&lt;h1&gt;Hello&lt;/h1&gt;",
+		"<h2>Give the skill to your agent</h2>",
+		"mkdir -p .opencode/skills/sandbin-preview",
+		"curl -fsSL https://this.host/skills/sandbin-preview/SKILL.md -o .opencode/skills/sandbin-preview/SKILL.md",
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("front page missing %q in:\n%s", want, body)
 		}
