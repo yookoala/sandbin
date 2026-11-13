@@ -42,7 +42,10 @@ see Trusted proxies) optionally name the proxies the server believes. The server
 key is configured, a trusted proxy value cannot be read, or another serve already answers on its
 control socket.
 
-`GET /` answers a small branded front page that says what the service is. Creating a bin stays
+`GET /` answers a small branded front page that says what the service is; its example commands
+echo the address your request arrived at (the `Host`, or `X-Forwarded-Host` and
+`X-Forwarded-Proto: https` from a proxy on a trusted address — the same trust rule as blocked
+addresses use), falling back to a `this.host` placeholder for anything odd. Creating a bin stays
 the key-checked `POST /`, and every other method on `/` still answers `405 method not allowed`.
 A `POST /verify-key` answers `key ok` or `403 invalid API key` for the key it is given, charges
 a failure exactly like `POST /` does, and creates nothing; `sandbin-client init` uses it to

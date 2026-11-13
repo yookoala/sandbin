@@ -10,8 +10,10 @@ import (
 	"html"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -55,7 +57,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case http.MethodPost:
 			s.createBin(w, r)
 		case http.MethodGet:
-			renderFrontPage(w)
+			s.renderFrontPage(w, r)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -564,10 +566,14 @@ func (s *server) binAuthorized(w http.ResponseWriter, r *http.Request, bin Bin) 
 	return false
 }
 
-// renderFrontPage writes the branded page the root answers with on GET. It is static on
-// purpose: it says what the service is and how bins work, and nothing about any bin,
-// address or key, so it holds no truth a visitor could abuse and needs no validation.
-func renderFrontPage(w http.ResponseWriter) {
+// frontHostRE bounds any host the page may echo: a plain hostname, a bracketed IPv6 or
+// either with a port — nothing that could turn a snippet into other shell text.
+var frontHostRE = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9.\-]*|\[[0-9A-Fa-f:.]+\])(:[0-9]+)?$`)
+
+// renderFrontPage writes the branded page the root answers with on GET. It says what the
+// service is and how bins work, and nothing about any bin, address or key; only the base
+// URL of its examples is dynamic — see frontBase.
+func (s *server) renderFrontPage(w http.ResponseWriter, r *http.Request) {
 	const page = `<!doctype html>
 <meta charset="utf-8">
 <title>Sandbin</title>
@@ -597,7 +603,37 @@ directory and upload files or whole folders for preview. Install it into a proje
 curl -fsSL https://this.host/skills/sandbin-preview/SKILL.md -o .opencode/skills/sandbin-preview/SKILL.md</pre>
 `
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	io.WriteString(w, page)
+	io.WriteString(w, strings.ReplaceAll(page, "https://this.host", s.frontBase(r)))
+}
+
+// frontBase is the example prefix implied by the visitor's own request: the Host they
+// reached — or the X-Forwarded-Host of a proxy the server already trusts, same socket
+// rule as X-Forwarded-For — and https only for a TLS socket or a trusted proxy saying
+// X-Forwarded-Proto: https, since a proxy hop to this server is plain HTTP. A Host
+// header is attacker-supplied text landing in a snippet meant to be pasted into a
+// shell, so it must pass frontHostRE whole; anything odd falls back to the placeholder.
+func (s *server) frontBase(r *http.Request) string {
+	socket, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		socket = r.RemoteAddr
+	}
+	trusted := isLocalAddr(socket) || s.trustedProxies.containsHost(socket)
+
+	host := r.Host
+	if trusted {
+		if xfh := r.Header.Get("X-Forwarded-Host"); xfh != "" {
+			entries := strings.Split(xfh, ",")
+			// The rightmost entry is the nearest proxy's, as in clientIP.
+			host = strings.TrimSpace(entries[len(entries)-1])
+		}
+	}
+	if !frontHostRE.MatchString(host) {
+		return "https://this.host"
+	}
+	if r.TLS != nil || (trusted && r.Header.Get("X-Forwarded-Proto") == "https") {
+		return "https://" + host
+	}
+	return "http://" + host
 }
 
 // renderListing writes the directory listing the bin base answers with when the bin holds no

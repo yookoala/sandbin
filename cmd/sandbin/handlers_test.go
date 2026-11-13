@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -152,10 +153,12 @@ func TestFrontPageAtRoot(t *testing.T) {
 		t.Errorf("GET / Content-Type = %q, want %q", got, "text/html; charset=utf-8")
 	}
 	body := rec.Body.String()
+	// The request is a plain loopback GET with Host example.com, so its own address is
+	// what the examples echo.
 	for _, want := range []string{"<title>Sandbin</title>", "<h1>Sandbin</h1>", "POST /", "&lt;h1&gt;Hello&lt;/h1&gt;",
 		"<h2>Give the skill to your agent</h2>",
 		"mkdir -p .opencode/skills/sandbin-preview",
-		"curl -fsSL https://this.host/skills/sandbin-preview/SKILL.md -o .opencode/skills/sandbin-preview/SKILL.md",
+		"curl -fsSL http://example.com/skills/sandbin-preview/SKILL.md -o .opencode/skills/sandbin-preview/SKILL.md",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("front page missing %q in:\n%s", want, body)
@@ -173,6 +176,58 @@ func TestFrontPageAtRoot(t *testing.T) {
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s / = %d, want %d", method, rec.Code, http.StatusMethodNotAllowed)
 		}
+	}
+}
+
+func TestFrontPageEchoesTheVisitorsAddress(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	cases := []struct {
+		name       string
+		host       string
+		forwarded  string // X-Forwarded-Host
+		proto      string // X-Forwarded-Proto
+		remoteAddr string
+		tls        bool
+		want       string
+	}{
+		{"plain loopback", "example.com", "", "", "127.0.0.1:1234", false, "http://example.com"},
+		{"tls socket", "bin.example.org", "", "", "127.0.0.1:1234", true, "https://bin.example.org"},
+		{"loopback proxy https", "localhost:8080", "behind.example.org", "https", "127.0.0.1:1234", false, "https://behind.example.org"},
+		{"proxy proto only", "bin.example.org", "", "https", "127.0.0.1:1234", false, "https://bin.example.org"},
+		{"port survives", "bin.example.org:8443", "", "", "127.0.0.1:1234", false, "http://bin.example.org:8443"},
+		{"ipv6 socket", "[::1]:8080", "", "", "[::1]:5", false, "http://[::1]:8080"},
+		// Headers from a socket no proxy is trusted to be cannot dress up the page.
+		{"untrusted socket ignores headers", "direct.example.org", "evil.example.org", "https", "203.0.113.7:9", false, "http://direct.example.org"},
+		{"hostile host falls back", "bad host<!<script>", "", "", "127.0.0.1:1234", false, "https://this.host"},
+		{"host with a path falls back", "evil.example.org/x", "", "", "127.0.0.1:1234", false, "https://this.host"},
+		{"empty host falls back", "", "", "", "127.0.0.1:1234", false, "https://this.host"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Host = c.host
+			req.RemoteAddr = c.remoteAddr
+			if c.tls {
+				req.TLS = &tls.ConnectionState{}
+			}
+			if c.forwarded != "" {
+				req.Header.Set("X-Forwarded-Host", c.forwarded)
+			}
+			if c.proto != "" {
+				req.Header.Set("X-Forwarded-Proto", c.proto)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET / = %d, want %d", rec.Code, http.StatusOK)
+			}
+			body := rec.Body.String()
+			for _, want := range []string{c.want + "/skills/sandbin-preview/SKILL.md", c.want + "/abc1234/index.html"} {
+				if !strings.Contains(body, want) {
+					t.Errorf("front page missing %q in:\n%s", want, body)
+				}
+			}
+		})
 	}
 }
 
