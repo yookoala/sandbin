@@ -1,0 +1,16 @@
+# Decisions: serving the sandbin-preview skill
+
+Plan: `docs/plans/0012-serve-skill.md`. Settled points; do not revisit during implementation.
+
+| Point | Decision |
+|---|---|
+| Canonical file | Exactly one copy: repo-root `skills/sandbin-preview/SKILL.md`, hand-written. The server embeds that same file — no duplicated copy anywhere. |
+| Embedding | `go:embed` cannot reach above a package directory and rejects symlinks outright (proven by experiment: `cannot embed irregular file`). So a module-root file `skill.go` (`package sandbin`) carries `//go:embed skills/sandbin-preview/SKILL.md` → `var PreviewSkillMD string`; `cmd/sandbin` imports `github.com/yookoala/sandbin`. No new dependency — `embed` is stdlib. |
+| Containerfile | The build stage gains exactly two COPY lines (`COPY skill.go ./`, `COPY skills ./skills`) before the build, because the build now needs the root package. Nothing else changes. |
+| gofmt gate | CI's `gofmt -l cmd` misses the new root `skill.go`; the CI step becomes `gofmt -l .`. Local sweeps match. |
+| Route | `GET /skills/sandbin-preview/SKILL.md` only — 200, `Content-Type: text/markdown; charset=utf-8`, body = the embedded file byte-for-byte. Every other method 405. Routed as a static branch beside `/healthz` and `/verify-key`, before `splitBinPath`; "skills" is not a hex hash so it can never name or shadow a bin, same reasoning as the other two. Nothing under `/skills/` is charged — a GET never charges and a 405 is answered before any auth. Other paths under `/skills/` fall through to the normal unknown-bin 404. |
+| Skill id | `sandbin-preview` — the directory name and the URL tail mirror the OpenCode path `.opencode/skills/sandbin-preview/SKILL.md` (verified against opencode.ai/docs/skills: directory-form `SKILL.md`, frontmatter `name` + `description`, description required for the model to discover the skill). |
+| SKILL.md shape | Frontmatter `name: Sandbin preview` + a one-line `description`; body sections: when to use; first-time setup in this directory (`sandbin-client init` non-interactive flags, `.sandbin.yaml`, precedence); uploading files (reused-bin behaviour, result lines); uploading a folder (`--archive`, where files land, the human-facing URL); stdin with `--name`; `--no-extract`; `--title`/`--description`/`--describe`; the caps (1 MiB body/entry, 1000 entries, 32 MiB unpacked) with the refusal wordings an agent will see. Around 60-80 lines, commands copy-pasteable as written. No URL of any real server baked into it. |
+| Install snippet | One canonical snippet shape (host is the only thing to adapt): `mkdir -p .opencode/skills/sandbin-preview` then `curl -fsSL <server>/skills/sandbin-preview/SKILL.md -o .opencode/skills/sandbin-preview/SKILL.md`. Front page uses `https://this.host` like its existing examples; README uses `http://localhost:8080` like its existing examples. Global install (`~/.config/opencode/skills`) mentioned in README only, one line. |
+| Front page | Gains one short paragraph and that snippet in a `<pre>` block. Page stays static: it still names no bin, address or key beyond the `this.host` placeholder convention already in use. |
+| Freshness | A server test compares the served body byte-for-byte against the repo file read from disk (`../../skills/sandbin-preview/SKILL.md`), so the embed can never silently serve a stale fork of the skill. |
