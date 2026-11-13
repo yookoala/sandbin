@@ -1,23 +1,41 @@
 ---
 name: Sandbin preview
-description: Upload files or whole folders to a sandbin server so a human can open preview URLs; use when asked to publish or preview HTML pages, ANSI output or prototype files.
+description: Upload files or whole folders to the sandbin server at {{.Base}} so a human can open preview URLs; use when asked to publish or preview HTML pages, ANSI output or prototype files.
 ---
 
 # Sandbin preview
 
-`sandbin-client` uploads files to a sandbin server and prints preview URLs. Replace
-`https://sandbin.example` and `your-key` with the real server URL and key; `/<bin>/` is the created bin.
+`"$SKILL/sandbin-client"` uploads files to the sandbin server at {{.Base}} and prints preview
+URLs. `$SKILL` is this skill's directory — the folder holding this SKILL.md, which OpenCode
+names when it loads the skill. Start every shell command for this skill by setting
+`SKILL=<that directory>`. Replace `your-key` with the real API key; `/<bin>/` is a created bin.
 
 ## When to use this skill
 
 You wrote HTML pages, ANSI output or prototype files and a human needs to open them in a browser.
 
+## The client binary lives in this skill's directory
+
+`sandbin-client` belongs next to this file. If it is missing, build it there (needs Go; an
+older Go fetches the module's toolchain itself):
+
+```sh
+GOBIN="$SKILL" go install github.com/yookoala/sandbin/cmd/sandbin-client@latest
+```
+
+Always invoke `"$SKILL/sandbin-client"` by that full path — never a bare `sandbin-client`
+found on PATH.
+
 ## First-time setup in this directory
 
 ```sh
-sandbin-client init --url https://sandbin.example --api-key your-key
-# initialized https://sandbin.example
+"$SKILL/sandbin-client" init --url {{.Base}} --api-key your-key
+# initialized {{.Base}}
 ```
+
+Get `your-key` from the human; `--api-key` may be left out at an interactive terminal, where `init`
+prompts instead, but a non-terminal session must pass it or set `SANDBIN_API_KEY` — otherwise the run
+stops with `no API key: pass --api-key, set SANDBIN_API_KEY or answer the init prompt` and writes nothing.
 
 `init` checks the key against the server first: a wrong key answers `server rejected this API key` and
 writes nothing. It saves `sandbin_url`, `api_key`, `bin` and `protected` in a mode-`0600` `.sandbin.yaml`
@@ -27,10 +45,10 @@ the `.gitignore` covers. Resolution order is flag > environment > file: `--url` 
 ## Uploading files
 
 ```sh
-sandbin-client page.html style.css
-# created https://sandbin.example/<bin>/page.html
-# created https://sandbin.example/<bin>/style.css
-# https://sandbin.example/<bin>/
+"$SKILL/sandbin-client" page.html style.css
+# created {{.Base}}/<bin>/page.html
+# created {{.Base}}/<bin>/style.css
+# {{.Base}}/<bin>/
 ```
 
 New paths answer `created`, replaced ones `updated`, and the bin base URL comes last — hand that line to a
@@ -39,22 +57,22 @@ human. Later runs here reuse the bin in `.sandbin.yaml`; `--new` forces a fresh 
 ## Uploading a whole folder
 
 ```sh
-sandbin-client --archive hello
-# extracted 2 files into https://sandbin.example/<bin>/hello.tar.gz
-# https://sandbin.example/<bin>/
+"$SKILL/sandbin-client" --archive hello
+# extracted 2 files into {{.Base}}/<bin>/hello.tar.gz
+# {{.Base}}/<bin>/
 ```
 
 The folder uploads as one tar.gz the server unpacks: `hello/index.html` lands as `/<bin>/hello/index.html`, an
 ordinary listed bin file from then on. The `extracted` line names the upload, not the landed files. Hand the human
-`https://sandbin.example/<bin>/` (the bin's listing) or a file such as `https://sandbin.example/<bin>/hello/index.html`; the bin base serves a page only when an `index.html` sits at its root.
+`{{.Base}}/<bin>/` (the bin's listing) or a file such as `{{.Base}}/<bin>/hello/index.html`; the bin base serves a page only when an `index.html` sits at its root.
 
 ## Piping stdin, keeping an archive raw
 
 ```sh
-make 2>&1 | sandbin-client --name build.ansi
-# created https://sandbin.example/<bin>/build.ansi
-sandbin-client --no-extract --archive hello
-# created https://sandbin.example/<bin>/hello.tar.gz
+make 2>&1 | "$SKILL/sandbin-client" --name build.ansi
+# created {{.Base}}/<bin>/build.ansi
+"$SKILL/sandbin-client" --no-extract --archive hello
+# created {{.Base}}/<bin>/hello.tar.gz
 ```
 
 Piped stdin needs `--name` to say what it uploads; a `.ansi` file comes back rendered as HTML. `--no-extract` stores archive-shaped bodies as one file instead of unpacking them.
@@ -62,10 +80,10 @@ Piped stdin needs `--name` to say what it uploads; a `.ansi` file comes back ren
 ## Saying what the bin holds
 
 ```sh
-sandbin-client --title 'Button grid' --description 'A grid of pressable buttons'
+"$SKILL/sandbin-client" --title 'Button grid' --description 'A grid of pressable buttons'
 # updated /<bin>/
-# https://sandbin.example/<bin>/
-sandbin-client --describe
+# {{.Base}}/<bin>/
+"$SKILL/sandbin-client" --describe
 # title: Button grid
 # description: A grid of pressable buttons
 ```

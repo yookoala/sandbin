@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/yookoala/sandbin"
@@ -93,15 +94,21 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		// Both files are text/templates whose {{.Base}} is filled with the address this
+		// request arrived at, so a downloaded skill or installer names exactly the
+		// server the visitor reached, behind proxies included.
+		tmpl, contentType := skillTemplate, "text/markdown; charset=utf-8"
 		if r.URL.Path == "/skills/sandbin-preview/install.sh" {
-			// The installer fetches SKILL.md from BASE, so it must carry the address
-			// this very request arrived at — same detection the front page uses.
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			io.WriteString(w, strings.ReplaceAll(sandbin.InstallScript, "__SANDBIN_BASE__", s.frontBase(r)))
+			tmpl, contentType = installTemplate, "text/plain; charset=utf-8"
+		}
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, skillData{Base: s.frontBase(r)}); err != nil {
+			log.Printf("render %s: %v", r.URL.Path, err)
+			http.Error(w, "render failed", http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-		io.WriteString(w, sandbin.PreviewSkillMD)
+		w.Header().Set("Content-Type", contentType)
+		w.Write(buf.Bytes())
 		return
 	}
 
@@ -572,6 +579,16 @@ func (s *server) binAuthorized(w http.ResponseWriter, r *http.Request, bin Bin) 
 	http.Error(w, "bin password required", http.StatusUnauthorized)
 	return false
 }
+
+// The embedded skill and installer are text/templates; parsing them once at startup
+// means a broken template stops the whole server instead of one request.
+var (
+	skillTemplate   = template.Must(template.New("skill").Parse(sandbin.PreviewSkillMD))
+	installTemplate = template.Must(template.New("install").Parse(sandbin.InstallScript))
+)
+
+// skillData is what both templates receive: the one address the request arrived at.
+type skillData struct{ Base string }
 
 // frontHostRE bounds any host the page may echo: a plain hostname, a bracketed IPv6 or
 // either with a port — nothing that could turn a snippet into other shell text.

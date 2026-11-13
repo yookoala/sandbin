@@ -14,9 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"text/template"
 	"time"
-
-	"github.com/yookoala/sandbin"
 )
 
 func newTestServer(t *testing.T, apiKey string) *server {
@@ -237,8 +236,8 @@ func TestFrontPageEchoesTheVisitorsAddress(t *testing.T) {
 func TestInstallScriptRoute(t *testing.T) {
 	h := newTestServer(t, "test-key")
 
-	// GET serves the template with the visitor's own base embedded; the raw
-	// placeholder token must not survive into the response.
+	// GET serves the script with the visitor's own base embedded; no template token
+	// may survive into the response.
 	req := httptest.NewRequest(http.MethodGet, "/skills/sandbin-preview/install.sh", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -249,8 +248,8 @@ func TestInstallScriptRoute(t *testing.T) {
 		t.Errorf("install.sh Content-Type = %q, want %q", got, "text/plain; charset=utf-8")
 	}
 	body := rec.Body.String()
-	if strings.Contains(body, "__SANDBIN_BASE__") {
-		t.Errorf("install.sh still carries the placeholder token:\n%s", body)
+	if strings.Contains(body, "{{") || strings.Contains(body, "__SANDBIN_BASE__") {
+		t.Errorf("install.sh still carries a template token:\n%s", body)
 	}
 	if !strings.Contains(body, `BASE="http://example.com"`) {
 		t.Errorf("install.sh missing the visitor's base in:\n%s", body)
@@ -350,8 +349,22 @@ func TestInstallScriptEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default install missing %s: %v (output:\n%s)", wantFile, err, out)
 	}
-	if string(got) != sandbin.PreviewSkillMD {
+	// The installed skill must match what this very server serves — rendered with
+	// this server's address, token-free.
+	served, err := http.Get(ts.URL + "/skills/sandbin-preview/SKILL.md")
+	if err != nil {
+		t.Fatalf("fetch served skill: %v", err)
+	}
+	defer served.Body.Close()
+	rawSkill, err := io.ReadAll(served.Body)
+	if err != nil {
+		t.Fatalf("read served skill: %v", err)
+	}
+	if string(got) != string(rawSkill) {
 		t.Errorf("installed SKILL.md differs from the served one")
+	}
+	if strings.Contains(string(got), "{{") {
+		t.Errorf("installed SKILL.md still carries a template token")
 	}
 
 	home = t.TempDir()
@@ -1749,8 +1762,9 @@ func TestVerifyKeyDoesNotShadowBins(t *testing.T) {
 }
 
 // TestSkillRouteServesRepoSkillFile is the freshness guarantee: the skill GET answers the
-// repo's skills/sandbin-preview/SKILL.md byte for byte, so the embed can never serve a
-// stale fork of it. No key is sent: reading the skill needs none.
+// repo's skills/sandbin-preview/SKILL.md rendered through the same text/template the
+// server uses, so the embed can never serve a stale fork of it. No key is sent:
+// reading the skill needs none.
 func TestSkillRouteServesRepoSkillFile(t *testing.T) {
 	h := newTestServer(t, "test-key")
 
@@ -1765,11 +1779,81 @@ func TestSkillRouteServesRepoSkillFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read repo skill file: %v", err)
 	}
-	if got := rec.Body.Bytes(); !bytes.Equal(got, want) {
-		t.Errorf("served body = %d bytes, repo file = %d bytes; want them byte-identical", len(got), len(want))
+	// The repo file is a template; freshness compares the render with the base this
+	// request arrived at (httptest defaults: Host example.com on loopback).
+	tmpl, err := template.New("skill").Parse(string(want))
+	if err != nil {
+		t.Fatalf("repo skill file does not parse as a template: %v", err)
+	}
+	if !bytes.Contains(want, []byte("{{.Base}}")) {
+		t.Errorf("repo skill file carries no {{.Base}} token to fill")
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, map[string]string{"Base": "http://example.com"}); err != nil {
+		t.Fatalf("render repo skill file: %v", err)
+	}
+	if got := rec.Body.Bytes(); !bytes.Equal(got, buf.Bytes()) {
+		t.Errorf("served body = %d bytes, rendered repo file = %d bytes; want them byte-identical", len(got), buf.Len())
 	}
 	if !bytes.Contains(rec.Body.Bytes(), []byte("description:")) {
 		t.Errorf("served skill carries no frontmatter description:\n%s", rec.Body.String())
+	}
+}
+
+// TestSkillRouteFillsTheVisitorsHost is the point of the template: every address in
+// the served skill is the one the request arrived at, no token survives, and the old
+// stand-in host is gone.
+func TestSkillRouteFillsTheVisitorsHost(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	cases := []struct {
+		name       string
+		host       string
+		forwarded  string
+		proto      string
+		remoteAddr string
+		tls        bool
+		want       string
+	}{
+		{"plain loopback", "skill.example.net", "", "", "127.0.0.1:1234", false, "http://skill.example.net"},
+		{"tls socket", "bin.example.org", "", "", "127.0.0.1:1234", true, "https://bin.example.org"},
+		{"loopback proxy https", "localhost:8080", "behind.example.org", "https", "127.0.0.1:1234", false, "https://behind.example.org"},
+		{"hostile forwarded host falls back", "direct.example.org", "evil.example.org/x", "https", "127.0.0.1:1234", false, "https://this.host"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/skills/sandbin-preview/SKILL.md", nil)
+			req.Host = c.host
+			req.RemoteAddr = c.remoteAddr
+			if c.tls {
+				req.TLS = &tls.ConnectionState{}
+			}
+			if c.forwarded != "" {
+				req.Header.Set("X-Forwarded-Host", c.forwarded)
+			}
+			if c.proto != "" {
+				req.Header.Set("X-Forwarded-Proto", c.proto)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET SKILL.md = %d, want %d", rec.Code, http.StatusOK)
+			}
+			body := rec.Body.String()
+			for _, want := range []string{
+				"init --url " + c.want,
+				"description: Upload files or whole folders to the sandbin server at " + c.want,
+				"`" + c.want + "/<bin>/`",
+			} {
+				if !strings.Contains(body, want) {
+					t.Errorf("served skill missing %q in:\n%s", want, body)
+				}
+			}
+			for _, absent := range []string{"{{", "sandbin.example"} {
+				if strings.Contains(body, absent) {
+					t.Errorf("served skill still carries %q:\n%s", absent, body)
+				}
+			}
+		})
 	}
 }
 

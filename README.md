@@ -50,7 +50,7 @@ the key-checked `POST /`, and every other method on `/` still answers `405 metho
 A `POST /verify-key` answers `key ok` or `403 invalid API key` for the key it is given, charges
 a failure exactly like `POST /` does, and creates nothing; `sandbin-client init` uses it to
 check a key before saving it (see Point sandbin-client at a server). `GET /skills/sandbin-preview/SKILL.md`
-answers the agent skill file as `200` `text/markdown`, and `GET /skills/sandbin-preview/install.sh`
+answers the agent skill rendered with the address the request arrived at as `200` `text/markdown`, and `GET /skills/sandbin-preview/install.sh`
 answers the one-line installer as `200` `text/plain` with its download address filled in to the
 one the request arrived at; both need no key and charge nothing, and every other method on those
 paths answers `405` (see Give the skill to your agent).
@@ -351,10 +351,19 @@ fallback: run `init` once in a project that has one and delete the old file.
 
 The repo ships `skills/sandbin-preview/SKILL.md`: an agent skill that teaches an agent to run
 this client — first-time `init` in a project directory, uploading files, uploading a whole
-folder with `--archive`, and what the caps refuse. The server also serves a small installer at
-`GET /skills/sandbin-preview/install.sh` with the server's own address filled in, so one command
-installs the skill into `$HOME/.agents/skills/sandbin-preview` — a folder OpenCode picks up in
-every project without any configuration:
+folder with `--archive`, and what the caps refuse. The skill keeps its own client binary: it
+tells the agent to build it into the skill folder with
+`GOBIN="$SKILL" go install github.com/yookoala/sandbin/cmd/sandbin-client@latest` and to always
+run `"$SKILL/sandbin-client"` from there.
+
+The served skill is a text/template: `GET /skills/sandbin-preview/SKILL.md` renders every
+address in it to the one the request arrived at (the same detection the front page uses), so a
+downloaded skill names exactly your server, frontmatter description included. The copy in git
+carries the raw `{{.Base}}` tokens — install from a running server, not from a checkout. The
+server also serves a small installer at `GET /skills/sandbin-preview/install.sh` with the
+server's own address filled in, so one command installs the skill into
+`$HOME/.agents/skills/sandbin-preview` — a folder OpenCode picks up in every project without any
+configuration:
 
 ```sh
 curl -fsSL http://localhost:8080/skills/sandbin-preview/install.sh | bash
