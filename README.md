@@ -50,8 +50,10 @@ the key-checked `POST /`, and every other method on `/` still answers `405 metho
 A `POST /verify-key` answers `key ok` or `403 invalid API key` for the key it is given, charges
 a failure exactly like `POST /` does, and creates nothing; `sandbin-client init` uses it to
 check a key before saving it (see Point sandbin-client at a server). `GET /skills/sandbin-preview/SKILL.md`
-answers the agent skill file as `200` `text/markdown`, needs no key and charges nothing, and every
-other method on that path answers `405` (see Give the skill to your agent).
+answers the agent skill file as `200` `text/markdown`, and `GET /skills/sandbin-preview/install.sh`
+answers the one-line installer as `200` `text/plain` with its download address filled in to the
+one the request arrived at; both need no key and charge nothing, and every other method on those
+paths answers `405` (see Give the skill to your agent).
 
 Create a bin, then PUT files under it. `$BIN` already ends in `/`, so write `${BIN}name` and
 not `$BIN/name`, which asks for a `//` path the server rejects:
@@ -349,17 +351,24 @@ fallback: run `init` once in a project that has one and delete the old file.
 
 The repo ships `skills/sandbin-preview/SKILL.md`: an agent skill that teaches an agent to run
 this client — first-time `init` in a project directory, uploading files, uploading a whole
-folder with `--archive`, and what the caps refuse. The server answers that exact file at
-`GET /skills/sandbin-preview/SKILL.md`, so installing it into a project is two commands, run
-in the project directory:
+folder with `--archive`, and what the caps refuse. The server also serves a small installer at
+`GET /skills/sandbin-preview/install.sh` with the server's own address filled in, so one command
+installs the skill into `$HOME/.agents/skills/sandbin-preview` — a folder OpenCode picks up in
+every project without any configuration:
 
 ```sh
-mkdir -p .opencode/skills/sandbin-preview
-curl -fsSL http://localhost:8080/skills/sandbin-preview/SKILL.md -o .opencode/skills/sandbin-preview/SKILL.md
+curl -fsSL http://localhost:8080/skills/sandbin-preview/install.sh | bash
 ```
 
-A global install, shared by every project, goes in `~/.config/opencode/skills/sandbin-preview`
-instead.
+The installer takes an optional `-d` or `--dest` to pick the skills folder instead, passed
+through the pipe with `bash -s --`; for a single project that means:
+
+```sh
+curl -fsSL http://localhost:8080/skills/sandbin-preview/install.sh | bash -s -- --dest .opencode/skills
+```
+
+and for an agent with its own folder, for example Claude, `--dest "$HOME/.claude/skills"`.
+`--help` prints the usage; anything else stops with `unknown argument` and installs nothing.
 
 ## API key lockout
 

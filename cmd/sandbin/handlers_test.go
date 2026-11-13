@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yookoala/sandbin"
 )
 
 func newTestServer(t *testing.T, apiKey string) *server {
@@ -157,8 +160,8 @@ func TestFrontPageAtRoot(t *testing.T) {
 	// what the examples echo.
 	for _, want := range []string{"<title>Sandbin</title>", "<h1>Sandbin</h1>", "POST /", "&lt;h1&gt;Hello&lt;/h1&gt;",
 		"<h2>Give the skill to your agent</h2>",
-		"mkdir -p .opencode/skills/sandbin-preview",
-		"curl -fsSL http://example.com/skills/sandbin-preview/SKILL.md -o .opencode/skills/sandbin-preview/SKILL.md",
+		"curl -fsSL http://example.com/skills/sandbin-preview/install.sh | bash",
+		"--dest",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("front page missing %q in:\n%s", want, body)
@@ -222,12 +225,166 @@ func TestFrontPageEchoesTheVisitorsAddress(t *testing.T) {
 				t.Fatalf("GET / = %d, want %d", rec.Code, http.StatusOK)
 			}
 			body := rec.Body.String()
-			for _, want := range []string{c.want + "/skills/sandbin-preview/SKILL.md", c.want + "/abc1234/index.html"} {
+			for _, want := range []string{c.want + "/skills/sandbin-preview/install.sh", c.want + "/abc1234/index.html"} {
 				if !strings.Contains(body, want) {
 					t.Errorf("front page missing %q in:\n%s", want, body)
 				}
 			}
 		})
+	}
+}
+
+func TestInstallScriptRoute(t *testing.T) {
+	h := newTestServer(t, "test-key")
+
+	// GET serves the template with the visitor's own base embedded; the raw
+	// placeholder token must not survive into the response.
+	req := httptest.NewRequest(http.MethodGet, "/skills/sandbin-preview/install.sh", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET install.sh = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Errorf("install.sh Content-Type = %q, want %q", got, "text/plain; charset=utf-8")
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "__SANDBIN_BASE__") {
+		t.Errorf("install.sh still carries the placeholder token:\n%s", body)
+	}
+	if !strings.Contains(body, `BASE="http://example.com"`) {
+		t.Errorf("install.sh missing the visitor's base in:\n%s", body)
+	}
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodHead, http.MethodOptions} {
+		req := httptest.NewRequest(method, "/skills/sandbin-preview/install.sh", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s install.sh = %d, want %d", method, rec.Code, http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+func TestInstallScriptBaseFollowsTheVisitor(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	cases := []struct {
+		name       string
+		host       string
+		forwarded  string
+		proto      string
+		remoteAddr string
+		tls        bool
+		want       string
+	}{
+		{"tls socket", "bin.example.org", "", "", "127.0.0.1:1234", true, "https://bin.example.org"},
+		{"loopback proxy", "localhost:8080", "behind.example.org", "https", "127.0.0.1:1234", false, "https://behind.example.org"},
+		{"hostile forwarded host falls back", "direct.example.org", "evil.example.org/x", "https", "127.0.0.1:1234", false, "https://this.host"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/skills/sandbin-preview/install.sh", nil)
+			req.Host = c.host
+			req.RemoteAddr = c.remoteAddr
+			if c.tls {
+				req.TLS = &tls.ConnectionState{}
+			}
+			if c.forwarded != "" {
+				req.Header.Set("X-Forwarded-Host", c.forwarded)
+			}
+			if c.proto != "" {
+				req.Header.Set("X-Forwarded-Proto", c.proto)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET install.sh = %d, want %d", rec.Code, http.StatusOK)
+			}
+			if want := `BASE="` + c.want + `"`; !strings.Contains(rec.Body.String(), want) {
+				t.Errorf("install.sh missing %q in:\n%s", want, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestInstallScriptEndToEnd pipes the served script through bash exactly the way the
+// documented one-liner does, against a real listening server. It stands down when the
+// sandbox has no bash or curl to pipe with.
+func TestInstallScriptEndToEnd(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash to pipe the installer into")
+	}
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("no curl to serve as the one-liner does")
+	}
+	h := newTestServer(t, "test-key")
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	script, err := http.Get(ts.URL + "/skills/sandbin-preview/install.sh")
+	if err != nil {
+		t.Fatalf("fetch installer: %v", err)
+	}
+	defer script.Body.Close()
+	raw, err := io.ReadAll(script.Body)
+	if err != nil {
+		t.Fatalf("read installer: %v", err)
+	}
+
+	// pipeInstaller runs the fetched script exactly as curl | bash -s -- does.
+	pipeInstaller := func(home string, args ...string) (string, error) {
+		cmd := exec.Command(bash, append([]string{"-s", "--"}, args...)...)
+		cmd.Env = append(os.Environ(), "HOME="+home)
+		cmd.Stdin = bytes.NewReader(raw)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+
+	home := t.TempDir()
+	out, err := pipeInstaller(home)
+	if err != nil {
+		t.Fatalf("piped installer failed: %v\n%s", err, out)
+	}
+	wantFile := filepath.Join(home, ".agents", "skills", "sandbin-preview", "SKILL.md")
+	got, err := os.ReadFile(wantFile)
+	if err != nil {
+		t.Fatalf("default install missing %s: %v (output:\n%s)", wantFile, err, out)
+	}
+	if string(got) != sandbin.PreviewSkillMD {
+		t.Errorf("installed SKILL.md differs from the served one")
+	}
+
+	home = t.TempDir()
+	out, err = pipeInstaller(home, "--dest", filepath.Join(home, "agent-skills"))
+	if err != nil {
+		t.Fatalf("--dest install failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(home, "agent-skills", "sandbin-preview", "SKILL.md")); err != nil {
+		t.Errorf("--dest install missing: %v (output:\n%s)", err, out)
+	}
+
+	home = t.TempDir()
+	out, err = pipeInstaller(home, "--help")
+	if err != nil {
+		t.Fatalf("--help failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "usage:") {
+		t.Errorf("--help output missing usage: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".agents")); !os.IsNotExist(err) {
+		t.Errorf("--help installed something anyway")
+	}
+
+	home = t.TempDir()
+	out, err = pipeInstaller(home, "--nonsense")
+	if err == nil {
+		t.Errorf("unknown argument accepted (output:\n%s)", out)
+	}
+	if !strings.Contains(out, "unknown argument") {
+		t.Errorf("unknown argument refusal missing: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".agents")); !os.IsNotExist(err) {
+		t.Errorf("unknown-argument run installed something anyway")
 	}
 }
 

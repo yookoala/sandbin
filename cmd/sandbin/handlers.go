@@ -88,9 +88,16 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// "skills" is not a hex hash, so this exact path can never name a bin, same reasoning as
 	// the two above. Only GET answers; a GET never charges and a 405 answers before any key.
-	if r.URL.Path == "/skills/sandbin-preview/SKILL.md" {
+	if r.URL.Path == "/skills/sandbin-preview/SKILL.md" || r.URL.Path == "/skills/sandbin-preview/install.sh" {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if r.URL.Path == "/skills/sandbin-preview/install.sh" {
+			// The installer fetches SKILL.md from BASE, so it must carry the address
+			// this very request arrived at — same detection the front page uses.
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			io.WriteString(w, strings.ReplaceAll(sandbin.InstallScript, "__SANDBIN_BASE__", s.frontBase(r)))
 			return
 		}
 		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
@@ -598,9 +605,10 @@ open https://this.host/abc1234/</pre>
 through its URL, and a bin can demand its own password on top.</p>
 <h2>Give the skill to your agent</h2>
 <p>The <code>sandbin-preview</code> skill teaches an agent to set up <code>sandbin-client</code> in a
-directory and upload files or whole folders for preview. Install it into a project directory:</p>
-<pre>mkdir -p .opencode/skills/sandbin-preview
-curl -fsSL https://this.host/skills/sandbin-preview/SKILL.md -o .opencode/skills/sandbin-preview/SKILL.md</pre>
+directory and upload files or whole folders for preview. Install it with one command:</p>
+<pre>curl -fsSL https://this.host/skills/sandbin-preview/install.sh | bash</pre>
+<p>That installs into <code>$HOME/.agents/skills/sandbin-preview</code>. For a single project
+instead, hand the installer a destination: <code>| bash -s -- --dest .opencode/skills</code>.</p>
 `
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	io.WriteString(w, strings.ReplaceAll(page, "https://this.host", s.frontBase(r)))
