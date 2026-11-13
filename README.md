@@ -378,6 +378,10 @@ curl -fsSL http://localhost:8080/skills/sandbin-preview/install.sh | bash -s -- 
 
 and for an agent with its own folder, for example Claude, `--dest "$HOME/.claude/skills"`.
 `--help` prints the usage; anything else stops with `unknown argument` and installs nothing.
+When the machine has Go, the installer also builds the client binary into the skill folder
+(`GOBIN` at the skill dir, `go install github.com/yookoala/sandbin/cmd/sandbin-client@latest`);
+without Go, or if that install fails, it says so, exits 0 anyway, and the skill builds the
+client on first use instead.
 
 ## API key lockout
 

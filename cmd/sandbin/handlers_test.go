@@ -330,19 +330,40 @@ func TestInstallScriptEndToEnd(t *testing.T) {
 		t.Fatalf("read installer: %v", err)
 	}
 
-	// pipeInstaller runs the fetched script exactly as curl | bash -s -- does.
-	pipeInstaller := func(home string, args ...string) (string, error) {
+	// The script runs against a controlled PATH so the go step is judged without
+	// spending a toolchain or a download: a bin dir holding only curl and mkdir
+	// stands for a machine without go, a stub go stands for one with it.
+	toolDir := t.TempDir()
+	for _, tool := range []string{"curl", "mkdir"} {
+		toolPath, err := exec.LookPath(tool)
+		if err != nil {
+			t.Fatalf("look up %s: %v", tool, err)
+		}
+		if err := os.Symlink(toolPath, filepath.Join(toolDir, tool)); err != nil {
+			t.Fatalf("stub %s: %v", tool, err)
+		}
+	}
+
+	// pipeWithPATH runs the fetched script exactly as curl | bash -s -- does, under
+	// a PATH of the caller's choosing.
+	pipeWithPATH := func(home, path string, args ...string) (string, error) {
 		cmd := exec.Command(bash, append([]string{"-s", "--"}, args...)...)
-		cmd.Env = append(os.Environ(), "HOME="+home)
+		cmd.Env = []string{"HOME=" + home, "PATH=" + path}
 		cmd.Stdin = bytes.NewReader(raw)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
+	}
+	pipeInstaller := func(home string, args ...string) (string, error) {
+		return pipeWithPATH(home, toolDir, args...)
 	}
 
 	home := t.TempDir()
 	out, err := pipeInstaller(home)
 	if err != nil {
 		t.Fatalf("piped installer failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "no go on PATH") {
+		t.Errorf("install without go did not say so (output:\n%s)", out)
 	}
 	wantFile := filepath.Join(home, ".agents", "skills", "sandbin-preview", "SKILL.md")
 	got, err := os.ReadFile(wantFile)
@@ -374,6 +395,50 @@ func TestInstallScriptEndToEnd(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, "agent-skills", "sandbin-preview", "SKILL.md")); err != nil {
 		t.Errorf("--dest install missing: %v (output:\n%s)", err, out)
+	}
+
+	// With go on PATH the installer must run the same contract the skill documents:
+	// GOBIN set to the skill folder and the module installed @latest. A succeeding
+	// and a failing stub prove both outcomes, and neither may sink the install.
+	goDir := t.TempDir()
+	goLog := filepath.Join(t.TempDir(), "go.calls")
+	goStub := []byte("#!/bin/sh\necho \"GOBIN=$GOBIN $*\" >>\"" + goLog + "\"\nexit 0\n")
+	if err := os.WriteFile(filepath.Join(goDir, "go"), goStub, 0o755); err != nil {
+		t.Fatalf("write go stub: %v", err)
+	}
+	goFailDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(goFailDir, "go"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write failing go stub: %v", err)
+	}
+
+	home = t.TempDir()
+	out, err = pipeWithPATH(home, goDir+string(os.PathListSeparator)+toolDir, "--dest", filepath.Join(home, "agent-skills"))
+	if err != nil {
+		t.Fatalf("install with a working go failed: %v\n%s", err, out)
+	}
+	calls, err := os.ReadFile(goLog)
+	if err != nil {
+		t.Fatalf("installer never called go (output:\n%s)", out)
+	}
+	wantCall := "GOBIN=" + filepath.Join(home, "agent-skills", "sandbin-preview") +
+		" install github.com/yookoala/sandbin/cmd/sandbin-client@latest"
+	if !strings.Contains(string(calls), wantCall) {
+		t.Errorf("go call = %q, want it to contain %q", calls, wantCall)
+	}
+	if !strings.Contains(out, "sandbin-client (go install)") {
+		t.Errorf("working go install not reported (output:\n%s)", out)
+	}
+
+	home = t.TempDir()
+	out, err = pipeWithPATH(home, goFailDir+string(os.PathListSeparator)+toolDir)
+	if err != nil {
+		t.Errorf("failing go install sank the installer: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "go install failed") {
+		t.Errorf("failing go install not reported (output:\n%s)", out)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".agents", "skills", "sandbin-preview", "SKILL.md")); err != nil {
+		t.Errorf("go failure lost the skill install: %v", err)
 	}
 
 	home = t.TempDir()

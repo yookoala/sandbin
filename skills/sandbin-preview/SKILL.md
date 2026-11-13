@@ -16,8 +16,8 @@ You wrote HTML pages, ANSI output or prototype files and a human needs to open t
 
 ## The client binary lives in this skill's directory
 
-`sandbin-client` belongs next to this file. If it is missing, build it there (needs Go; an
-older Go fetches the module's toolchain itself):
+`sandbin-client` belongs next to this file — the installer put it there when Go was available.
+If it is missing, build it there (needs Go; an older Go fetches the module's toolchain itself):
 
 ```sh
 GOBIN="$SKILL" go install github.com/yookoala/sandbin/cmd/sandbin-client@latest
