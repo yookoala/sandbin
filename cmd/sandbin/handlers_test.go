@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -1527,5 +1529,88 @@ func TestVerifyKeyDoesNotShadowBins(t *testing.T) {
 	rec := get(t, s, base+"verify-key")
 	if rec.Code != http.StatusOK || rec.Body.String() != "an ordinary file" {
 		t.Errorf("GET %sverify-key = %d, body %q; want 200 and the stored body", base, rec.Code, rec.Body.String())
+	}
+}
+
+// TestSkillRouteServesRepoSkillFile is the freshness guarantee: the skill GET answers the
+// repo's skills/sandbin-preview/SKILL.md byte for byte, so the embed can never serve a
+// stale fork of it. No key is sent: reading the skill needs none.
+func TestSkillRouteServesRepoSkillFile(t *testing.T) {
+	h := newTestServer(t, "test-key")
+
+	rec := get(t, h, "/skills/sandbin-preview/SKILL.md")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /skills/sandbin-preview/SKILL.md = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/markdown; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/markdown; charset=utf-8", ct)
+	}
+	want, err := os.ReadFile(filepath.Join("..", "..", "skills", "sandbin-preview", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read repo skill file: %v", err)
+	}
+	if got := rec.Body.Bytes(); !bytes.Equal(got, want) {
+		t.Errorf("served body = %d bytes, repo file = %d bytes; want them byte-identical", len(got), len(want))
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("description:")) {
+		t.Errorf("served skill carries no frontmatter description:\n%s", rec.Body.String())
+	}
+}
+
+// TestSkillRouteMethodDiscipline is the 405 answer and the charging rule: only GET
+// answers, the 405 fires before any key is looked at (a wrong key is still a 405, not a
+// 403), and neither a 405 nor a GET touches the block table.
+func TestSkillRouteMethodDiscipline(t *testing.T) {
+	s := newTestServer(t, "test-key")
+
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodHead, http.MethodOptions} {
+		req := httptest.NewRequest(method, "/skills/sandbin-preview/SKILL.md", nil)
+		req.RemoteAddr = "198.51.100.31:1234"
+		req.Header.Set("X-API-Key", "wrong")
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s the skill path = %d, want %d; body %q", method, rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
+		}
+	}
+	if _, ok := ipBlockRow(t, s.store, "198.51.100.31"); ok {
+		t.Errorf("the 405 answers charged 198.51.100.31, want no row in ip_blocks")
+	}
+	if rec := get(t, s, "/skills/sandbin-preview/SKILL.md"); rec.Code != http.StatusOK {
+		t.Errorf("GET after the 405 battery = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// TestOtherSkillPathsAreUnknownBins keeps the static route to its one exact path: every
+// other /skills/... path falls through to the ordinary unknown-bin router.
+func TestOtherSkillPathsAreUnknownBins(t *testing.T) {
+	h := newTestServer(t, "test-key")
+
+	for _, p := range []string{"/skills/other", "/skills/"} {
+		rec := get(t, h, p)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want %d; body %q", p, rec.Code, http.StatusNotFound, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "unknown bin") {
+			t.Errorf("GET %s body = %q, want an unknown bin message", p, rec.Body.String())
+		}
+	}
+}
+
+// TestSkillRouteDoesNotShadowBins is the review focus: a bin's own skills/... paths are
+// ordinary files, stored, listed and served, although the root answers one skill path.
+func TestSkillRouteDoesNotShadowBins(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+
+	if rec := put(t, s, base+"skills/x.txt", "test-key", "an ordinary file"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT %sskills/x.txt = %d, want %d; body %q", base, rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	rec := get(t, s, base+"skills/x.txt")
+	if rec.Code != http.StatusOK || rec.Body.String() != "an ordinary file" {
+		t.Errorf("GET %sskills/x.txt = %d, body %q; want 200 and the stored body", base, rec.Code, rec.Body.String())
+	}
+	if body := get(t, s, base).Body.String(); !strings.Contains(body, "skills/x.txt") {
+		t.Errorf("the listing does not show skills/x.txt:\n%s", body)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yookoala/sandbin"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -80,6 +81,18 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.verifyKey(w, r)
+		return
+	}
+
+	// "skills" is not a hex hash, so this exact path can never name a bin, same reasoning as
+	// the two above. Only GET answers; a GET never charges and a 405 answers before any key.
+	if r.URL.Path == "/skills/sandbin-preview/SKILL.md" {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		io.WriteString(w, sandbin.PreviewSkillMD)
 		return
 	}
 

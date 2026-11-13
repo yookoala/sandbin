@@ -26,7 +26,7 @@ jobs:
 
       - name: gofmt
         run: |
-          unformatted=$(gofmt -l cmd)
+          unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
             echo "needs gofmt:"
             echo "$unformatted"
