@@ -1,8 +1,8 @@
 # Plan: deleting files and folders, and the 404.html fallback
 
-Status: planned. Decisions in `docs/decisions/0013-delete-and-spa.md` — they are the spec; this
-plan implements them. Baseline HEAD `2b09bfa` (`cmd/sandbin` 166 top-level tests + 2 subtests,
-`cmd/sandbin-client` 79 + 13 subtests, all gates green).
+Status: closed. Implemented on `main` (`72f43ca`, `4f946fa`, `e884eaf`, `37e652e`, `1e00462`,
+plus review follow-up `2c0c1e0`), reviewed with verdict **ship** and no blockers. Decisions in
+`docs/decisions/0013-delete-and-spa.md`.
 
 **Goal:** bins answer unmatched paths with their root `404.html` (GitHub Pages style, status
 stays 404), and files/folders can be deleted — a new `DELETE` verb on the server, `--delete` /
@@ -222,3 +222,39 @@ Bin deletion (any shape), implicit recursive delete (no slash → no folder), 20
 fallback for non-GET, `404.ansi` rendering, nested 404.html as shell, per-path permissions,
 undo/history, batch or bulk delete endpoints, and client-side folder enumeration (the server
 owns the prefix listing).
+
+## Outcome
+
+Tests went 166 + 19 to 178 + 19 in `cmd/sandbin` and 79 + 13 to 91 + 13 in `cmd/sandbin-client`
+(the plan's own baseline prose said "+2 subtests" — a plan miscount, the implementer's +12/+12
+per package is exact); `gofmt -l .`, `go vet`, `go build ./...`, `go test -count=1` and
+`go test -race` green at every task commit and at final HEAD, run by implementer and reviewer.
+
+The review proved live: folder delete answers sorted JSON and respects the boundary (a file
+named exactly `draft` and a `draftsX/keep.md` survive `DELETE drafts/`); the charging battery
+matched the key-checked family word for word (wrong key 403 + one failure, blocked 429 +
+Retry-After escalating 1799→3599, good-key 404 charges nothing, wrong bin password 401
+uncharged, right password deletes); a body on a DELETE is a 400 leaving the target intact; an
+emptied bin keeps its listing, metadata headers and PATCH; the fallback serves the stored
+404.html byte-identical at status 404, exact requests of it answer 200, real files and the bin
+base are untouched, a nested `hello/404.html` never acts as shell, protected bins 401 first,
+and bins without 404.html answer the old 404 body byte-identical to the `2b09bfa` binary.
+Every client refusal wording in README and SKILL.md matched the real stderr word-for-word, a
+failing client delete charges exactly one lockout failure (no retries), `.sandbin.yaml` and
+`--describe` survive deleting every file, and metadata answers print before `deleted` lines.
+Byte-identity against `2b09bfa` held everywhere else: healthz, verify-key, PUT/GET/PATCH round
+trips, listing HTML, archive extraction, ip verbs, install.sh, plain client stdout — the only
+diffs are the skill route (intended) and the front page's new clause. The container rebuilt and
+served the full delete + fallback round trip through its port.
+
+Accepted as they are: `DELETE /{hash}//` answers the base's 405 rather than a 400 (defensible —
+`//` cleans to the base); `json.Marshal` HTML-escapes `< > &` inside deleted-path strings
+(correct JSON, the client renders them back exactly); a DELETE carrying both a bad key and a
+body is charged 403 before the body's 400, because the decision table's "guard order mirrors
+putFile" outranks the plan's "body check first" prose; and mixed `--delete`/`--delete-folder`
+ordering groups files before folders as documented, pinned only per-kind by test. Review
+follow-ups fixed in `2c0c1e0`: the folder listing now runs inside the delete transaction (an
+upload landing between listing and delete can no longer survive it), and the skill's server-side
+413 archive-cap bullet — dropped without authorization in `1e00462` — is restored. Left
+unproven: the GOBIN `@latest` install line (pre-existing text; needs the public module over the
+network) and live request-counting of a multi-file folder delete (unit-proven single request).
