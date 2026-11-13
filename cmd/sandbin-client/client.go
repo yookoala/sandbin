@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -165,6 +166,42 @@ func (c *client) putFile(bin, name string, body io.Reader) (bool, int, error) {
 		return false, extracted, nil
 	}
 	return false, 0, fmt.Errorf("%s: unexpected status %d", req.URL, status)
+}
+
+// deletePaths DELETEs one path under a bin and returns the paths the server says it removed.
+// The folder form carries the trailing slash the server reads a folder by, and it is sent on
+// exactly one request: a folder's contents are the server's to list, not this client's.
+func (c *client) deletePaths(bin, name string, folder bool) ([]string, error) {
+	target := c.fileURL(bin, name)
+	if folder {
+		target += "/"
+	}
+	req, err := http.NewRequest(http.MethodDelete, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(apiKeyHeader, c.apiKey)
+	if c.password != "" {
+		// The server takes any user name; the bin hash is the one the README uses.
+		req.SetBasicAuth(bin, c.password)
+	}
+	status, _, body, err := c.do(req)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("%s: unexpected status %d", req.URL, status)
+	}
+	var answer struct {
+		Deleted []string `json:"deleted"`
+	}
+	if err := json.Unmarshal(body, &answer); err != nil {
+		return nil, fmt.Errorf("%s: server answered %q", req.URL, strings.TrimSpace(string(body)))
+	}
+	if len(answer.Deleted) == 0 {
+		return nil, fmt.Errorf("%s: the server removed nothing", req.URL)
+	}
+	return answer.Deleted, nil
 }
 
 // patchBinMeta PATCHes the bin base with the metadata headers it carries: a nil value says

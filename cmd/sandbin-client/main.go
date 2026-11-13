@@ -59,6 +59,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	describe := fs.Bool("describe", false, "print this bin's title and description instead of uploading")
 	archiveFlag := fs.String("archive", "", "upload this folder as one tar.gz the server unpacks into the bin")
 	noExtract := fs.Bool("no-extract", false, "send every upload with X-Extract, so archive bodies are stored raw")
+	deleteFlag := &stringListFlag{}
+	deleteFolderFlag := &stringListFlag{}
+	fs.Var(deleteFlag, "delete", "delete this path from the bin instead of uploading; repeat it per path")
+	fs.Var(deleteFolderFlag, "delete-folder", "delete this folder and everything under it; repeat it per folder")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			// The usage has already been printed; asking for it is not a failure.
@@ -97,6 +101,41 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 		if titleGiven || descriptionGiven {
 			return errors.New("--describe only reads: set --title and --description on a run that writes")
 		}
+	}
+	// A delete run takes paths out of a bin and puts nothing in, so the flags that put things
+	// in have no place in it, the same way a --describe run refuses them.
+	deleting := len(deleteFlag.values) > 0 || len(deleteFolderFlag.values) > 0
+	deleteNames := "--delete"
+	deleteRunLabel := "--delete"
+	switch {
+	case len(deleteFlag.values) > 0 && len(deleteFolderFlag.values) > 0:
+		deleteNames = "--delete and --delete-folder"
+	case len(deleteFolderFlag.values) > 0:
+		deleteNames = "--delete-folder"
+		deleteRunLabel = "--delete-folder"
+	}
+	if deleting {
+		if *describe {
+			return errors.New("--describe only reads: --delete and --delete-folder write the bin")
+		}
+		if *newBin {
+			return fmt.Errorf("%s reuses this directory's bin: --new makes a fresh one", deleteNames)
+		}
+		if fs.NArg() > 0 {
+			return fmt.Errorf("%s uploads nothing: pass no file arguments", deleteNames)
+		}
+		if *nameFlag != "" {
+			return fmt.Errorf("%s uploads nothing: pass no --name", deleteNames)
+		}
+		if archiveGiven {
+			return fmt.Errorf("%s uploads nothing: pass no --archive", deleteNames)
+		}
+	}
+	// Delete names are checked the way upload names are, before any request: --delete names
+	// one file and the folder slash belongs to --delete-folder.
+	deleteTargets, err := cleanDeleteTargets(deleteFlag.values, deleteFolderFlag.values)
+	if err != nil {
+		return err
 	}
 	// Metadata is checked before any request, the way an upload name is, because argv can
 	// carry a newline the transport would not carry.
@@ -144,7 +183,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	c.noExtract = *noExtract
 
 	if *describe {
-		bin, protected, err := resolveExistingBin(c, dir, cfg, cfgFound, *binFlag)
+		bin, protected, err := resolveExistingBin(c, dir, cfg, cfgFound, *binFlag, "--describe")
 		if err != nil {
 			return err
 		}
@@ -156,6 +195,54 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 			return err
 		}
 		fmt.Fprintf(stdout, "title: %s\ndescription: %s\n", title, description)
+		return nil
+	}
+
+	if deleting {
+		// A delete run reads this directory's bin exactly like --describe does and never
+		// makes one: paths come out of a bin that is already there.
+		bin, protected, err := resolveExistingBin(c, dir, cfg, cfgFound, *binFlag, deleteRunLabel)
+		if err != nil {
+			return err
+		}
+		if protected && c.password == "" {
+			fmt.Fprintf(stderr, "sandbin-client: warning: bin %s has a password and SANDBIN_BIN_PASSWORD is not set\n", bin)
+		}
+
+		// Lines are held until every request has succeeded, the way an upload run holds
+		// its own, so a failed run prints nothing on stdout.
+		var lines []string
+		if titleGiven || descriptionGiven {
+			// The bin says what it holds before the paths come out of it, so the metadata
+			// answer is the run's first line.
+			var titlePatch, descriptionPatch *string
+			if titleGiven {
+				titlePatch = titleFlag
+			}
+			if descriptionGiven {
+				descriptionPatch = descriptionFlag
+			}
+			if err := c.patchBinMeta(bin, titlePatch, descriptionPatch); err != nil {
+				return err
+			}
+			lines = append(lines, "updated /"+bin+"/")
+		}
+		for _, target := range deleteTargets {
+			deleted, err := c.deletePaths(bin, target.name, target.folder)
+			if err != nil {
+				// The refusal names the path this run aimed at, which is what a reader needs
+				// to fix the command, and keeps the server's own error reachable, which is
+				// how a 401 still earns its SANDBIN_BIN_PASSWORD hint.
+				return fmt.Errorf("delete %q: %w", target.name, err)
+			}
+			for _, name := range deleted {
+				lines = append(lines, "deleted "+c.fileURL(bin, name))
+			}
+		}
+		lines = append(lines, c.binURL(bin))
+		for _, line := range lines {
+			fmt.Fprintln(stdout, line)
+		}
 		return nil
 	}
 
@@ -377,6 +464,83 @@ func flagGiven(fs *flag.FlagSet, name string) bool {
 	return given
 }
 
+// deleteTarget is one path a delete run takes out of the bin, marked with the folder shape
+// the server reads it by.
+type deleteTarget struct {
+	name   string
+	folder bool
+}
+
+// cleanDeleteTargets cleans every --delete and --delete-folder name the way an upload name
+// is cleaned, before any request. The file paths come first and the folders after, each in
+// the order its own flag was given.
+func cleanDeleteTargets(files, folders []string) ([]deleteTarget, error) {
+	targets := make([]deleteTarget, 0, len(files)+len(folders))
+	for _, raw := range files {
+		name, err := cleanDeleteName(raw)
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, deleteTarget{name: name})
+	}
+	for _, raw := range folders {
+		name, err := cleanDeleteFolderName(raw)
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, deleteTarget{name: name, folder: true})
+	}
+	return targets, nil
+}
+
+// cleanDeleteName cleans one --delete path with the upload name's rules. A name ending in a
+// slash names a folder, and --delete-folder is the flag that names a folder, so the refusal
+// points there with the name it wants.
+func cleanDeleteName(raw string) (string, error) {
+	if strings.HasSuffix(raw, "/") {
+		folder := strings.TrimSuffix(raw, "/")
+		if cleaned, err := cleanUploadName(folder); err == nil {
+			folder = cleaned
+		}
+		return "", fmt.Errorf("--delete %q names a folder: use --delete-folder %s", raw, folder)
+	}
+	name, err := cleanUploadName(raw)
+	if err != nil {
+		return "", fmt.Errorf("--delete %q: %v", raw, err)
+	}
+	return name, nil
+}
+
+// cleanDeleteFolderName cleans one --delete-folder name with the upload name's rules. The
+// slash that marks a folder goes on the request, so a name carrying one is refused rather
+// than sent doubled.
+func cleanDeleteFolderName(raw string) (string, error) {
+	if strings.HasSuffix(raw, "/") {
+		return "", fmt.Errorf("--delete-folder %q needs no trailing slash: the client sends it", raw)
+	}
+	name, err := cleanUploadName(raw)
+	if err != nil {
+		return "", fmt.Errorf("--delete-folder %q: %v", raw, err)
+	}
+	return name, nil
+}
+
+// stringListFlag is a repeatable flag: every occurrence adds one value, and the values keep
+// the order the run was written in.
+type stringListFlag struct {
+	values []string
+}
+
+// String is what the usage line shows for a flag that collects values, which is nothing
+// until a run gives it some.
+func (l *stringListFlag) String() string { return strings.Join(l.values, ", ") }
+
+// Set adds one value to the list.
+func (l *stringListFlag) Set(value string) error {
+	l.values = append(l.values, value)
+	return nil
+}
+
 // resolveBin picks the bin to upload into: --bin, then this directory's config file
 // when its sandbin_url matches the url in use, then a new bin written to the config
 // file so the next run reuses it. --new skips straight to a new bin. A written file
@@ -407,16 +571,17 @@ func resolveBin(c *client, dir string, cfg clientConfig, cfgFound bool, binFlag 
 	return hash, protected, true, nil
 }
 
-// resolveExistingBin is the bin --describe reads: --bin, or this directory's config file
-// when its sandbin_url matches the url in use. A read-only run makes no bin, so a directory
-// with neither gets an error naming what it needs.
-func resolveExistingBin(c *client, dir string, cfg clientConfig, cfgFound bool, binFlag string) (string, bool, error) {
+// resolveExistingBin is the bin a read-only or delete run uses: --bin, or this directory's
+// config file when its sandbin_url matches the url in use. Neither kind of run makes a bin,
+// so a directory with neither gets an error naming what it needs, in the words of the run
+// that asked.
+func resolveExistingBin(c *client, dir string, cfg clientConfig, cfgFound bool, binFlag, runName string) (string, bool, error) {
 	if binFlag != "" {
 		hash, err := cleanBinHash(binFlag)
 		return hash, false, err
 	}
 	if !cfgFound || cfg.Bin == "" || cfg.URL != c.base.String() {
-		return "", false, fmt.Errorf("--describe has no bin for this directory: pass --bin or upload something first")
+		return "", false, fmt.Errorf("%s has no bin for this directory: pass --bin or upload something first", runName)
 	}
 	return cfg.Bin, cfg.Protected, nil
 }

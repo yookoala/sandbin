@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,9 +50,12 @@ type fakeServer struct {
 	requests    int
 	puts        int
 	patches     int
+	deletes     int
 	failures    int
 	extractSeen []string           // each PUT's X-Extract value, in arrival order
 	putPaths    []string           // each PUT's URL path, in arrival order
+	deletePaths []string           // each DELETE's URL path, in arrival order
+	deleteAuths []string           // each DELETE's Basic Auth user name, "" when it sent none
 	bins        map[string]fakeBin // bin hash -> its password and metadata
 	files       map[string]string  // "bin/path" -> stored body
 }
@@ -91,11 +97,20 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPatch {
 		f.patches++
 	}
+	if r.Method == http.MethodDelete {
+		f.deletes++
+		f.deletePaths = append(f.deletePaths, r.URL.Path)
+		user, _, ok := r.BasicAuth()
+		if !ok {
+			user = ""
+		}
+		f.deleteAuths = append(f.deleteAuths, user)
+	}
 	if f.log != nil {
 		fmt.Fprintln(f.log, "request", r.Method)
 	}
 
-	keyChecked := r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch
+	keyChecked := r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete
 	if keyChecked && f.failures > 0 {
 		// An attempt while blocked is another failure, so the wait walks up.
 		f.failures++
@@ -149,7 +164,8 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodPut {
-		// GET and PATCH read or write the bin itself; nothing else is on this fake.
+		// GET, PATCH and DELETE read, write or empty the bin itself; nothing else is on
+		// this fake, and every one of them proves the bin password first.
 		_, password, ok := r.BasicAuth()
 		if bin.password != "" && (!ok || password != bin.password) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="sandbin"`)
@@ -184,6 +200,55 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.bins[first] = bin
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(w, "{\"title\":%q,\"description\":%q}\n", bin.title, bin.description)
+			return
+		case http.MethodDelete:
+			if rest == "" {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			body, err := io.ReadAll(io.LimitReader(r.Body, 4097))
+			if err != nil {
+				http.Error(w, "could not read body", http.StatusBadRequest)
+				return
+			}
+			if len(body) > 0 {
+				http.Error(w, "delete takes no body", http.StatusBadRequest)
+				return
+			}
+			// The real server's rule: the trailing slash marks the folder, and a folder is
+			// every path under it, answered sorted.
+			folder := strings.HasSuffix(rest, "/")
+			sub := strings.TrimSuffix(rest, "/")
+			var deleted []string
+			if folder {
+				prefix := first + "/" + sub + "/"
+				for key := range f.files {
+					if strings.HasPrefix(key, prefix) {
+						deleted = append(deleted, strings.TrimPrefix(key, first+"/"))
+					}
+				}
+				sort.Strings(deleted)
+				for _, name := range deleted {
+					delete(f.files, first+"/"+name)
+				}
+			} else if _, stored := f.files[first+"/"+sub]; stored {
+				delete(f.files, first+"/"+sub)
+				deleted = []string{sub}
+			}
+			if len(deleted) == 0 {
+				http.Error(w, "unknown path", http.StatusNotFound)
+				return
+			}
+			out, err := json.Marshal(struct {
+				Deleted []string `json:"deleted"`
+			}{deleted})
+			if err != nil {
+				http.Error(w, "could not answer the delete", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write(append(out, '\n'))
 			return
 		}
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -340,6 +405,28 @@ func (f *fakeServer) putOrder() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.putPaths...)
+}
+
+// deletesSeen counts the DELETEs, which is how a delete test says the client made exactly
+// one request per path and never retried a refusal.
+func (f *fakeServer) deletesSeen() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.deletes
+}
+
+// deleteOrder is each DELETE's URL path in arrival order.
+func (f *fakeServer) deleteOrder() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.deletePaths...)
+}
+
+// deleteAuthNames is each DELETE's Basic Auth user name, "" when the request sent none.
+func (f *fakeServer) deleteAuthNames() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.deleteAuths...)
 }
 
 // unpackTarGz runs under ServeHTTP's lock. Entries land under the upload name's
@@ -1852,4 +1939,414 @@ func (l *orderLog) snapshot() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return append([]string(nil), l.lines...)
+}
+
+// seedFile puts a file in the fake's store without an upload, for the tests that name a
+// bin with --bin instead of creating one.
+func (f *fakeServer) seedFile(key, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.files[key] = body
+}
+
+// TestDeleteFilePrintsDeletedLineAndKeepsTheBin is the single-file case: one DELETE, one
+// line naming the file, the bin URL last, and the bin's other files untouched.
+func TestDeleteFilePrintsDeletedLineAndKeepsTheBin(t *testing.T) {
+	f := newFake(t, "test-key")
+	writeWorkDirFile(t, "notes.md", "# Notes")
+	writeWorkDirFile(t, "other.md", "# Other")
+
+	stdout, stderr, err := runClient(t, nil, "notes.md", "other.md")
+	if err != nil {
+		t.Fatalf("upload run: %v; stderr %s", err, stderr)
+	}
+	hash := binHashOf(t, stdout)
+	base := os.Getenv("SANDBIN_URL")
+
+	stdout, stderr, err = runClient(t, nil, "--delete", "notes.md")
+	if err != nil {
+		t.Fatalf("delete run: %v; stderr %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want nothing on a successful delete run", stderr)
+	}
+	want := "deleted " + base + "/" + hash + "/notes.md\n" + base + "/" + hash + "/\n"
+	if stdout != want {
+		t.Errorf("delete stdout =\n%s\nwant\n%s", stdout, want)
+	}
+	if got := f.stored(hash + "/notes.md"); got != "" {
+		t.Errorf("the server still holds notes.md = %q, want it gone", got)
+	}
+	if got := f.stored(hash + "/other.md"); got != "# Other" {
+		t.Errorf("other.md = %q, want it untouched", got)
+	}
+	if f.deletesSeen() != 1 {
+		t.Errorf("DELETEs = %d, want exactly one", f.deletesSeen())
+	}
+	if order := f.deleteOrder(); len(order) != 1 || order[0] != "/"+hash+"/notes.md" {
+		t.Errorf("DELETE paths = %v, want one /%s/notes.md", order, hash)
+	}
+	if f.binCount() != 1 {
+		t.Errorf("bins = %d, want the delete to leave the one bin", f.binCount())
+	}
+	if raw, _ := readConfigFile(t); !bytes.Contains(raw, []byte(hash)) {
+		t.Errorf("the config file no longer names bin %s:\n%s", hash, raw)
+	}
+}
+
+// TestDeleteKeepsTheOrderGiven is why the flags collect their values instead of being
+// plain bools: repeats keep the order the run was written in.
+func TestDeleteKeepsTheOrderGiven(t *testing.T) {
+	f := newFake(t, "test-key")
+	for _, name := range []string{"a.md", "b.md", "c.md"} {
+		writeWorkDirFile(t, name, "body of "+name)
+	}
+	stdout, stderr, err := runClient(t, nil, "a.md", "b.md", "c.md")
+	if err != nil {
+		t.Fatalf("upload run: %v; stderr %s", err, stderr)
+	}
+	hash := binHashOf(t, stdout)
+	base := os.Getenv("SANDBIN_URL")
+
+	stdout, stderr, err = runClient(t, nil, "--delete", "c.md", "--delete", "a.md")
+	if err != nil {
+		t.Fatalf("delete run: %v; stderr %s", err, stderr)
+	}
+	want := "deleted " + base + "/" + hash + "/c.md\n" +
+		"deleted " + base + "/" + hash + "/a.md\n" +
+		base + "/" + hash + "/\n"
+	if stdout != want {
+		t.Errorf("delete stdout =\n%s\nwant\n%s", stdout, want)
+	}
+	order := f.deleteOrder()
+	if len(order) != 2 || order[0] != "/"+hash+"/c.md" || order[1] != "/"+hash+"/a.md" {
+		t.Errorf("DELETE paths = %v, want c.md then a.md in the order the flags were given", order)
+	}
+	if got := f.stored(hash + "/b.md"); got != "body of b.md" {
+		t.Errorf("b.md = %q, want it untouched", got)
+	}
+}
+
+// TestDeleteFolderSendsTheSlashAndPrintsEveryPath is the folder form: one request naming
+// the folder, one line per removed file, and a sibling whose name only looks alike left
+// alone.
+func TestDeleteFolderSendsTheSlashAndPrintsEveryPath(t *testing.T) {
+	f := newFake(t, "test-key")
+	seed := []string{"drafts/one.md", "drafts/deep/two.md", "draftsX/keep.md"}
+	for _, name := range seed {
+		writeWorkDirFile(t, name, "body of "+name)
+	}
+	stdout, stderr, err := runClient(t, nil, seed...)
+	if err != nil {
+		t.Fatalf("upload run: %v; stderr %s", err, stderr)
+	}
+	hash := binHashOf(t, stdout)
+	base := os.Getenv("SANDBIN_URL")
+
+	stdout, stderr, err = runClient(t, nil, "--delete-folder", "drafts")
+	if err != nil {
+		t.Fatalf("delete run: %v; stderr %s", err, stderr)
+	}
+	// The server answers the removed paths sorted, and the client echoes that order.
+	want := "deleted " + base + "/" + hash + "/drafts/deep/two.md\n" +
+		"deleted " + base + "/" + hash + "/drafts/one.md\n" +
+		base + "/" + hash + "/\n"
+	if stdout != want {
+		t.Errorf("delete stdout =\n%s\nwant\n%s", stdout, want)
+	}
+	order := f.deleteOrder()
+	if len(order) != 1 || order[0] != "/"+hash+"/drafts/" {
+		t.Errorf("DELETE paths = %v, want the one folder request /%s/drafts/", order, hash)
+	}
+	for _, key := range []string{"drafts/one.md", "drafts/deep/two.md"} {
+		if got := f.stored(hash + "/" + key); got != "" {
+			t.Errorf("%s = %q, want it gone with the folder", key, got)
+		}
+	}
+	if got := f.stored(hash + "/draftsX/keep.md"); got != "body of draftsX/keep.md" {
+		t.Errorf("draftsX/keep.md = %q, want it untouched by the folder delete", got)
+	}
+}
+
+// TestDeleteUnknownPathNamesThePathAndMakesOneRequest is the no-retry rule on a delete: a
+// path the bin does not hold is one request, an error naming that path, and nothing on
+// stdout.
+func TestDeleteUnknownPathNamesThePathAndMakesOneRequest(t *testing.T) {
+	f := newFake(t, "test-key")
+	writeWorkDirFile(t, "notes.md", "# Notes")
+	stdout, stderr, err := runClient(t, nil, "notes.md")
+	if err != nil {
+		t.Fatalf("upload run: %v; stderr %s", err, stderr)
+	}
+	hash := binHashOf(t, stdout)
+
+	stdout, stderr, err = runClient(t, nil, "--delete", "missing.txt")
+	if err == nil {
+		t.Fatalf("delete of an unknown path returned no error; stdout %s", stdout)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want nothing from a failed delete run", stdout)
+	}
+	if !strings.Contains(stderr, "missing.txt") || !strings.Contains(stderr, "404 unknown path") {
+		t.Errorf("stderr = %q, want an error naming missing.txt and the server's 404 unknown path", stderr)
+	}
+	if f.deletesSeen() != 1 {
+		t.Errorf("DELETEs = %d, want exactly one: the client never retries", f.deletesSeen())
+	}
+	if got := f.stored(hash + "/notes.md"); got != "# Notes" {
+		t.Errorf("notes.md = %q, want the failed run to leave the bin as it was", got)
+	}
+}
+
+// TestDeleteRefusesEveryUploadShape is the standalone rule: a run that deletes files does
+// not upload any, and each refusal names the flag it refuses.
+func TestDeleteRefusesEveryUploadShape(t *testing.T) {
+	cases := []struct {
+		what string
+		args []string
+		want string
+	}{
+		{"a file argument", []string{"--delete", "notes.md", "extra.md"}, "--delete uploads nothing: pass no file arguments"},
+		{"piped stdin through --name", []string{"--delete", "notes.md", "--name", "piped.txt"}, "--delete uploads nothing: pass no --name"},
+		{"a folder through --archive", []string{"--delete", "notes.md", "--archive", "hello"}, "--delete uploads nothing: pass no --archive"},
+		{"a fresh bin through --new", []string{"--delete", "notes.md", "--new"}, "--delete reuses this directory's bin: --new makes a fresh one"},
+		{"the read-only --describe", []string{"--delete", "notes.md", "--describe"}, "--describe only reads: --delete and --delete-folder write the bin"},
+		{"a file argument for the folder flag", []string{"--delete-folder", "drafts", "extra.md"}, "--delete-folder uploads nothing: pass no file arguments"},
+		{"--name for the folder flag", []string{"--delete-folder", "drafts", "--name", "piped.txt"}, "--delete-folder uploads nothing: pass no --name"},
+		{"--new for the folder flag", []string{"--delete-folder", "drafts", "--new"}, "--new makes a fresh one"},
+	}
+	for _, tc := range cases {
+		f := newFake(t, "test-key")
+		writeWorkDirFile(t, "notes.md", "# Notes")
+
+		stdout, stderr, err := runClient(t, nil, tc.args...)
+		if err == nil {
+			t.Errorf("%s: run %v returned no error; stdout %s", tc.what, tc.args, stdout)
+			continue
+		}
+		if !strings.Contains(stderr, tc.want) {
+			t.Errorf("%s: stderr = %q, want it to carry %q", tc.what, stderr, tc.want)
+		}
+		if stdout != "" {
+			t.Errorf("%s: stdout = %q, want nothing from a refused run", tc.what, stdout)
+		}
+		if f.requestsSeen() != 0 {
+			t.Errorf("%s: requests = %d, want a refusal to make none", tc.what, f.requestsSeen())
+		}
+	}
+}
+
+// TestDeleteNamesAreCheckedBeforeAnyRequest reuses the local upload-name rules and the
+// pointer from the file flag to the folder flag.
+func TestDeleteNamesAreCheckedBeforeAnyRequest(t *testing.T) {
+	cases := []struct {
+		what string
+		args []string
+		want string
+	}{
+		{"a slash-terminated path", []string{"--delete", "hello/"}, `--delete "hello/" names a folder: use --delete-folder hello`},
+		{"the folder flag with the slash it adds itself", []string{"--delete-folder", "hello/"}, `--delete-folder "hello/" needs no trailing slash`},
+		{"an absolute path", []string{"--delete", "/etc/passwd"}, `--delete "/etc/passwd": path must be relative`},
+		{"an escaping path", []string{"--delete", "../secret"}, `--delete "../secret": path must not escape the bin`},
+		{"a control character", []string{"--delete", "bad\tname"}, "--delete \"bad\\tname\": path may not contain control characters"},
+		{"an empty path", []string{"--delete", ""}, `--delete "": empty path`},
+		{"an escaping folder", []string{"--delete-folder", ".."}, `--delete-folder "..": path must not escape the bin`},
+		{"the current directory as a folder", []string{"--delete-folder", "."}, `--delete-folder "."`},
+	}
+	for _, tc := range cases {
+		f := newFake(t, "test-key")
+		_, stderr, err := runClient(t, nil, tc.args...)
+		if err == nil {
+			t.Errorf("%s: run %v returned no error", tc.what, tc.args)
+			continue
+		}
+		if !strings.Contains(stderr, tc.want) {
+			t.Errorf("%s: stderr = %q, want it to carry %q", tc.what, stderr, tc.want)
+		}
+		if f.requestsSeen() != 0 {
+			t.Errorf("%s: requests = %d, want a local refusal to make none", tc.what, f.requestsSeen())
+		}
+	}
+}
+
+// TestDeleteNeedsABinAndSaysWhereToFindIt is the read-the-same-bin rule: a delete run takes
+// the config file or --bin, never creates a bin of its own.
+func TestDeleteNeedsABinAndSaysWhereToFindIt(t *testing.T) {
+	f := newFake(t, "test-key")
+
+	stdout, stderr, err := runClient(t, nil, "--delete", "notes.md")
+	if err == nil {
+		t.Fatalf("a delete run with no bin returned no error; stdout %s", stdout)
+	}
+	if !strings.Contains(stderr, "--delete has no bin for this directory: pass --bin or upload something first") {
+		t.Errorf("stderr = %q, want it to name --bin and an upload as the two ways to find a bin", stderr)
+	}
+	if f.requestsSeen() != 0 {
+		t.Errorf("requests = %d, want a run with no bin to make none", f.requestsSeen())
+	}
+
+	// --bin names one, and the run does not write a config file or create a bin.
+	hash := f.addBin("")
+	f.seedFile(hash+"/notes.md", "# Notes")
+	stdout, stderr, err = runClient(t, nil, "--bin", hash, "--delete", "notes.md")
+	if err != nil {
+		t.Fatalf("--bin delete run: %v; stderr %s", err, stderr)
+	}
+	want := "deleted " + os.Getenv("SANDBIN_URL") + "/" + hash + "/notes.md\n" + os.Getenv("SANDBIN_URL") + "/" + hash + "/\n"
+	if stdout != want {
+		t.Errorf("stdout =\n%s\nwant\n%s", stdout, want)
+	}
+	if f.binCount() != 1 {
+		t.Errorf("bins = %d, want the named bin only", f.binCount())
+	}
+	if _, err := os.Stat(configFileName); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the run wrote %s (%v), want a --bin run to leave no config file", configFileName, err)
+	}
+}
+
+// TestDeleteNeedsTheAPIKeyLikeEveryWrite keeps the key guard in front of a delete run too.
+func TestDeleteNeedsTheAPIKeyLikeEveryWrite(t *testing.T) {
+	f := newFake(t, "test-key")
+	hash := f.addBin("")
+	f.seedFile(hash+"/notes.md", "# Notes")
+	t.Setenv("SANDBIN_API_KEY", "")
+
+	stdout, stderr, err := runClient(t, nil, "--bin", hash, "--delete", "notes.md")
+	if err == nil {
+		t.Fatalf("a delete run without a key returned no error; stdout %s", stdout)
+	}
+	if !strings.Contains(stderr, "no API key: pass --api-key, set SANDBIN_API_KEY or run sandbin-client init") {
+		t.Errorf("stderr = %q, want the key refusal every write run gives", stderr)
+	}
+	if f.requestsSeen() != 0 {
+		t.Errorf("requests = %d, want the missing key to make none", f.requestsSeen())
+	}
+}
+
+// TestDeleteCarriesTheBinPasswordAsBasicAuth is the protected-bin rule on the client side,
+// and the 401 that says the password is missing.
+func TestDeleteCarriesTheBinPasswordAsBasicAuth(t *testing.T) {
+	f := newFake(t, "test-key")
+	t.Setenv("SANDBIN_BIN_PASSWORD", "sesame")
+	writeWorkDirFile(t, "secret.txt", "protected body")
+
+	stdout, stderr, err := runClient(t, nil, "secret.txt")
+	if err != nil {
+		t.Fatalf("upload run: %v; stderr %s", err, stderr)
+	}
+	hash := binHashOf(t, stdout)
+
+	stdout, stderr, err = runClient(t, nil, "--delete", "secret.txt")
+	if err != nil {
+		t.Fatalf("delete run: %v; stderr %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "/"+hash+"/secret.txt") {
+		t.Errorf("stdout = %q, want the deleted file's URL", stdout)
+	}
+	if auths := f.deleteAuthNames(); len(auths) != 1 || auths[0] != hash {
+		t.Errorf("DELETE Basic Auth user names = %v, want the bin hash %s", auths, hash)
+	}
+	if got := f.stored(hash + "/secret.txt"); got != "" {
+		t.Errorf("secret.txt = %q, want it gone", got)
+	}
+
+	// Without the password the delete is the 401 that names the environment variable.
+	t.Setenv("SANDBIN_BIN_PASSWORD", "")
+	stdout, stderr, err = runClient(t, nil, "--delete", "secret.txt")
+	if err == nil {
+		t.Fatalf("a delete run without the bin password returned no error; stdout %s", stdout)
+	}
+	if !strings.Contains(stderr, "bin password required") {
+		t.Errorf("stderr = %q, want the server's 401 message", stderr)
+	}
+	if !strings.Contains(stderr, "set SANDBIN_BIN_PASSWORD to this bin's password") {
+		t.Errorf("stderr = %q, want the hint naming SANDBIN_BIN_PASSWORD", stderr)
+	}
+	if got := f.stored(hash + "/secret.txt"); got != "" {
+		t.Errorf("secret.txt = %q, want it gone from the earlier delete", got)
+	}
+}
+
+// TestDeleteWithMetadataPatchesFirst is the combine rule: the metadata answer comes first,
+// then the deleted lines, and the server saw the PATCH before the DELETE.
+func TestDeleteWithMetadataPatchesFirst(t *testing.T) {
+	f := newFake(t, "test-key")
+	writeWorkDirFile(t, "notes.md", "# Notes")
+	stdout, stderr, err := runClient(t, nil, "notes.md")
+	if err != nil {
+		t.Fatalf("upload run: %v; stderr %s", err, stderr)
+	}
+	hash := binHashOf(t, stdout)
+	base := os.Getenv("SANDBIN_URL")
+
+	var logged bytes.Buffer
+	f.setLog(&logged)
+	stdout, stderr, err = runClient(t, nil, "--title", "New title", "--delete", "notes.md")
+	if err != nil {
+		t.Fatalf("delete run: %v; stderr %s", err, stderr)
+	}
+	want := "updated /" + hash + "/\n" +
+		"deleted " + base + "/" + hash + "/notes.md\n" +
+		base + "/" + hash + "/\n"
+	if stdout != want {
+		t.Errorf("stdout =\n%s\nwant\n%s", stdout, want)
+	}
+	if got := logged.String(); got != "request PATCH\nrequest DELETE\n" {
+		t.Errorf("the server saw %q, want the PATCH before the DELETE", got)
+	}
+	if title, _ := f.binMeta(hash); title != "New title" {
+		t.Errorf("stored title = %q, want New title", title)
+	}
+}
+
+// TestDeleteEmptiedBinStaysThisDirectoriesBin is the reuse rule after the bin is emptied:
+// the config file still names it and --describe still reads it.
+func TestDeleteEmptiedBinStaysThisDirectoriesBin(t *testing.T) {
+	f := newFake(t, "test-key")
+	writeWorkDirFile(t, "notes.md", "# Notes")
+	stdout, stderr, err := runClient(t, nil, "--title", "Kept", "notes.md")
+	if err != nil {
+		t.Fatalf("upload run: %v; stderr %s", err, stderr)
+	}
+	hash := binHashOf(t, stdout)
+	if raw, _ := readConfigFile(t); !bytes.Contains(raw, []byte(hash)) {
+		t.Fatalf("the config file does not name bin %s:\n%s", hash, raw)
+	}
+
+	stdout, stderr, err = runClient(t, nil, "--delete", "notes.md")
+	if err != nil {
+		t.Fatalf("delete run: %v; stderr %s", err, stderr)
+	}
+	if f.binCount() != 1 {
+		t.Fatalf("bins = %d, want the emptied bin to be the one bin", f.binCount())
+	}
+
+	stdout, stderr, err = runClient(t, nil, "--describe")
+	if err != nil {
+		t.Fatalf("--describe after the delete: %v; stderr %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "title: Kept") {
+		t.Errorf("--describe stdout = %q, want it to read the emptied bin", stdout)
+	}
+	if f.binCount() != 1 {
+		t.Errorf("bins = %d, want no new bin after the delete", f.binCount())
+	}
+}
+
+// TestDeleteFlagsAreInHelp keeps the usage text honest about the two new flags.
+func TestDeleteFlagsAreInHelp(t *testing.T) {
+	newFake(t, "test-key")
+
+	stdout, stderr, err := runClient(t, nil, "--help")
+	if err != nil {
+		t.Fatalf("--help: %v; stderr %s", err, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want the usage on stderr only", stdout)
+	}
+	for _, want := range []string{"-delete", "-delete-folder"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("the usage does not name %s:\n%s", want, stderr)
+		}
+	}
 }
