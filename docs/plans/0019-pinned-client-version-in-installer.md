@@ -1,6 +1,6 @@
 # Plan: the installer pins the client to the server's own release tag
 
-Status: planned. Spec: `docs/decisions/0019-pinned-client-version-in-installer.md` — the pin
+Status: implemented and closed. Spec: `docs/decisions/0019-pinned-client-version-in-installer.md` — the pin
 source, the semver test, the wiring and the not-pinned SKILL.md line are settled there.
 Baseline HEAD is the plan-0018 close-out `e28cc99` (`cmd/sandbin` 196 + 29, `cmd/sandbin-client`
 107 + 28, `internal/version` 4 + 23, all gates green). Sits on 0017 (the version stamping whose
@@ -162,3 +162,38 @@ client change, no SKILL.md change, no landing-page change.
 Everything in the decisions record's Skipped section, plus: Go-version-dependent `@v` install
 workflows beyond plain tags, `GOPROXY` configuration advice, and pinning anything on the landing
 page (it pipes install.sh and inherits the pin).
+
+## Outcome
+
+Implemented by `07a5a58` (version package), `38787bc` (installer pin) and `88b38c8` (usage-doc
+wording) on the plan-open commit `31b5e17`. Reviewer verdict: APPROVE, no blockers. (The plan was
+written against `e28cc99`; the owner released v0.3.3 `7033846` mid-planning, so the review baseline
+moved to `31b5e17` — every version expectation derives from `EmbeddedTag()`, none is written down.)
+
+- Counts: `cmd/sandbin` 196+29 → 199+29 (3 new tests), `internal/version` 4+23 → 6+35 (2 new tests,
+  +12 synthetic semver rows), client 107+28 untouched; zero test-name removals. `version.go` diff
+  purely additive; `String()` and the resolver precedence byte-identical.
+- Reviewer's 72-section side-by-side battery vs the `31b5e17` binaries: the whole-surface diff is
+  39 lines covering only the served install.sh (comment sentence + `@latest` → `@v0.3.3`), the two
+  changed paragraphs in served `/docs/sandbin-client-skill.html` (the usage docs are embedded, so
+  Task 3 necessarily re-renders that page), and one 1-second Retry-After truncation skew between
+  two independently clocked servers. SKILL.md template and served body byte-identical.
+- Pin proven live: served line `sandbin-client@v0.3.3` = `@`+`EmbeddedTag()`; piped install
+  downloads exactly that tag; the installed client prints `sandbin-client version v0.3.3`; upload
+  round trip works. Scratch trees with `nightly-2026` and with an empty tag both serve `@latest`,
+  install and round-trip. A build injected with `Value=v9.9.9` prints v9.9.9 at `--version` yet
+  still pins the embedded tag; a working-tree build printing `dev (88b38c8+)` likewise pins v0.3.3
+  — the pin provably reads the embedded txt only.
+- Semver decision re-driven at both boundaries exactly per plan (accepts `v0.3.2 v1.2.3 v10.20.30`;
+  rejects `v1.2`, `v1.2.3.4`, `1.2.3`, `V1.2.3`, `v1.2.3-rc1`, `v1.2.3+build`, `nightly-2026`,
+  empty, `dev (abc1234)`). No version literal appears in any test expectation.
+- Deviation rulings (all accepted): the install.sh comment re-draft keeps the explaining sentence
+  free of the template token; the old "today's @latest client prints dev" claim was measured-false
+  since v0.3.1+ tags embed their stamp and the proxy resolves `@latest` to the newest published
+  tag — replaced with the measured behavior; history kept at exactly the three planned commits.
+- Container proof: image built from HEAD with the `scripts/version.sh` stamp serves install.sh
+  carrying `@v0.3.3`, a SKILL.md sha-equal to the tree server's, and prints `v0.3.3+ (88b38c8)`;
+  full podman cleanup afterwards.
+- Release note: v0.3.3 predates these commits; the pin itself ships with the next tag — from then
+  on, a server released at `vX.Y.Z` tells its installer to install exactly `sandbin-client@vX.Y.Z`,
+  and the installed client reports the same string.
