@@ -1,7 +1,8 @@
 # Plan: hosted docs under /docs and a redesigned landing page
 
-Status: planned. Spec: `docs/decisions/0018-hosted-docs-and-landing.md` — layout, engine,
-landing content, the copy button and the inline-logo decision are settled there. Baseline HEAD
+Status: implemented and closed. Spec: `docs/decisions/0018-hosted-docs-and-landing.md` — layout, engine,
+landing content, the copy button and the inline-logo decision are settled there (with the
+close-out corrections at the end of that record). Baseline HEAD
 is the plan-open commit `499eeb7` (the 0017 close-out was restacked `a9e251c`→`e5b5568` by
 three user logo/README commits; test counts unchanged: `cmd/sandbin` 183 + 19,
 `cmd/sandbin-client` 107 + 28, `internal/version` 4 + 23, all gates green). Sits on 0016 (the
@@ -17,8 +18,7 @@ startup-rendered page map (exact-name lookup, `.md`→`.html` link rewrite, gith
 slug ids, shared branded shell + hub); `ServeHTTP` routes `/docs*` before binRoutes;
 `renderFrontPage` is rewritten with the new body (frontBase templating untouched). Both the
 landing page and the docs shell show the logo by inlining the embedded SVG markup (no
-`<img>` — the wordmark's web font only loads inline). No client change, no new route
-touching bins.
+`<img>`). No client change, no new route touching bins.
 
 **Tech stack:** Go stdlib + `github.com/gomarkdown/markdown` (new direct dep) + inline
 vanilla JS for the one copy button.
@@ -55,8 +55,9 @@ vanilla JS for the one copy button.
 ## Task 1: embed, render and serve the docs
 
 **Files:** modify `skill.go`, `go.mod`, `go.sum`, `cmd/sandbin/handlers.go` (routing only),
-`Containerfile` (COPY docs in this same commit — the image build needs the embedded tree);
-create `cmd/sandbin/docs.go`, `cmd/sandbin/docs_test.go`
+`Containerfile` (COPY docs in this same commit — the image build needs the embedded tree) and
+`.containerignore` (close-out correction: its `docs` line had to be narrowed, or `COPY docs`
+finds nothing); create `cmd/sandbin/docs.go`, `cmd/sandbin/docs_test.go`
 
 **Interfaces:**
 - Produces: `sandbin.UsageDocs embed.FS` (`//go:embed docs/usages/*.md`) and
@@ -147,10 +148,14 @@ create `cmd/sandbin/docs.go`, `cmd/sandbin/docs_test.go`
    archives, metadata, DELETE, verify-key, 405/404/403/413 shapes, skill routes) with the
    landing page the single intentional diff — quote the diff summary.
 4. Docs battery yourself: hub + ten pages; crawl every href and anchor (zero unresolved);
-   verify the eight 0016 cross-reference links landed as `.html` forms; logo bytes == repo
-   file; content types; `/docs` vs `/docs/`; method matrix; no `{{` tokens; every hosted page
-   shows the wordmark as inline `<svg>` in the body (zero `<img>` logo references), the SVG's
-   own `@import` survives inlining and page CSS declares the `'Poetsen One'` stack;
+   verify the relative `.md` cross-links in the sources (22 of them by review time, not the
+   eight written at plan time) all landed as `.html` forms; logo bytes == repo
+   file; content types; `/docs` vs `/docs/`; method matrix (HEAD answers 200 with an empty
+   body on docs routes); no `{{` tokens; every hosted page
+   shows the wordmark as inline `<svg>` in the body (zero `<img>` logo references); zero
+   remote-font references pageside — the committed logo carries vector outlines, so no
+   `@import` survives because there is none (close-out correction) — and heading CSS may
+   declare the `'Poetsen One'` stack;
    embedded-render sanity: tables render as tables, code fences render, heading ids follow the
    slug rule including `Trusted proxies` → `trusted-proxies`.
 5. Routing safety: POST / still creates; a GET to an existing bin's base still serves;
@@ -176,3 +181,48 @@ create `cmd/sandbin/docs.go`, `cmd/sandbin/docs_test.go`
 
 Everything in the decisions record's Skipped section, plus: dark mode, favicon wiring, cache
 headers, docs pages for plans/decisions, and any change to bin-page HTML.
+
+## Outcome
+
+Implemented by `36a56a1` (docs hosting), `c5f0e32` (landing page) and `1463ab2` (usage-doc
+wording), restacked among the owner's own release commits (v0.3.1 `9b87c11`, v0.3.2 `e1936f8`).
+Reviewer verdict: APPROVE WITH FIXES, then closed.
+
+- Gates green throughout; test counts `cmd/sandbin` 183+19 → 196+29 (13 new test funcs +
+  10 subtests, zero removals; the front-page pins were rewritten in place), client 107+28 and
+  `internal/version` 4+23 untouched.
+- Side-by-side battery vs the `8cfdd38` baseline (95 probes): 77 byte-identical; the 18
+  differing probes are exactly the landing page (4) and the new `/docs` routes (14), including
+  traversal forms changing from baseline `400`/`404`/`405` shapes to the intended `404 unknown
+  bin` / `405`. SKILL.md, install.sh, client tree, store, lockout, archives and `internal/version`
+  byte-identical.
+- Docs battery: 12 pages (hub at both paths), 90 hrefs / 78 in-server links, zero unresolved;
+  `#trusted-proxies` resolves; logo route byte-equal to the repo file; inline `<svg>` on every
+  page, zero `<img>`, zero external scripts, only github.com links; tables render as `<table>`,
+  fences as `<pre>`, slug ids follow the rule; `{{` counts match each source file (deviation 1
+  below); pages are startup-rendered constants — a server with no docs tree on disk served them
+  unchanged.
+- Landing battery: the command in `<pre id="install-command">` piped through `bash` (plain and
+  `-s -- --dest`) installs and the installed client round-trips an upload; removed paragraphs
+  verified absent; host-guard battery (24 Host/XFF cases) identical old-vs-new; a real headless
+  Chrome proved both copy paths (`navigator.clipboard.writeText` with the exact command string,
+  and the `execCommand` fallback with `writeText` removed, no stray textarea, "copied" feedback).
+  OS clipboard contents themselves unreadable in headless — the one remaining unproven sliver.
+- Deviation rulings: (1) per-page `{{` count tests — accepted, doc bodies are concatenation-
+  built, served counts provably equal each source's; (2) `sandbin-api.md` reworded beyond the
+  Task-3 list — accepted as necessary (it described the removed curl trio), 4-line paragraph
+  diff only; (3) `// indirect` on gomarkdown — factually wrong, fixed at close-out.
+- Reviewer blocker found and fixed at close-out (`d88321e`): the tracked `.containerignore`
+  ignored `docs` wholesale, so the image build at HEAD failed at `COPY docs ./docs`; narrowed
+  to `docs/plans` + `docs/decisions`. Re-proven after the fix: the image builds, and its
+  container serves `/docs` (17252 B), `/docs/sandbin.html`, the byte-equal logo, landing and
+  `healthz`; a `--build-arg SANDBIN_VERSION` stamp reported `v0.3.2+ (e9f70dc)`; full podman
+  cleanup. `go mod tidy` moved gomarkdown into the direct require block (go.sum untouched).
+- Close-out wording corrections (the outline-the-wordmark logo change, made by the owner after
+  the plan was written): the committed logo carries vector outlines and no `@import`, so no
+  served page references remote fonts; the plan's font-related items were reworded above, and
+  `docs/usages/sandbin-serve.md` was corrected to state HEAD answers `200` with an empty body on
+  docs routes.
+- Release note: v0.3.2 already contains this plan's code; `go install @latest` and any deployed
+  v0.3.2 binary serve the hosted docs and the new landing page. A further tag is only needed to
+  carry the `d88321e` containerignore fix to `make container` users building from a cloned tree.

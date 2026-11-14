@@ -59,5 +59,6 @@ docs live under `/docs`: `GET /docs` and `GET /docs/` answer a hub page listing 
 and every page each set covers, `GET /docs/<name>.html` answers the page rendered from the
 `docs/usages/<name>.md` of the same name — the markdown is embedded in the binary at build time,
 so nothing under `/docs` is read from disk — and `GET /docs/assets/sandbin-logo.svg` answers the
-logo as `image/svg+xml`. None of them need a key, every other method on them answers `405`, and
-an unknown name under `/docs` is the plain `404 unknown bin`.
+logo as `image/svg+xml`. None of them need a key, every method but GET and HEAD on them answers
+`405` (HEAD answers `200` with an empty body), and an unknown name under `/docs` is the plain
+`404 unknown bin`.

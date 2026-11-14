@@ -25,3 +25,20 @@ Serving raw `.md` under `/docs`, mirroring the `docs/usages` tree in URLs, docs 
 syntax highlighting, dark theme, hosting `docs/plans`/`docs/decisions`, cache/ETag headers,
 version display on the landing page, JS on the docs pages, client output changes, and links
 from hosted docs back into the installer flow.
+
+## Close-out corrections (recorded after implementation)
+
+The logo decision rows were written while the wordmark still imported Poetsen One via `@import`.
+Before the plan's code ran, the owner converted the wordmark to vector outlines, so:
+
+- The committed `docs/assets/sandbin-logo.svg` carries no `@import` and no remote font URL;
+  measured, zero served page (landing, hub, ten docs pages) references any external font. The
+  "single allowed external asset" exception is therefore void, and the recorded
+  "GitHub README keeps the sans-serif fallback" limit no longer applies. Inlining the SVG markup
+  remains the chosen embedding form; the page CSS may declare the `'Poetsen One', sans-serif`
+  stack, which now resolves only if the reader has that font installed.
+- The `.containerignore` row is added to the container decision: `docs` is hosted content now,
+  so the ignore file covers only `docs/plans` and `docs/decisions` (`d88321e`).
+- Docs-route method handling: HEAD answers `200` with an empty body on `/docs` routes (GET-style
+  routing), not `405`; every other non-GET method answers `405`. Recorded in
+  `docs/usages/sandbin-serve.md`.
