@@ -1,5 +1,11 @@
+# build targets
 /sandbin
 /sandbin-client
 /dist/
-*.db
+
+# log files
+*.log
+
+# local settings / database file generated in development
 .sandbin.yaml
+*.db
