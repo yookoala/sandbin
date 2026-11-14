@@ -44,7 +44,8 @@ byte-identity claims above are unaffected.
 Independent re-verification (own checkers, binaries built from `8dbb1f0` and HEAD side by side):
 **ship with fixes**, both docs-side.
 
-- Stale pointers outside `docs/` — fixed in `b95c8ac`: `deploy/sandbin.env.example` still said
+- Stale pointers outside `docs/` — fixed in `d3f9100` (originally `b95c8ac`, restacked by a
+  history rewrite): `deploy/sandbin.env.example` still said
   `see README, Trusted proxies` and the `Containerfile` comment still said `the README run
   command`; both now name `docs/usages/sandbin-lockout.md#trusted-proxies` and
   `docs/usages/sandbin-podman.md` respectively.
