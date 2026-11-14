@@ -1,6 +1,6 @@
 # Plan: the landing page moves to an embedded template in internal/frontpage
 
-Status: planned. Spec: `docs/decisions/0020-frontpage-internal-template.md` — the new package,
+Status: implemented and closed. Spec: `docs/decisions/0020-frontpage-internal-template.md` — the new package,
 its Data shape, what stays in `cmd/sandbin`, and the engine choice are settled there. Baseline
 HEAD is the plan-0019 close-out `0aff529` (`cmd/sandbin` 199 + 29, `cmd/sandbin-client` 107 + 28,
 `internal/version` 6 + 35, all gates green). This is a rendering-only refactor of the 0018 landing
@@ -123,3 +123,39 @@ and the header concat, keeps `frontBase`/`frontHostRE` and the `brandCSS` (from 
 Everything in the decisions record's Skipped section, plus: `go mod`/dependency changes (none
 needed), caching the rendered page per host, and any behavior change to the docs shell that would
 share the template.
+
+## Outcome
+
+Implemented in one commit `d523216` on plan-open `d5ec4d5`. Reviewer verdict: APPROVE WITH
+FIXES — one follow-up-grade finding (wire framing, recorded in the decisions record), all
+functional claims verified.
+
+- Counts: `cmd/sandbin` 199+29, `cmd/sandbin-client` 107+28, `internal/version` 6+35 — all
+  unchanged; new `internal/frontpage`: 6 tests; zero test-name removals.
+  `git diff 0aff529..HEAD -- cmd/sandbin/handlers_test.go` is empty: the unchanged front-page
+  pins passing against the new rendering is the byte-identity proof.
+- Scope: handlers.go diff is exactly two hunks (import + `renderFrontPage`); `frontHostRE` and
+  the `frontBase` region `cmp`-identical (271 / 1201 bytes); docs.go, skill templates, client,
+  version, scripts, Containerfile absent. Failure path is the skill routes' pattern verbatim.
+- Reviewer's own battery (HEAD vs `0aff529` binaries, 20 raw-socket Host cases + 36-surface
+  battery + a separate 52-probe bad-key walk): headers and dechunked bodies diff-clean
+  everywhere — zero content diffs including the hostile-Host 400s, placeholder echoes,
+  multi-entry XFF, XFP https combos, docs pages, skill routes with the 0019 pin, bins, 301s,
+  405/404 shapes and the lockout walk.
+- Template hygiene: `front.html` holds exactly three actions (`{{.BrandCSS}}`, `{{.Logo}}` in
+  the exact hero wrapper, `{{.Base}}` in the install command); swapped back they reproduce the
+  old pageTemplate const byte-for-byte plus the documented blank line after `</header>`
+  (2240 == 2240; the implementer's initial "2239 == 2239" pairing was imprecise — corrected in
+  the decisions record). Mutation proofs in scratch copies made named frontpage tests fail and
+  only those.
+- Review finding (recorded, not reverted): `w.Write(buf.Bytes())` vs the old `io.WriteString`
+  changes only Go's chunked-transport framing of the landing body (one chunk vs 2 KiB chunks);
+  status line, headers and decoded body are identical, `Content-Length` is absent both ways, and
+  no client or test can observe framing. The decisions record carries the accepted deviation and
+  the honest phrasing "headers and dechunked bodies diff-clean".
+- Container proof: image built from HEAD stamps `v0.3.3+ (d523216)`, serves the landing
+  wire-identically to the tree server (18225 == 18225 raw bytes), healthz and the pinned
+  install.sh; full podman cleanup per the keep-list.
+- Limits accepted: untrusted-socket XFF and the TLS-socket branch are pinned by unchanged test
+  rows (every live socket in the sandbox is loopback-trusted; no TLS listener); the frontBase
+  region those rows bind is byte-identical.
