@@ -1,6 +1,7 @@
 # Plan: moving both command lines to urfave/cli
 
-Status: planned. Decisions in `docs/decisions/0015-urfave-cli.md` — they are the spec; this plan
+Status: shipped and reviewed — ship, no blockers (see Outcome). Decisions in
+`docs/decisions/0015-urfave-cli.md` — they are the spec; this plan
 implements them. Baseline HEAD is the plan-0014 close-out commit (`cmd/sandbin` 179 top-level
 tests + 19 subtests, `cmd/sandbin-client` 99 + 28 subtests, all gates green). Sits on plan 0014
 (the guard whose wordings must survive) and 0011 (the config ladder plumbing replaces).
@@ -175,3 +176,43 @@ find it first), `cmd/sandbin/ipcmd_test.go` (usage-wording pins only)
 Everything in the decisions record's Skipped section, plus: shell-completion UX work, help text
 customization, `sandbin-client upload` aliases, changing any HTTP verb semantics, and publishing
 a new module tag (the release bump stays a human decision).
+
+## Outcome
+
+Shipped in `c6ba72d` (server), `a11b4fe` (client verbs; amended from `a398a1e` to fold in the
+delete-flag reorder), `432dbab` (verb-shaped docs) and `571aa80` (module-graph tidy moving urfave
+to a direct require). Review verdict: ship, no blockers.
+
+Tests went 179 + 19 to 183 + 19 in `cmd/sandbin` and 99 + 28 to 106 + 28 in `cmd/sandbin-client`;
+all five gates green (implementer and reviewer), `comm` on test-name lists proving zero removals.
+Non-CLI sources (`client.go`, `config.go`, handlers, store, control, ipblock, archives, ansi,
+install.sh, Containerfile, deploy/) verified byte-identical to the `8dbb1f0` baseline.
+
+The review proved live against `8dbb1f0` binaries side by side: every operational wording
+byte-identical (upload/delete refusals incl. the trailing-slash naming `--folder`, guard refusal
+and cancel, wizard prompts, `server rejected this API key`, lockout warning), each exactly one
+`sandbin-client:` line with no urfave double print; a 19-case upload/delete equivalence battery
+produced identical server state and outputs across old `--delete x --delete-folder d`, new
+`delete x --folder d` and flag-first `delete --folder d x`; the full HTTP battery came back
+byte-equal (healthz, verify-key, 301, 404 + 404.html fallback, Basic Auth, PATCH merge/clear,
+DELETE, 413, 403/429 charging, archive extraction, front page, listing, install.sh) with the
+served `SKILL.md` the only intentional body change; the ladder, the env-is-not-consent guard
+rule, `SANDBIN_BIN_PASSWORD` as Basic Auth, and `sandbin ip` wordings all held. The container
+built from HEAD with urfave resolving inside the build and served a byte-equal install.sh plus a
+config-only upload/delete round trip.
+
+Deviation verdicts (reviewer): `reorderDeleteFlags` judged sound — `--` terminator honored,
+single-dash names stay positional exactly like baseline, an unknown `--token` becomes a
+zero-request usage error, and the reorder fires only for `delete` (upload flag-after-positional
+stays refused identically); the amend was safe (unpushed). The README `created`-not-`updated`
+accuracy fix verified true on both binaries. Accepted usage-shape changes: bare invocation prints
+help on stdout at exit 0, unknown verbs answer `No help topic for 'x'` at exit 1, flag misuse
+gets urfave usage rendering at exit 1. Non-blocking notes: the delete verb now runs with piped
+stdin (improvement, identical on both binaries); all-digit bin hashes quote in `.sandbin.yaml`
+(formatting only, pre-existing); the hand-built tar.gz `400 not a zip, tar or tar.gz archive`
+quirk is identical on baseline and HEAD — out of scope, unchased.
+
+The Skipped release-tag item grew teeth: the quick start and served skill both `go install
+...@latest`, and the only published tag (v0.1.2) predates the verb CLI, so a tagged release
+carrying the verbs is a precondition for publishing this tree — see the Review outcome of
+`docs/decisions/0016-usage-docs-split.md`.
