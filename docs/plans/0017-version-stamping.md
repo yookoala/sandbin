@@ -1,6 +1,7 @@
 # Plan: stamping the version string from the tag and commit
 
-Status: planned. Spec: `docs/decisions/0017-version-stamping.md` — precedence, formats and
+Status: shipped and reviewed — ship, no blockers (see Outcome). Spec:
+`docs/decisions/0017-version-stamping.md` — precedence, formats and
 limits are settled there. Baseline HEAD is the logo-hash-fix close-out (`cmd/sandbin` 183
 top-level tests + 19 subtests, `cmd/sandbin-client` 106 + 28, all gates green). Sits on plan
 0015 (the urfave wiring whose `--version` behavior must survive).
@@ -187,3 +188,42 @@ semantics), `docs/usages/sandbin-podman.md` (stamped container build),
 Everything in the decisions record's Skipped section, plus: version display on the front
 page or startup log, `--version` JSON output, CI-side stamping of artifacts, commit-hash
 embedding at release time, and running the release script against this repository.
+
+## Outcome
+
+Shipped in `8f5856c` (version package), `4186ffa` (both commands), `2864b26` (Makefile,
+scripts, Containerfile, .gitignore) and `c6b3b18` (docs), plus record corrections `8b15d7b`
+and `b901c91`. Review verdict: ship, no blockers.
+
+Tests: `cmd/sandbin` 183 + 19 unchanged, `cmd/sandbin-client` 106 + 28 → 107 + 28 (new
+`--version` pin — the client had none), new `internal/version` 4 + 23; `comm` proved zero
+removals; `skills/`, install.sh, SKILL.md, handlers, store, control, ipblock, archives,
+go.mod/go.sum, CI and deploy/ verified byte-identical, tags untouched.
+
+The review proved live in its own scratch clones: every git-state format exact against
+independently computed expectations (`v1.9.9 (deb3910)` exact-tag, `v1.9.9+ (c90a42f)`
+after-tag, `dev (c90a42f+)` tracked-dirty, `dev (8b15d7b)` no-tag/shallow, prerelease tags
+survive the tail-strip); unstamped `go build` never claims the tag; a `VERSION=` override
+with spaces and parens round-trips verbatim through Makefile and Containerfile quoting
+layers; the `release.sh` battery (happy path — release commit, byte-exact embedded file,
+annotated tag — plus seven zero-side-effect refusals, with `git push` appearing only in
+echo lines); and the GOPROXY battery against a file:// proxy built from `git archive`
+(`@v1.9.9` and `@latest` both print `sandbin-client version v1.9.9`, tag only; the
+empty-release.txt fallback prints the tag through the module-version backstop). Against the
+real public proxy, `@latest` resolves to the published v0.2.0 — which predates stamping and
+prints the `dev` fallback; the first published tag whose client prints its own tag is the
+next human-created release (`make release TAG=vX.Y.Z` then push). Container proof:
+`make container` stamped the clone's exact git-state string; an empty ARG keeps the
+released-tree tag / unreleased-tree `dev` behavior; the upload round trip served fine. The
+regression sweep vs the pre-change binaries was byte-identical except the two `--version`
+lines and the help VERSION block.
+
+Deviation verdicts (reviewer, all sound): the container target's `-t localhost/sandbin:latest`
+matches the quadlet `Image=` line and the podman page; `-buildvcs=false` falls to the embedded
+tag in released trees (docs corrected in `b901c91`); the dirty-rule asymmetry — tracked-only
+for `scripts/version.sh` while Go's own `vcs.modified` counts untracked files (measured,
+recorded in `8b15d7b`); go-test binaries carry no VCS stamping in Go 1.26, so both `--version`
+pins compare against the resolver's in-test output with no hardcoded hashes; a zero-byte
+`release.txt` embeds cleanly; and module semantics reject `@v9.x` installs without a `/v9`
+path suffix, so scratch batteries use `v1.9.9`-class tags — real `vMAJOR.MINOR.PATCH` releases
+are unaffected.
