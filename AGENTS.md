@@ -15,4 +15,6 @@
 
 1. "docs/plans": All plans are documented into the subfolder.
 2. "docs/decisions": All made decisions memory are documented into the subfolder here.
-3. "cmd/sandbin": The main program location.
+3. "docs/usages": Usage documentation, in two sets (server `sandbin.md` and client
+   `sandbin-client.md` summaries with their member pages).
+4. "cmd/sandbin": The main program location.
