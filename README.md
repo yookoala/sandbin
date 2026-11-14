@@ -20,19 +20,43 @@ edited afterwards with PATCH, and read back at the bin base.
 All contents are stored in a single sqlite file. A db written before metadata existed gains the
 columns for it the next time a `serve` opens it, so upgrading needs no manual step.
 
-## Quick example
+## Quick start
+
+**1. Run the server** (needs Go on the server machine):
 
 ```sh
 go build -o sandbin ./cmd/sandbin
-SANDBIN_API_KEY=your-key ./sandbin serve
+SANDBIN_API_KEY=your-key ./sandbin serve        # listens on :8080
+```
 
+Sanity-check it with curl, on that machine:
+
+```sh
 BIN=$(curl -s -X POST -H "X-API-Key: your-key" http://localhost:8080/)   # -> /abc1234/
 curl -X PUT -H "X-API-Key: your-key" -d '<h1>Hello</h1>' "http://localhost:8080${BIN}index.html"
 curl http://localhost:8080${BIN}                                         # -> the page
+```
 
-go build -o sandbin-client ./cmd/sandbin-client
-export SANDBIN_URL=http://localhost:8080 SANDBIN_API_KEY=your-key
-sandbin-client upload prototype/index.html                               # -> created + bin URL
+**2. Set up the client** on the machine your agent works on — Go is needed there too,
+because the installer builds the client binary. Run the one-liner once in each project
+directory you want to upload from, naming your server's address:
+
+```sh
+cd ~/work/my-project
+curl -fsSL http://your-server:8080/skills/sandbin-preview/install.sh | bash
+```
+
+It installs the agent skill into `$HOME/.agents/skills/sandbin-preview`, builds
+`sandbin-client` next to it, and at a terminal asks for the API key once, saving it and
+the server address into that directory's `.sandbin.yaml`. (Piped without a terminal it
+prints the `init` command to finish instead.)
+
+**3. Upload a preview** from that project directory:
+
+```sh
+"$HOME/.agents/skills/sandbin-preview/sandbin-client" upload prototype/index.html
+# created http://your-server:8080/abc1234/prototype/index.html
+# http://your-server:8080/abc1234/          <- hand this URL to a human
 ```
 
 ## Documentation
@@ -44,9 +68,8 @@ Usage docs come in two sets, each with its own summary and content table:
 - **[docs/usages/sandbin-client.md](docs/usages/sandbin-client.md)** — the client: uploading and
   deleting previews, pointing it at a server, and the agent skill + one-line installer.
 
-An agent learns the client from the served skill itself: fetch
-`GET /skills/sandbin-preview/SKILL.md` from a running server, or install the skill with
-`curl -fsSL http://localhost:8080/skills/sandbin-preview/install.sh | bash`.
+An agent learns the client from the skill the Quick start installed; it can also be fetched
+from any running server at `GET /skills/sandbin-preview/SKILL.md`.
 
 # License
 

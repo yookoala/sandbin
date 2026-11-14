@@ -21,3 +21,18 @@ Subdirectory-per-set layout, duplicating the lockout text into the client set, r
 prose beyond the eight cross-reference fixes, moving the plan/decision records under `docs/usages`,
 splitting the client upload page further (its verbs stay one page), and touching the served
 front page or SKILL.md (they are rendered products, not the README's audience).
+
+## Post-split revision (same day)
+
+At the user's request the README's `## Quick example` became a `## Quick start` guide split
+by machine. The server steps (build, `serve`, curl sanity check) stay on the server machine.
+The client steps moved to the client machine and set up with the served one-liner
+`curl -fsSL http://your-server:8080/skills/sandbin-preview/install.sh | bash` in the project
+directory instead of `go build -o sandbin-client`, with the explicit note that the client
+machine needs Go too (the installer builds the binary there with `go install`). The upload
+example therefore invokes the installed binary at
+`$HOME/.agents/skills/sandbin-preview/sandbin-client` and relies on the `.sandbin.yaml` the
+installer's single API-key question wrote in that directory. The Documentation section's
+closing sentence no longer repeats the installer one-liner; it now only mentions fetching
+`GET /skills/sandbin-preview/SKILL.md`. No usage-page body changed: the coverage and
+byte-identity claims above are unaffected.
