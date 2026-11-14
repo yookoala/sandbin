@@ -37,6 +37,18 @@ business, and one sentence under the tabs says the seven harnesses all also read
 | Test pins | `handlers_test.go`'s front pins change because the page intentionally changes: `TestFrontPageAtRoot` keeps the plain-curl, copy-button and clipboard pins, drops the deleted paragraph's sentence, replaces the bare `--dest` pin with pins on several harness paths, and gains pins for the harness labels. `TestFrontPageEchoesTheVisitorsAddress` is untouched: every command carries `{{.Base}}`, so its per-host echo and placeholder pins still hold. The `internal/frontpage` battery gains the harness-table pins, the hidden-until-selected behavior, the project note, and a custom-slice render proving the range is data-driven. |
 | Usage docs | `docs/usages/sandbin-serve.md`'s landing description and `docs/usages/sandbin-client-skill.md`'s landing sentence are updated to describe the tabs (the installer's `--dest` description there stays). Because the docs pages are embedded at build time, the hosted HTML of exactly those two pages changes too. |
 
+## Implementation mechanics (recorded at review)
+
+- `Render` fills the literal `{{.Base}}` token inside each harness `Cmd` **before** executing the
+  page, on a copy of the slice: `text/template` does not re-parse strings it prints, so the token
+  would otherwise land in the page verbatim. Proven non-mutating — a caller's slice keeps its
+  tokens after `Render`, and `DefaultHarnesses()` rebuilds from literals per call.
+- Command blocks carry one composed attribute, `class="cmd-body{{if ne $i 0}} hidden{{end}}"` —
+  the plan's sketch of a second `class` would be invalid HTML.
+- Two existing frontpage tests adapted to the page's new content (`sampleData()` supplies the
+  harnesses; the install-command-line test counts the eight commands): strengthened, never
+  weakened; no other existing test anywhere was edited.
+
 ## Skipped on purpose
 
 Changing `install.sh` or `SKILL.md` (byte-identical: the commands shown are forms the existing

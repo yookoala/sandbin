@@ -1,6 +1,6 @@
 # Plan: the landing page gains per-harness install command tabs
 
-Status: planned. Spec: `docs/decisions/0021-harness-install-tabs.md` — the harness table, tab
+Status: implemented and closed. Spec: `docs/decisions/0021-harness-install-tabs.md` — the harness table, tab
 mechanics, copy-button posture, data shape, removed content and doc updates are settled there.
 Baseline HEAD is the plan-0020 close-out `2b1c29a` (`cmd/sandbin` 199+29, `cmd/sandbin-client`
 107+28, `internal/version` 6+35, `internal/frontpage` 6, all gates green). Unlike 0020 this is a
@@ -179,3 +179,47 @@ existing tone and length discipline (a couple of sentences, one command example)
 Everything in the decisions record's Skipped section, plus: `go mod` changes (none needed),
 `Data` refactors beyond the one field, docs pages for harness specifics beyond the two edits, and
 any installer flag changes.
+
+## Outcome
+
+Implemented in `ccd4e6d` (landing tabs) and `e4051fb` (usage docs) on plan-open `662552a`.
+Reviewer verdict: APPROVE, no blockers. Recommend merge.
+
+- Counts: `cmd/sandbin` 199+29, `cmd/sandbin-client` 107+28, `internal/version` 6+35 unchanged;
+  `internal/frontpage` 6 -> 13 (the seven claimed tests, all present); zero test-name removals
+  anywhere. `handlers_test.go` diff touches only `TestFrontPageAtRoot`'s pin lists (24+/4-); the
+  `TestFrontPageEchoesTheVisitorsAddress` region `cmp`-identical.
+- Scope: exactly the five Task-1 files + the two usage docs; `install.sh`, `SKILL.md`, `docs.go`
+  `cmp`-identical; `handlers.go` = the Data literal + doc comment; `frontBase`/`frontHostRE`
+  `cmp`-identical.
+- Reviewer's own battery (HEAD vs `2b1c29a` binaries, 62 requests per side): exactly 8 bodies
+  differ — the landing GET cases and the two edited docs pages, diffs limited to their landing
+  sentences; all 62 header sets byte-identical; zero diffs on docs hub, the eight unedited pages,
+  logo, SKILL.md, install.sh (pin line both sides), healthz, verify-key, bins/301/PATCH/listing/
+  DELETE/fallback, 404/405 shapes, odd-Host bodies; bad-key walk identical (one 1-second
+  Retry-After truncation jitter). Landing 18069 -> 21463 bytes (Host example.com), verbatim
+  survival of tagline/header/links/copy posture confirmed, deleted paragraph gone, zero `{{`,
+  no `<script src=`, no `<img`, no `~/`.
+- Rendered table byte-equal to the decisions table; four install proofs run verbatim from the
+  served page (Agents, Claude Code, Windsurf into scratch HOMEs; the project-note form into a
+  scratch repo dir) — each landed `SKILL.md` exactly where its tab says, pinned client `@v0.3.3`.
+- Browser proof (real Chrome): all eight tabs in order — exactly one visible command per tab,
+  `aria-pressed` follows; copy resolves on default and non-default tabs; the `execCommand`
+  fallback proven by forcing `writeText` rejection on the Claude Code tab (textarea captured at
+  copy time == the visible command); commands are plain selectable `<pre>` text without JS; empty
+  console; 400px viewport wraps the tab row without overflow.
+- Mutation proofs: dropping a `hidden`, swapping `$HOME` for `~`, deleting the project note and
+  reordering the table each fail named, specific tests and only those; data-drivenness pinned by
+  the custom-slice test.
+- Container proof: image from HEAD stamps `v0.3.3+ (e4051fb)`, landing byte-identical to the tree
+  server (21463 == 21463), eight commands and the pin line present; full podman cleanup per the
+  keep-list.
+- Deviations ruled on and accepted (recorded in the decisions): `Render` fills the `{{.Base}}`
+  token inside each harness command on a copy of the slice before executing (text/template does
+  not re-parse printed strings; proven non-mutating to callers and factory rows); the single
+  composed `class` attribute on the command blocks; the minimal, strengthening-only edits to two
+  existing frontpage tests.
+- Stated plainly as unproven: an unforced plain-HTTP clipboard rejection (Chrome treats
+  127.0.0.1 as a secure context, so rejection was forced via injected failure) and actual
+  system-clipboard read-back (no permission in the harness; the writeText argument, the
+  execCommand textarea capture and the `copied` feedback stand in).
