@@ -40,15 +40,17 @@ client change, no SKILL.md change, no landing-page change.
 - Tests keep the 0017 rule: no written-down version literal in a test expectation — expectations
   derive from `EmbeddedTag()`/the template the same way the resolver's self-test derives from
   `releaseTag`.
-- Never push; never tag the real repo. Tags v0.1.0..v0.3.2 stay where they are.
+- Never push; never tag the real repo. Tags v0.1.0..v0.3.3 stay where they are.
 
 ## Review Focus
 
 - The served install.sh is the ONLY intentional byte diff in the whole HTTP surface; every other
   route stays byte-identical to the baseline binaries, SKILL.md first.
-- Both branches proven live: on this released tree (release.txt = `v0.3.2`) the served script
-  carries `@v0.3.2`, and piping it installs a client that reports `v0.3.2`; on a scratch tree
-  whose release.txt is non-semver (e.g. `nightly-2026`) or empty, the served script carries
+- Both branches proven live: on this released tree (release.txt holds a plain semver tag —
+  `v0.3.3` at plan time, but every expectation DERIVES `version.EmbeddedTag()`, never a
+  written-down tag) the served script carries `@` + that tag, and piping it installs a client
+  that reports the same tag; on a scratch tree whose release.txt is non-semver (e.g.
+  `nightly-2026`) or empty, the served script carries
   `@latest` and piping still installs and round-trips.
 - `installPin` cannot be fooled: injected ldflags values and dev formats never appear in the
   served script.
@@ -117,9 +119,10 @@ client change, no SKILL.md change, no landing-page change.
   HTTP battery byte-identical EXCEPT the served install.sh body (quote the exact diff — one
   line of the go install command + the added comment sentence); SKILL.md served body
   byte-identical; landing page, /docs pages, bins and all error shapes identical.
-- Live pin proof on the released tree: served install.sh contains `sandbin-client@v0.3.2`
-  literally (release.txt holds v0.3.2); piped with `bash -s -- --dest <scratch>/skills` it
-  installs and the installed `sandbin-client --version` prints exactly `v0.3.2`; an upload
+- Live pin proof on the released tree: served install.sh contains `sandbin-client@` +
+  `version.EmbeddedTag()` literally (the tag release.sh embedded in release.txt); piped with
+  `bash -s -- --dest <scratch>/skills` it
+  installs and the installed `sandbin-client --version` prints exactly that tag; an upload
   round trip works.
 - Live fallback proof: a scratch COPY of the tree with release.txt rewritten to `nightly-2026`
   (and a second run with it emptied) builds, serves, and its served install.sh carries
@@ -127,8 +130,8 @@ client change, no SKILL.md change, no landing-page change.
   round-trips. The copy lives under /tmp/opencode only; the real repo's release.txt is never
   touched.
 - installPin cannot be fooled: a server binary built with `-ldflags -X ...version.Value=v9.9.9`
-  still serves `@v0.3.2` (the pin reads the embedded tag, not Value); a built-with-Value server's
-  `--version` line still prints v9.9.9 (String precedence untouched).
+  still serves `@` + the embedded tag (the pin reads the embedded tag, not Value); a
+  built-with-Value server's `--version` line still prints v9.9.9 (String precedence untouched).
 - Cleanup: kill servers via /proc scan (basename pid, Z ignored), ports 18296+ clear,
   `/tmp/opencode` EMPTY at the end, repo clean apart from `?? .opencode/`, tags unchanged.
 
@@ -141,13 +144,14 @@ client change, no SKILL.md change, no landing-page change.
    scripts/ untouched; `String()` and the resolver precedence unchanged (diff version.go).
 3. Full HTTP byte-identity battery vs baseline binaries with install.sh the single intentional
    diff; quote the install.sh diff (command line + comment sentence).
-4. Pin battery: served script carries `@` + `EmbeddedTag()` when semver (measured `@v0.3.2` here);
+4. Pin battery: served script carries `@` + `EmbeddedTag()` when semver (the tag this released
+   tree embeds);
    scratch-tree `nightly-2026` and empty-tag trees serve `@latest` and piped installs still
    work; injected-Value server still pins the embedded tag and its `--version` still echoes the
    injected value; semver regex tested at both boundaries (`v1.2`, `v1.2.3.4`, `V1.2.3`,
    `v1.2.3-rc1`, `v1.2.3+build`, empty, whitespace-padded).
 5. Installed-client proof: piped installer from the live released-tree server yields a client
-   reporting exactly `v0.3.2` (the 0017 release.txt-in-zip path), and its upload/describe round
+   reporting exactly `EmbeddedTag()` (the 0017 release.txt-in-zip path), and its upload/describe round
    trip works.
 6. Usage-doc sentences accurate against measured served scripts; untouched claims byte-identical.
 7. Cleanup confirmation: /proc scan clean of live sandbin, ports clear, `/tmp/opencode` empty,
