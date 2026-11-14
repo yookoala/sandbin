@@ -1,8 +1,8 @@
 # Sandbin
 
-<img src="docs/assets/sandbin-logo.svg" width="300" alt="Sandbin logo" />
-
 [![CI status](https://github.com/yookoala/sandbin/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/yookoala/sandbin/actions/workflows/ci.yml?query=branch%3Amain)
+
+<img src="docs/assets/sandbin-logo.svg" width="100" alt="Sandbin logo" />
 
 A simple PUT/GET server for CLI agents in sandbox to submit HTML / ANSI mock up previews
 or simple prototyping.
