@@ -215,8 +215,9 @@ var devFormat = regexp.MustCompile(`^dev \([0-9a-f]{7}\+?\)$`)
 
 // TestStringOnThisBinary reads this test binary's own build info and asserts String() matches
 // it: a build from a git checkout reports the dev format carrying this checkout's short
-// revision, a build outside version control reports plain dev. The expected hash comes from
-// the build info, never from a value written down in this file.
+// revision; a build without VCS stamping reports the tag embedded by scripts/release.sh, or
+// plain dev while release.txt is still empty. The expectation reads the same build info and
+// the same embedded file, never a value written down in this file.
 func TestStringOnThisBinary(t *testing.T) {
 	got := String()
 
@@ -245,8 +246,16 @@ func TestStringOnThisBinary(t *testing.T) {
 	}
 
 	if revision == "" {
-		if got != "dev" {
-			t.Errorf("String() = %q in a build without VCS stamping, want %q", got, "dev")
+		// No VCS stamping (a go test binary, or a zip build): the next source that knows
+		// something is the tag scripts/release.sh embedded. Once a release has been made the
+		// test binary must name that tag; only while release.txt is still empty is the answer
+		// plain dev. The expectation reads the same embedded source, never a written-down tag.
+		want := strings.TrimSpace(releaseTag)
+		if want == "" {
+			want = "dev"
+		}
+		if got != want {
+			t.Errorf("String() = %q in a build without VCS stamping, want %q", got, want)
 		}
 		return
 	}
