@@ -27,9 +27,15 @@ columns for it the next time a `serve` opens it, so upgrading needs no manual st
 **1. Run the server** (needs Go on the server machine):
 
 ```sh
-go build -o sandbin ./cmd/sandbin
-SANDBIN_API_KEY=your-key ./sandbin serve        # listens on :8080
+make                                           # -> dist/sandbin and dist/sandbin-client
+SANDBIN_API_KEY=your-key ./dist/sandbin serve    # listens on :8080
 ```
+
+`make` stamps the build from git, so `./dist/sandbin --version` answers `v0.3.0 (1abcdef)` on a
+tagged commit, `v0.3.0+ (2abcdef)` a few commits past a tag, or `dev (3abcdef+)` with
+uncommitted tracked work. A binary installed with `go install
+github.com/yookoala/sandbin/cmd/sandbin@v0.3.0` instead names the tag alone (`v0.3.0`), because
+a downloaded module copy has no git to ask; see [Running the server](docs/usages/sandbin-serve.md).
 
 Sanity-check it with curl, on that machine:
 

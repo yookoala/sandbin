@@ -8,6 +8,17 @@ looks for it and podman tries to pull a registry image otherwise:
 podman build -t localhost/sandbin:latest .
 ```
 
+`make container` runs that same build through podman with the version string from
+`scripts/version.sh` passed in, which is what the container's `sandbin --version` then prints; to
+do it by hand instead of through the Makefile:
+
+```sh
+podman build -t localhost/sandbin:latest --build-arg SANDBIN_VERSION="$(scripts/version.sh)" .
+```
+
+Without `--build-arg` the stamp is empty and the image falls back to what the copied tree can
+honestly say: the tag `internal/version/release.txt` carries at a release, otherwise plain `dev`.
+
 Podman warns `HEALTHCHECK is not supported for OCI image format` on every build: its default
 image format drops that line. The probes below are the podman-native form, and podman runs
 them. Add `--format docker` to the build instead if you want the image to carry it.
