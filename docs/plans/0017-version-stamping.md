@@ -227,3 +227,8 @@ pins compare against the resolver's in-test output with no hardcoded hashes; a z
 `release.txt` embeds cleanly; and module semantics reject `@v9.x` installs without a `/v9`
 path suffix, so scratch batteries use `v1.9.9`-class tags — real `vMAJOR.MINOR.PATCH` releases
 are unaffected.
+
+Post-close follow-up: after the human ran the first real releases (v0.3.0..v0.3.2, embedding
+`v0.3.2` in `release.txt`), CI's `TestStringOnThisBinary` failed — its no-VCS branch hardcoded
+plain `dev`, valid only before the first release, while the resolver correctly named the
+embedded tag. Fixed in `e32fd4b` by deriving the expectation from the same embedded source.
