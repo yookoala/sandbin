@@ -293,3 +293,61 @@ func TestEmbeddedReleaseFileIsTheRawTagFile(t *testing.T) {
 		t.Errorf("String() with an empty release.txt must still name a version")
 	}
 }
+
+// TestEmbeddedTagIsTheTrimmedEmbeddedFile checks the pin source docs/decisions/0019 settles:
+// EmbeddedTag reports the content scripts/release.sh embedded, trimmed, and nothing else — no
+// precedence, no Value, no format(). The expectation reads the same embedded source and the
+// same file on disk, never a tag written down in this file.
+func TestEmbeddedTagIsTheTrimmedEmbeddedFile(t *testing.T) {
+	want := strings.TrimSpace(releaseTag)
+	if got := EmbeddedTag(); got != want {
+		t.Errorf("EmbeddedTag() = %q, want the embedded content %q trimmed", got, want)
+	}
+	onDisk, err := os.ReadFile("release.txt")
+	if err != nil {
+		t.Fatalf("read release.txt: %v", err)
+	}
+	if got := EmbeddedTag(); got != strings.TrimSpace(string(onDisk)) {
+		t.Errorf("EmbeddedTag() = %q, want the release.txt file content trimmed", got)
+	}
+	if EmbeddedTag() != strings.TrimSpace(EmbeddedTag()) {
+		t.Errorf("EmbeddedTag() = %q, want it already trimmed on both ends", EmbeddedTag())
+	}
+	// The pin must never echo an injected Value: an injected stamp is a build state, not an
+	// embedded tag, and EmbeddedTag reads only releaseTag.
+	if Value != "" && EmbeddedTag() == Value && releaseTag != Value {
+		t.Errorf("EmbeddedTag() = %q echoes the injected Value instead of the embedded tag", EmbeddedTag())
+	}
+}
+
+// TestSemverTagIsTheWholePinnableShape table-drives the single semver decision of
+// docs/decisions/0019 at both boundaries: a plain vMAJOR.MINOR.PATCH tag comes back verbatim,
+// every other name — short, long, v-less, capital, prerelease, build-suffixed, whitespace —
+// comes back empty. The tags here are synthetic inputs, not this repo's release.
+func TestSemverTagIsTheWholePinnableShape(t *testing.T) {
+	cases := []struct {
+		name string
+		tag  string
+		want string
+	}{
+		{"a plain tag is kept whole", "v0.3.2", "v0.3.2"},
+		{"a synthetic tag is kept whole", "v1.2.3", "v1.2.3"},
+		{"multi-digit segments are kept whole", "v10.20.30", "v10.20.30"},
+		{"a two-segment tag is rejected", "v1.2", ""},
+		{"a four-segment tag is rejected", "v1.2.3.4", ""},
+		{"a tag without the v is rejected", "1.2.3", ""},
+		{"a capital V is rejected", "V1.2.3", ""},
+		{"a prerelease tag is rejected", "v1.2.3-rc1", ""},
+		{"a build-suffixed tag is rejected", "v1.2.3+build", ""},
+		{"a non-semver name is rejected", "nightly-2026", ""},
+		{"the empty tag is rejected", "", ""},
+		{"a dev-format string is rejected", " dev (abc1234)", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SemverTag(tc.tag); got != tc.want {
+				t.Errorf("SemverTag(%q) = %q, want %q", tc.tag, got, tc.want)
+			}
+		})
+	}
+}

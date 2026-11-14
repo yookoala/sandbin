@@ -6,6 +6,7 @@ package version
 
 import (
 	_ "embed"
+	"regexp"
 	"runtime/debug"
 	"strings"
 )
@@ -25,6 +26,30 @@ var releaseTag string
 // shortHashLen is how many characters of a revision the dev formats carry, matching the
 // git rev-parse --short=7 the Makefile uses.
 const shortHashLen = 7
+
+// EmbeddedTag reports the tag scripts/release.sh embedded, trimmed of the newline release.txt
+// ends with: the empty string before the first release, or when release.txt says nothing. It
+// is a pure accessor for consumers that want the embedded tag alone — never String(), whose
+// precedence may answer with an injected Value or a dev format instead, because a build state
+// is not a publishable tag.
+func EmbeddedTag() string {
+	return strings.TrimSpace(releaseTag)
+}
+
+// semverTagRE is the whole pinnable shape docs/decisions/0019-pinned-client-version-in-installer
+// settles: a vMAJOR.MINOR.PATCH tag, v required, three plain numeric segments, no prerelease or
+// build suffix — exactly what scripts/release.sh writes and go install @tag can fetch.
+var semverTagRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+
+// SemverTag reports the tag verbatim when it is a plain semantic version and the empty string
+// for everything else. This is the one home of that decision, so every consumer asks the same
+// question the same way.
+func SemverTag(tag string) string {
+	if semverTagRE.MatchString(tag) {
+		return tag
+	}
+	return ""
+}
 
 // String reports the version string of the running binary.
 func String() string {
