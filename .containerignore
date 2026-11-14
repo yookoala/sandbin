@@ -1,4 +1,5 @@
 .git
 .opencode
-docs
+docs/plans
+docs/decisions
 *.db
