@@ -20,8 +20,10 @@ configuration:
 curl -fsSL http://localhost:8080/skills/sandbin-preview/install.sh | bash
 ```
 
-The landing page at `GET /` carries that same one-liner, with a copy button beside it, and its
-`--dest` form is the same pipe.
+The landing page at `GET /` carries that as a row of harness tabs: the Agents tab shows the
+no-`--dest` one-liner for `$HOME/.agents/skills`, every other tab the same pipe with
+`--dest "$HOME/<folder>"` for that harness's own skills folder, and one copy button copies whichever tab
+is showing.
 
 The installer takes an optional `-d` or `--dest` to pick the skills folder instead, passed
 through the pipe with `bash -s --`; for a single project that means:

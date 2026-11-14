@@ -53,8 +53,10 @@ see [Trusted proxies](sandbin-lockout.md#trusted-proxies)) optionally name the p
 key is configured, a trusted proxy value cannot be read, or another serve already answers on its
 control socket.
 
-`GET /` answers the branded landing page: the wordmark, the tagline, the GitHub links, the
-one-line skill installer with its copy button, and the links into the hosted docs. The hosted
+`GET /` answers the branded landing page: the wordmark, the tagline, the GitHub links, the skill
+installer as a row of harness tabs, each tab showing that harness's own install one-liner with a
+copy button, the no-`--dest` tab installing into `$HOME/.agents/skills` and `--dest .agents/skills`
+installing into the current project, and the links into the hosted docs. The hosted
 docs live under `/docs`: `GET /docs` and `GET /docs/` answer a hub page listing the two doc sets
 and every page each set covers, `GET /docs/<name>.html` answers the page rendered from the
 `docs/usages/<name>.md` of the same name — the markdown is embedded in the binary at build time,
