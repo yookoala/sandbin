@@ -32,10 +32,12 @@ curl -fsSL http://localhost:8080/skills/sandbin-preview/install.sh | bash -s -- 
 
 and for an agent with its own folder, for example Claude, `--dest "$HOME/.claude/skills"`.
 `--help` prints the usage; anything else stops with `unknown argument` and installs nothing.
-When the machine has Go, the installer also builds the client binary into the skill folder
-(`GOBIN` at the skill dir, `go install github.com/yookoala/sandbin/cmd/sandbin-client@latest`);
-without Go, or if that install fails, it says so, exits 0 anyway, and the skill builds the
-client on first use instead.
+When the machine has Go, the installer also builds the client binary into the skill folder,
+pinned to the release that served it: the served script carries `GOBIN` at the skill dir and
+`go install github.com/yookoala/sandbin/cmd/sandbin-client@vX.Y.Z`, the fill naming the
+server's own release tag when that tag is a plain `vMAJOR.MINOR.PATCH` and `latest`
+otherwise; without Go, or if that install fails, it says so, exits 0 anyway, and the skill
+builds the client on first use instead.
 
 With the client binary in place the installer also initializes the current directory. At a
 terminal with `/dev/tty` available it runs `sandbin-client init --url http://localhost:8080`
@@ -52,9 +54,9 @@ and the command is printed instead:
 
 so an agent or a CI job finishes the setup with that one line.
 
-A client the installer built with `go install ...@latest` is a proxy download, so its
-`--version` line names the resolved tag alone (newest tag wins) with no commit hash: that
-binary is exactly the tagged commit, and a module zip carries no commit hash to print.
-Version stamping itself landed after the published v0.2.0, so today's `@latest` client prints
-the plain `dev` fallback; a client installed from any future tag prints the tag (see
-[Running the server](sandbin-serve.md)).
+A client the installer built with `go install ...@vX.Y.Z` is a proxy download of exactly the
+tag the serving server was released from — the tag travels inside the module zip — so its
+`--version` line names that tag alone, and installer, server and client share one version
+string end to end. A `@latest` build — the installer's fallback when the server's release tag
+is not a plain `vMAJOR.MINOR.PATCH`, and the skill's own first-use build line — resolves to
+the newest published tag (see [Running the server](sandbin-serve.md)).
