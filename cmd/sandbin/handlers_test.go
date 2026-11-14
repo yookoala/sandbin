@@ -167,8 +167,25 @@ func TestFrontPageAtRoot(t *testing.T) {
 		"prototype files, and hand a human plain preview URLs.",
 		"<svg xmlns=\"http://www.w3.org/2000/svg\"",
 		"curl -fsSL http://example.com/skills/sandbin-preview/install.sh | bash",
-		"initializes the current directory by asking a single question, the API key",
-		"--dest",
+		// The install block is a harness selector: the eight tabs of the decisions table,
+		// each naming that harness's own skills folder as a quoted $HOME path.
+		"class=\"tab\"",
+		"aria-pressed",
+		"cmd-body",
+		">Agents</button>",
+		">OpenCode</button>",
+		">Claude Code</button>",
+		">Codex</button>",
+		">Cursor</button>",
+		">Copilot</button>",
+		">Gemini CLI</button>",
+		">Windsurf</button>",
+		"curl -fsSL http://example.com/skills/sandbin-preview/install.sh | bash -s -- --dest \"$HOME/.claude/skills\"",
+		"curl -fsSL http://example.com/skills/sandbin-preview/install.sh | bash -s -- --dest \"$HOME/.codeium/windsurf/skills\"",
+		// The two sentences that replaced the old --dest paragraph.
+		"The first tab is the shared folder: with no <code>--dest</code> the installer writes to",
+		"<code>$HOME/.agents/skills/sandbin-preview</code>",
+		"<code>| bash -s -- --dest .agents/skills</code>",
 		"href=\"https://github.com/yookoala/sandbin\"",
 		"href=\"https://github.com/yookoala/sandbin/tree/main/docs/usages\"",
 		"href=\"/docs\"",
@@ -184,13 +201,16 @@ func TestFrontPageAtRoot(t *testing.T) {
 		}
 	}
 	// What the page no longer carries: the bin semantics, the three-line curl trio and the
-	// privacy paragraph are the hosted API docs' business now, and the wordmark is inlined
-	// markup rather than an <img> reference.
+	// privacy paragraph are the hosted API docs' business now, the wordmark is inlined
+	// markup rather than an <img> reference, and the single --dest paragraph is now the
+	// tabs and the two sentences under them.
 	for _, gone := range []string{
 		"A bin is a collection of files under a random eight-hex path",
 		"curl -X POST -H \"X-API-Key: your-key\" http://example.com/",
 		"open http://example.com/abc1234/",
 		"Bins are private in the ordinary way",
+		"initializes the current directory by asking a single question, the API key",
+		"hand the installer a destination",
 		"<img",
 		"<script src=",
 	} {

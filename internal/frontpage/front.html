@@ -7,6 +7,15 @@
 <style>
 {{.BrandCSS}}
 </style>
+<style>
+.tabs{display:flex;flex-wrap:wrap;gap:0.4rem;margin:1.1em 0 0.6em}
+.tab{border:1px solid var(--sandbin-purple);border-radius:4px;background:#fff;
+color:var(--sandbin-purple);font:inherit;padding:0.35em 0.7em;cursor:pointer}
+.tab[aria-pressed=true]{background:var(--sandbin-purple);color:#fff}
+.tab:hover{border-color:var(--sandbin-amber)}
+.cmd-body{margin:0;min-width:0}
+.hidden{display:none}
+</style>
 </head>
 <body>
 <header class="page-head">
@@ -22,24 +31,51 @@ prototype files, and hand a human plain preview URLs.</p>
 <h2 id="give-the-skill-to-your-agent">Give the skill to your agent</h2>
 <p>The <code>sandbin-preview</code> skill teaches an agent to set up <code>sandbin-client</code> in a
 directory and upload files or whole folders for preview. Install it with one command:</p>
+<div class="tabs">
+{{range $i, $h := .Harnesses}}<button type="button" class="tab" aria-pressed="{{if eq $i 0}}true{{else}}false{{end}}" onclick="sandbinSelectTab(this)">{{$h.Label}}</button>
+{{end}}</div>
 <div class="cmd">
-<pre id="install-command">curl -fsSL {{.Base}}/skills/sandbin-preview/install.sh | bash</pre>
-<button type="button" class="copy" onclick="sandbinCopyInstall(this)">copy</button>
+{{range $i, $h := .Harnesses}}<pre class="cmd-body{{if ne $i 0}} hidden{{end}}" id="cmd-{{$i}}">{{$h.Cmd}}</pre>
+{{end}}<button type="button" class="copy" onclick="sandbinCopyInstall(this)">copy</button>
 </div>
-<p>That installs into <code>$HOME/.agents/skills/sandbin-preview</code> and, at a terminal,
-initializes the current directory by asking a single question, the API key. For a single project
-instead, hand the installer a destination: <code>| bash -s -- --dest .opencode/skills</code>.</p>
+<p>The first tab is the shared folder: with no <code>--dest</code> the installer writes to
+<code>$HOME/.agents/skills/sandbin-preview</code>, and every harness listed here but Claude Code
+also read <code>.agents/skills</code>; Claude Code reads <code>.claude/skills</code>, which its own tab
+names.</p>
+<p>To install into the current project instead, pass the installer a folder of the same pipe:
+<code>| bash -s -- --dest .agents/skills</code>.</p>
 <h2 id="the-hosted-docs">The hosted docs</h2>
 <p>A running <code>sandbin</code> serves its own usage documentation: <a href="/docs">the docs
 hub</a>, <a href="/docs/sandbin.html">sandbin, the server</a> and
 <a href="/docs/sandbin-client.html">sandbin-client, the client</a>.</p>
 <script>
+function sandbinVisibleCommand() {
+  var block = document.querySelector(".cmd-body:not(.hidden)");
+  return block ? block.textContent : "";
+}
+function sandbinSelectTab(button) {
+  var tabs = document.querySelectorAll(".tab");
+  var chosen = -1;
+  for (var i = 0; i < tabs.length; i++) {
+    if (tabs[i] === button) { chosen = i; }
+  }
+  if (chosen < 0) { return; }
+  var blocks = document.querySelectorAll(".cmd-body");
+  for (var b = 0; b < blocks.length; b++) {
+    if (b === chosen) { blocks[b].classList.remove("hidden"); } else { blocks[b].classList.add("hidden"); }
+  }
+  for (var t = 0; t < tabs.length; t++) {
+    tabs[t].setAttribute("aria-pressed", t === chosen ? "true" : "false");
+  }
+}
 function sandbinCopyInstall(button) {
-  var command = document.getElementById("install-command").textContent;
+  var command = sandbinVisibleCommand();
   function done() { button.textContent = "copied"; }
   function fallback() {
     var area = document.createElement("textarea");
-    area.value = command;
+    // Re-read the visible block here too: on a plain-HTTP page the clipboard API always
+    // rejects, and this is the tab the visitor has just switched to.
+    area.value = sandbinVisibleCommand() || command;
     document.body.appendChild(area);
     area.select();
     document.execCommand("copy");

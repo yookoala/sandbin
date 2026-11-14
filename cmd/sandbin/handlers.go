@@ -768,17 +768,18 @@ func installPin() string {
 var frontHostRE = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9.\-]*|\[[0-9A-Fa-f:.]+\])(:[0-9]+)?$`)
 
 // renderFrontPage writes the branded page the root answers with on GET: the wordmark inline,
-// the one-line tagline, the GitHub links, the installer one-liner with its copy button, and the
-// links into the hosted docs. It says nothing about any bin, address or key; only the base URL
-// of its one command is dynamic — see frontBase. The page itself is the embedded template of
-// internal/frontpage: this handler only supplies its three values, and its Execute failure path
-// is the one the skill routes already use.
+// the one-line tagline, the GitHub links, the per-harness install tabs and their one-liners with
+// the copy button, and the links into the hosted docs. It says nothing about any bin, address or
+// key; only the base URL those commands name is dynamic — see frontBase. The page itself is the
+// embedded template of internal/frontpage: this handler only supplies its four values, and its
+// Execute failure path is the one the skill routes already use.
 func (s *server) renderFrontPage(w http.ResponseWriter, r *http.Request) {
 	var buf bytes.Buffer
 	if err := frontpage.Render(&buf, frontpage.Data{
-		Base:     s.frontBase(r),
-		Logo:     sandbin.LogoSVG,
-		BrandCSS: brandCSS,
+		Base:      s.frontBase(r),
+		Logo:      sandbin.LogoSVG,
+		BrandCSS:  brandCSS,
+		Harnesses: frontpage.DefaultHarnesses(),
 	}); err != nil {
 		log.Printf("render %s: %v", r.URL.Path, err)
 		http.Error(w, "render failed", http.StatusInternalServerError)
