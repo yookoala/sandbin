@@ -21,7 +21,9 @@ and `internal/version` picks the first source that knows something:
 1. a value injected at build time with `-ldflags -X github.com/yookoala/sandbin/internal/version.Value`
    — what `make build`, the Containerfile and any manual `VERSION=` override do, used verbatim;
 2. Go's own stamping of the git checkout it was built from, which knows the commit and whether
-   tracked files are dirty, but cannot know a tag: `dev (3abcdef)` or `dev (3abcdef+)`;
+   anything differs from HEAD — tracked edits *and* new untracked files (measured: a clean HEAD
+   with only an untracked scratch folder stamps `dev (3abcdef+)`) — but cannot know a tag:
+   `dev (3abcdef)` or `dev (3abcdef+)`;
 3. the tag `scripts/release.sh` embedded in `internal/version/release.txt`, which travels inside
    the module zip: the tag alone;
 4. the module version the build info carries, the backstop for an empty `release.txt`;
