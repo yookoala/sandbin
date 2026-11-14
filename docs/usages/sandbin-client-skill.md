@@ -20,6 +20,9 @@ configuration:
 curl -fsSL http://localhost:8080/skills/sandbin-preview/install.sh | bash
 ```
 
+The landing page at `GET /` carries that same one-liner, with a copy button beside it, and its
+`--dest` form is the same pipe.
+
 The installer takes an optional `-d` or `--dest` to pick the skills folder instead, passed
 through the pipe with `bash -s --`; for a single project that means:
 

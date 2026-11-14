@@ -1,7 +1,8 @@
 # The HTTP API
 
-`GET /` answers a small branded front page that says what the service is; its example commands
-echo the address your request arrived at (the `Host`, or `X-Forwarded-Host` and
+`GET /` answers a small branded front page: the wordmark, the tagline, the GitHub links, the
+one-line installer with its copy button and the links into the hosted docs; its example command
+echoes the address your request arrived at (the `Host`, or `X-Forwarded-Host` and
 `X-Forwarded-Proto: https` from a proxy on a trusted address — the same trust rule as blocked
 addresses use), falling back to a `this.host` placeholder for anything odd. Creating a bin stays
 the key-checked `POST /`, and every other method on `/` still answers `405 method not allowed`.

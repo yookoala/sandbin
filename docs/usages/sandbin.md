@@ -2,7 +2,9 @@
 
 `sandbin` is the PUT/GET preview server itself: build it, run `serve`, and drive its HTTP API
 with curl or any client. These pages cover the server side; the companion client lives in
-[sandbin-client.md](sandbin-client.md).
+[sandbin-client.md](sandbin-client.md). A running server hosts this whole set under `/docs`: the
+hub at `/docs/`, this summary at `/docs/sandbin.html`, and each page below at its own
+`/docs/<name>.html`.
 
 | Page | What it covers |
 |---|---|

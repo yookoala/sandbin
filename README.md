@@ -76,6 +76,10 @@ Usage docs come in two sets, each with its own summary and content table:
 - **[docs/usages/sandbin-client.md](docs/usages/sandbin-client.md)** — the client: uploading and
   deleting previews, pointing it at a server, and the agent skill + one-line installer.
 
+A running server hosts these same pages under `/docs`: the hub at `/docs/`, the two summaries at
+`/docs/sandbin.html` and `/docs/sandbin-client.html`, and every page each set covers at its own
+`/docs/<name>.html`.
+
 An agent learns the client from the skill the Quick start installed; it can also be fetched
 from any running server at `GET /skills/sandbin-preview/SKILL.md`.
 

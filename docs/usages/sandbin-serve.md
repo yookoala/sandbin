@@ -52,3 +52,12 @@ and `--help` print that usage on stdout and exit 0; an unknown verb answers
 see [Trusted proxies](sandbin-lockout.md#trusted-proxies)) optionally name the proxies the server believes. The server exits when no API
 key is configured, a trusted proxy value cannot be read, or another serve already answers on its
 control socket.
+
+`GET /` answers the branded landing page: the wordmark, the tagline, the GitHub links, the
+one-line skill installer with its copy button, and the links into the hosted docs. The hosted
+docs live under `/docs`: `GET /docs` and `GET /docs/` answer a hub page listing the two doc sets
+and every page each set covers, `GET /docs/<name>.html` answers the page rendered from the
+`docs/usages/<name>.md` of the same name — the markdown is embedded in the binary at build time,
+so nothing under `/docs` is read from disk — and `GET /docs/assets/sandbin-logo.svg` answers the
+logo as `image/svg+xml`. None of them need a key, every other method on them answers `405`, and
+an unknown name under `/docs` is the plain `404 unknown bin`.

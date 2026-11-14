@@ -3,7 +3,9 @@
 `sandbin-client` is the preview client for an agent that just wrote a prototype: one `created`
 or `updated` line per file, the bin URL last. It speaks the API documented in
 [sandbin.md](sandbin.md), so that set — in particular the [API key lockout](sandbin-lockout.md)
-rules — applies to every run.
+rules — applies to every run. A running server hosts this whole set under `/docs`: the hub at
+`/docs/`, this summary at `/docs/sandbin-client.html`, and each page below at its own
+`/docs/<name>.html`.
 
 | Page | What it covers |
 |---|---|
