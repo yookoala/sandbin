@@ -1,11 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="100%" height="100%">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="284 224 431 551" width="100%" height="100%">
   <defs>
     <!-- =================================================================== -->
     <!-- COLOR PALETTE DEFINITIONS                                           -->
     <!-- Strictly 2 colors: Vibrant Royal Purple (#4E1680) & Sand (#EA9B25)  -->
     <!-- =================================================================== -->
     <style>
-      .bg-canvas { fill: #F8F7F4; }
       .brand-purple { fill: #4E1680; }
       .brand-amber { fill: #EA9B25; }
     </style>
@@ -90,11 +89,6 @@
                C 435 705, 542 638, 602 533 Z" fill="black" />
     </mask>
   </defs>
-
-  <!-- ===================================================================== -->
-  <!-- BACKGROUND LAYER (Remove or hide this rect for transparent export)    -->
-  <!-- ===================================================================== -->
-  <rect class="bg-canvas" width="1000" height="1000" />
 
   <!-- ===================================================================== -->
   <!-- 1. BROWSER PREVIEW WINDOW (Top Center-Left)                           -->
