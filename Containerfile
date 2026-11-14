@@ -6,6 +6,7 @@ COPY skill.go ./
 COPY skills ./skills
 COPY internal ./internal
 COPY cmd ./cmd
+COPY docs ./docs
 # SANDBIN_VERSION stays empty unless a build passes --build-arg (make container does): an empty
 # value leaves go build to report what the tree itself knows. The inner quotes survive cmd/go's
 # quoted split, so a value with a space and a hash arrives whole.

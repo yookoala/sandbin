@@ -112,6 +112,14 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// "docs" is no eight-hex hash, so this branch can never name a bin, same reasoning as the
+	// three above. Only GET and HEAD answer, and a page is chosen by looking its whole name up
+	// in the map built at startup: nothing under /docs is ever joined onto a path.
+	if r.URL.Path == "/docs" || r.URL.Path == "/docs/" || strings.HasPrefix(r.URL.Path, "/docs/") {
+		s.serveDocs(w, r)
+		return
+	}
+
 	hash, sub, ok := splitBinPath(r.URL.Path)
 	if !ok {
 		// "/{hash}" without its trailing slash redirects to "/{hash}/" (301) when that
