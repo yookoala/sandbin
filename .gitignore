@@ -1,4 +1,5 @@
 /sandbin
 /sandbin-client
+/dist/
 *.db
 .sandbin.yaml

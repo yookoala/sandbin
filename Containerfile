@@ -4,8 +4,13 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY skill.go ./
 COPY skills ./skills
+COPY internal ./internal
 COPY cmd ./cmd
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/sandbin ./cmd/sandbin
+# SANDBIN_VERSION stays empty unless a build passes --build-arg (make container does): an empty
+# value leaves go build to report what the tree itself knows. The inner quotes survive cmd/go's
+# quoted split, so a value with a space and a hash arrives whole.
+ARG SANDBIN_VERSION=
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X \"github.com/yookoala/sandbin/internal/version.Value=${SANDBIN_VERSION}\"" -o /out/sandbin ./cmd/sandbin
 
 FROM docker.io/library/alpine:3.22
 RUN adduser -D -u 1000 sandbin && mkdir -p /data && chown sandbin:sandbin /data
