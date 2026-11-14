@@ -158,16 +158,42 @@ func TestFrontPageAtRoot(t *testing.T) {
 	body := rec.Body.String()
 	// The request is a plain loopback GET with Host example.com, so its own address is
 	// what the examples echo.
-	for _, want := range []string{"<title>Sandbin</title>", "<h1>Sandbin</h1>", "POST /", "&lt;h1&gt;Hello&lt;/h1&gt;",
-		"key-checked <code>DELETE</code> takes a file or a whole folder",
-		"<code>404.html</code> answers every unmatched path under the bin",
-		"<h2>Give the skill to your agent</h2>",
+	for _, want := range []string{
+		"<title>Sandbin</title>",
+		"<h1 id=\"sandbin\">Sandbin</h1>",
+		"A PUT/GET preview server for CLI agents in a sandbox: submit HTML, ANSI and",
+		"prototype files, and hand a human plain preview URLs.",
+		"<svg xmlns=\"http://www.w3.org/2000/svg\"",
 		"curl -fsSL http://example.com/skills/sandbin-preview/install.sh | bash",
 		"initializes the current directory by asking a single question, the API key",
 		"--dest",
+		"href=\"https://github.com/yookoala/sandbin\"",
+		"href=\"https://github.com/yookoala/sandbin/tree/main/docs/usages\"",
+		"href=\"/docs\"",
+		"href=\"/docs/sandbin.html\"",
+		"href=\"/docs/sandbin-client.html\"",
+		"class=\"copy\"",
+		"navigator.clipboard",
+		"document.execCommand(\"copy\")",
+		"copied",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("front page missing %q in:\n%s", want, body)
+		}
+	}
+	// What the page no longer carries: the bin semantics, the three-line curl trio and the
+	// privacy paragraph are the hosted API docs' business now, and the wordmark is inlined
+	// markup rather than an <img> reference.
+	for _, gone := range []string{
+		"A bin is a collection of files under a random eight-hex path",
+		"curl -X POST -H \"X-API-Key: your-key\" http://example.com/",
+		"open http://example.com/abc1234/",
+		"Bins are private in the ordinary way",
+		"<img",
+		"<script src=",
+	} {
+		if strings.Contains(body, gone) {
+			t.Errorf("front page still carries %q in:\n%s", gone, body)
 		}
 	}
 
@@ -228,10 +254,19 @@ func TestFrontPageEchoesTheVisitorsAddress(t *testing.T) {
 				t.Fatalf("GET / = %d, want %d", rec.Code, http.StatusOK)
 			}
 			body := rec.Body.String()
-			for _, want := range []string{c.want + "/skills/sandbin-preview/install.sh", c.want + "/abc1234/index.html"} {
+			for _, want := range []string{c.want + "/skills/sandbin-preview/install.sh"} {
 				if !strings.Contains(body, want) {
 					t.Errorf("front page missing %q in:\n%s", want, body)
 				}
+			}
+			// The install line is the page's only templated command: a Host the page may echo
+			// leaves no placeholder behind, and an odd one falls back to it whole.
+			if c.want == "https://this.host" {
+				if !strings.Contains(body, "curl -fsSL https://this.host/skills/sandbin-preview/install.sh | bash") {
+					t.Errorf("front page does not fall back to the placeholder in:\n%s", body)
+				}
+			} else if strings.Contains(body, "this.host") {
+				t.Errorf("front page still carries the placeholder for host %q in:\n%s", c.host, body)
 			}
 		})
 	}

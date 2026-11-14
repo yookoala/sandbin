@@ -747,45 +747,76 @@ type skillData struct{ Base string }
 // either with a port — nothing that could turn a snippet into other shell text.
 var frontHostRE = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9.\-]*|\[[0-9A-Fa-f:.]+\])(:[0-9]+)?$`)
 
-// renderFrontPage writes the branded page the root answers with on GET. It says what the
-// service is and how bins work, and nothing about any bin, address or key; only the base
-// URL of its examples is dynamic — see frontBase.
+// renderFrontPage writes the branded page the root answers with on GET: the wordmark inline,
+// the one-line tagline, the GitHub links, the installer one-liner with its copy button, and the
+// links into the hosted docs. It says nothing about any bin, address or key; only the base URL
+// of its one command is dynamic — see frontBase.
 func (s *server) renderFrontPage(w http.ResponseWriter, r *http.Request) {
-	const page = `<!doctype html>
+	const pageTemplate = `<!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sandbin</title>
 <style>
-body{max-width:38rem;margin:2rem auto;padding:0 1rem;font-family:system-ui,sans-serif;color:#222}
-h1{margin-bottom:0.1em}
-.tagline{color:#555;margin:0 0 1.5em}
-pre{background:#f4f4f4;padding:0.6em 0.8em;overflow-x:auto}
+<!--brand-css-->
 </style>
-<h1>Sandbin</h1>
+</head>
+<body>
+<!--brand-head-->
+<h1 id="sandbin">Sandbin</h1>
 <p class="tagline">A PUT/GET preview server for CLI agents in a sandbox: submit HTML, ANSI and
 prototype files, and hand a human plain preview URLs.</p>
-<p>A bin is a collection of files under a random eight-hex path. Create one with a key-checked
-<code>POST /</code>, <code>PUT</code> files under its subpaths, and <code>GET</code> them back:
-the bin base serves its <code>index.html</code> or lists its files, a <code>.ansi</code> file
-comes back rendered, a title and description can say what a bin holds, an archive upload unpacks
-into the bin, and a key-checked <code>DELETE</code> takes a file or a whole folder back out of
-the bin. A bin holding a <code>404.html</code> answers every unmatched path under the bin with
-that file, so a one-page app can serve its own routes. The <code>sandbin-client</code> command
-does the same in one line.</p>
-<pre>curl -X POST -H "X-API-Key: your-key" https://this.host/                        -&gt; /abc1234/
-curl -X PUT  -H "X-API-Key: your-key" -d '&lt;h1&gt;Hello&lt;/h1&gt;' https://this.host/abc1234/index.html
-open https://this.host/abc1234/</pre>
-<p>Bins are private in the ordinary way: the root lists nothing, so a bin is reachable only
-through its URL, and a bin can demand its own password on top.</p>
-<h2>Give the skill to your agent</h2>
+<p><a href="https://github.com/yookoala/sandbin">github.com/yookoala/sandbin</a> &middot;
+<a href="https://github.com/yookoala/sandbin/tree/main/docs/usages">the usage docs on GitHub</a></p>
+<h2 id="give-the-skill-to-your-agent">Give the skill to your agent</h2>
 <p>The <code>sandbin-preview</code> skill teaches an agent to set up <code>sandbin-client</code> in a
 directory and upload files or whole folders for preview. Install it with one command:</p>
-<pre>curl -fsSL https://this.host/skills/sandbin-preview/install.sh | bash</pre>
+<div class="cmd">
+<pre id="install-command">curl -fsSL https://this.host/skills/sandbin-preview/install.sh | bash</pre>
+<button type="button" class="copy" onclick="sandbinCopyInstall(this)">copy</button>
+</div>
 <p>That installs into <code>$HOME/.agents/skills/sandbin-preview</code> and, at a terminal,
 initializes the current directory by asking a single question, the API key. For a single project
 instead, hand the installer a destination: <code>| bash -s -- --dest .opencode/skills</code>.</p>
+<h2 id="the-hosted-docs">The hosted docs</h2>
+<p>A running <code>sandbin</code> serves its own usage documentation: <a href="/docs">the docs
+hub</a>, <a href="/docs/sandbin.html">sandbin, the server</a> and
+<a href="/docs/sandbin-client.html">sandbin-client, the client</a>.</p>
+<script>
+function sandbinCopyInstall(button) {
+  var command = document.getElementById("install-command").textContent;
+  function done() { button.textContent = "copied"; }
+  function fallback() {
+    var area = document.createElement("textarea");
+    area.value = command;
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand("copy");
+    document.body.removeChild(area);
+    done();
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(command).then(done, fallback);
+  } else {
+    fallback();
+  }
+}
+</script>
+</body>
+</html>
 `
+	head := "<header class=\"page-head\">\n" +
+		"<a class=\"logo-link\" href=\"/\" aria-label=\"Sandbin home\">" + logoBlock("wordmark wordmark-hero") + "</a>\n" +
+		"<nav><a href=\"/docs\">docs</a><a href=\"https://github.com/yookoala/sandbin\">source on GitHub</a></nav>\n" +
+		"</header>\n"
+	page := strings.NewReplacer(
+		"<!--brand-css-->", brandCSS,
+		"<!--brand-head-->", head,
+		"https://this.host", s.frontBase(r),
+	).Replace(pageTemplate)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	io.WriteString(w, strings.ReplaceAll(page, "https://this.host", s.frontBase(r)))
+	io.WriteString(w, page)
 }
 
 // frontBase is the example prefix implied by the visitor's own request: the Host they
