@@ -50,5 +50,8 @@ and the command is printed instead:
 so an agent or a CI job finishes the setup with that one line.
 
 A client the installer built with `go install ...@latest` is a proxy download, so its
-`--version` line names the tag alone (`v0.2.0`, newest tag wins) with no commit hash: that
+`--version` line names the resolved tag alone (newest tag wins) with no commit hash: that
 binary is exactly the tagged commit, and a module zip carries no commit hash to print.
+Version stamping itself landed after the published v0.2.0, so today's `@latest` client prints
+the plain `dev` fallback; a client installed from any future tag prints the tag (see
+[Running the server](sandbin-serve.md)).
