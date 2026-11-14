@@ -19,6 +19,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/yookoala/sandbin/internal/version"
 	"gopkg.in/yaml.v3"
 )
 
@@ -2557,5 +2558,24 @@ func TestDeleteWithoutNamesRefuses(t *testing.T) {
 	}
 	if f.requestsSeen() != 0 {
 		t.Errorf("requests = %d, want none", f.requestsSeen())
+	}
+}
+
+// TestVersionFlagPrintsTheResolvedVersion pins the client's --version line to the resolver's
+// own answer for this build: one line, nothing on stderr, and a successful exit.
+func TestVersionFlagPrintsTheResolvedVersion(t *testing.T) {
+	stdout, stderr, err := runClient(t, nil, "--version")
+	if err != nil {
+		t.Fatalf("sandbin-client --version returned %v, want no error; stderr %s", err, stderr)
+	}
+	want := "sandbin-client version " + version.String()
+	if got := strings.TrimSpace(stdout); got != want {
+		t.Errorf("sandbin-client --version stdout = %q, want %q", got, want)
+	}
+	if strings.Count(stdout, "\n") != 1 || !strings.HasSuffix(stdout, "\n") {
+		t.Errorf("sandbin-client --version stdout = %q, want exactly one line", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("sandbin-client --version stderr = %q, want nothing", stderr)
 	}
 }

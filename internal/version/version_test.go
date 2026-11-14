@@ -219,6 +219,16 @@ var devFormat = regexp.MustCompile(`^dev \([0-9a-f]{7}\+?\)$`)
 // the build info, never from a value written down in this file.
 func TestStringOnThisBinary(t *testing.T) {
 	got := String()
+
+	// A build can inject Value with -ldflags; then the resolver must echo it verbatim, which is
+	// what makes the Makefile's stamped builds and a `go test -ldflags -X ...` run alike.
+	if Value != "" {
+		if got != Value {
+			t.Errorf("String() = %q with Value injected as %q, want the injected value verbatim", got, Value)
+		}
+		return
+	}
+
 	info, ok := debug.ReadBuildInfo()
 	if !ok || info == nil {
 		t.Skip("this test binary carries no build info")

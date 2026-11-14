@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/urfave/cli/v2"
+	"github.com/yookoala/sandbin/internal/version"
 )
 
 const (
@@ -100,9 +101,11 @@ func reorderDeleteFlags(args []string) []string {
 func newClientApp(stdin io.Reader, stdout, stderr io.Writer) *cli.App {
 	hook := usageError(stderr)
 	return &cli.App{
-		Name:         "sandbin-client",
-		Usage:        "publish previews to a sandbin bin: upload files, describe the bin, take paths out, or init this directory",
-		Version:      "dev",
+		Name:  "sandbin-client",
+		Usage: "publish previews to a sandbin bin: upload files, describe the bin, take paths out, or init this directory",
+		// internal/version picks what this build can honestly say: a value the Makefile or the
+		// Containerfile injected, this checkout's commit hash, the tag a release embedded, or dev.
+		Version:      version.String(),
 		Writer:       stdout,
 		ErrWriter:    stderr,
 		OnUsageError: hook,

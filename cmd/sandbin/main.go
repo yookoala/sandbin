@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/urfave/cli/v2"
+	"github.com/yookoala/sandbin/internal/version"
 )
 
 func main() {
@@ -33,9 +34,11 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 func newServerApp(stdout, stderr io.Writer) *cli.App {
 	hook := usageError(stderr)
 	return &cli.App{
-		Name:         "sandbin",
-		Usage:        "publish HTML, markdown and ANSI previews; serve runs the server, ip reads and changes its block table",
-		Version:      "dev",
+		Name:  "sandbin",
+		Usage: "publish HTML, markdown and ANSI previews; serve runs the server, ip reads and changes its block table",
+		// internal/version picks what this build can honestly say: a value the Makefile or the
+		// Containerfile injected, this checkout's commit hash, the tag a release embedded, or dev.
+		Version:      version.String(),
 		Writer:       stdout,
 		ErrWriter:    stderr,
 		OnUsageError: hook,

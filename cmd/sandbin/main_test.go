@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/yookoala/sandbin/internal/version"
 )
 
 // runDispatch runs one whole command line and returns what it printed and the exit code.
@@ -110,13 +112,20 @@ func TestDispatchEmptyVerb(t *testing.T) {
 	}
 }
 
+// TestDispatchVersion pins --version to the resolver's own answer for this build rather than
+// to a hardcoded string: whatever internal/version resolves is what the line must carry, on one
+// line, at exit 0.
 func TestDispatchVersion(t *testing.T) {
 	stdout, stderr, code := runDispatch(t, "--version")
 	if code != 0 {
 		t.Errorf("sandbin --version exited %d, want 0; stderr %q", code, stderr)
 	}
-	if got := strings.TrimSpace(stdout); got != "sandbin version dev" {
-		t.Errorf("sandbin --version stdout = %q, want %q", got, "sandbin version dev")
+	want := "sandbin version " + version.String()
+	if got := strings.TrimSpace(stdout); got != want {
+		t.Errorf("sandbin --version stdout = %q, want %q", got, want)
+	}
+	if strings.Count(stdout, "\n") != 1 || !strings.HasSuffix(stdout, "\n") {
+		t.Errorf("sandbin --version stdout = %q, want exactly one line", stdout)
 	}
 	if stderr != "" {
 		t.Errorf("sandbin --version stderr = %q, want nothing", stderr)
