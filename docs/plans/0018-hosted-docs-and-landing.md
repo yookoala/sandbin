@@ -1,10 +1,11 @@
 # Plan: hosted docs under /docs and a redesigned landing page
 
 Status: planned. Spec: `docs/decisions/0018-hosted-docs-and-landing.md` — layout, engine,
-landing content and the copy button are settled there. Baseline HEAD is the plan-0017 close-out
-`a9e251c` (`cmd/sandbin` 183 + 19, `cmd/sandbin-client` 107 + 28, `internal/version` 4 + 23,
-all gates green). Sits on 0016 (the doc tree being hosted) and 0015 (the HTTP surface whose
-byte-identity must survive).
+landing content, the copy button and the inline-logo decision are settled there. Baseline HEAD
+is the plan-open commit `499eeb7` (the 0017 close-out was restacked `a9e251c`→`e5b5568` by
+three user logo/README commits; test counts unchanged: `cmd/sandbin` 183 + 19,
+`cmd/sandbin-client` 107 + 28, `internal/version` 4 + 23, all gates green). Sits on 0016 (the
+doc tree being hosted) and 0015 (the HTTP surface whose byte-identity must survive).
 
 **Goal:** the server embeds `docs/usages/*.md` + `docs/assets/sandbin-logo.svg`, renders the
 docs to HTML once at startup with gomarkdown, and serves `/docs` (hub), `/docs/<name>.html`
@@ -14,8 +15,10 @@ GitHub links + the one-line installer (with a copy button) + doc-set links.
 **Architecture:** `skill.go` gains the two embeds; new `cmd/sandbin/docs.go` builds a
 startup-rendered page map (exact-name lookup, `.md`→`.html` link rewrite, github-style heading
 slug ids, shared branded shell + hub); `ServeHTTP` routes `/docs*` before binRoutes;
-`renderFrontPage` is rewritten with the new body (frontBase templating untouched). No client
-change, no new route touching bins.
+`renderFrontPage` is rewritten with the new body (frontBase templating untouched). Both the
+landing page and the docs shell show the logo by inlining the embedded SVG markup (no
+`<img>` — the wordmark's web font only loads inline). No client change, no new route
+touching bins.
 
 **Tech stack:** Go stdlib + `github.com/gomarkdown/markdown` (new direct dep) + inline
 vanilla JS for the one copy button.
@@ -62,7 +65,9 @@ create `cmd/sandbin/docs.go`, `cmd/sandbin/docs_test.go`
   embedded file (fail-fast at init like the skill templates), a `rewriteDocLinks` pass
   (`](<known>.md[#frag])` → `.html`, other relative `.md` → GitHub blob URL), github-style
   heading id attributes on every rendered heading, `docShell(title, sourceURL, bodyHTML)`
-  branded wrapper, `docsHub` page, and the logo handler.
+  branded wrapper (its header inlines the embedded logo markup in a sized wrapper, links back
+  to `/` and `/docs`, and names the page's GitHub source), `docsHub` page, and the logo
+  handler.
 - Routes (GET/HEAD): `/docs` + `/docs/` → hub; `/docs/<name>.html` → page for exactly the ten
   usage names; `/docs/assets/sandbin-logo.svg` → `image/svg+xml` embedded bytes; anything else
   under `/docs/` → the existing plain 404 shape; non-GET methods → the existing 405 shape.
@@ -70,9 +75,10 @@ create `cmd/sandbin/docs.go`, `cmd/sandbin/docs_test.go`
 - [ ] Step 1: write failing tests in docs_test.go: all ten pages 200 with their H1-derived
   title; hub 200 linking every page; rewritten links (crawl every href — all resolve);
   `sandbin-lockout.html` contains `id="trusted-proxies"`; logo 200 `image/svg+xml` byte-equal
-  to the repo file; unknown `/docs/nope.html` → 404 shape; POST → 405; `GET /docs` and
-  `GET /docs/` both serve the hub; no `{{` token in any response; `go build` compiles with the
-  embed (docs tree present) — and confirm they fail.
+  to the repo file; every hosted page carries the wordmark as inline `<svg>` markup in the
+  body (no `<img src=` reference to it); unknown `/docs/nope.html` → 404 shape; POST → 405;
+  `GET /docs` and `GET /docs/` both serve the hub; no `{{` token in any response; `go build`
+  compiles with the embed (docs tree present) — and confirm they fail.
 - [ ] Step 2: `go get github.com/gomarkdown/markdown`; implement docs.go; wire ServeHTTP;
   add `COPY docs ./docs` to the Containerfile build stage.
 - [ ] Step 3: green + gates; commit `feat: server hosts the usage docs and logo under /docs`.
@@ -83,7 +89,9 @@ create `cmd/sandbin/docs.go`, `cmd/sandbin/docs_test.go`
 (front-page pins)
 
 **Interfaces:**
-- Produces: the new front page: logo (`<img src="/docs/assets/sandbin-logo.svg">`), name, the
+- Produces: the new front page: logo inlined from the embedded bytes (the `<svg>` markup
+  rendered directly into the page inside a sized wrapper — the decisions record's logo
+  embedding line; no `<img>`), name, the
   existing tagline sentence, GitHub links (repo at minimum), one install block whose command
   is exactly `curl -fsSL <frontBase>/skills/sandbin-preview/install.sh | bash` with a copy
   button (inline script: navigator.clipboard, textarea+execCommand fallback, "copied"
@@ -140,17 +148,20 @@ create `cmd/sandbin/docs.go`, `cmd/sandbin/docs_test.go`
    landing page the single intentional diff — quote the diff summary.
 4. Docs battery yourself: hub + ten pages; crawl every href and anchor (zero unresolved);
    verify the eight 0016 cross-reference links landed as `.html` forms; logo bytes == repo
-   file; content types; `/docs` vs `/docs/`; method matrix; no `{{` tokens; embedded-render
-   sanity: tables render as tables, code fences render, heading ids follow the slug rule
-   including `Trusted proxies` → `trusted-proxies`.
+   file; content types; `/docs` vs `/docs/`; method matrix; no `{{` tokens; every hosted page
+   shows the wordmark as inline `<svg>` in the body (zero `<img>` logo references), the SVG's
+   own `@import` survives inlining and page CSS declares the `'Poetsen One'` stack;
+   embedded-render sanity: tables render as tables, code fences render, heading ids follow the
+   slug rule including `Trusted proxies` → `trusted-proxies`.
 5. Routing safety: POST / still creates; a GET to an existing bin's base still serves;
    `/docs` cannot be reached as a bin; `/docs/..%2f`-style traversal attempts 404; HEAD
    bodies empty.
 6. Landing battery: the install command text extracted from the page piped through
    `curl | bash` installs (reuse the scratch --dest convention); copy-button markup present
    with both clipboard paths (navigator.clipboard + execCommand fallback) and no external
-   script src; removed content really gone; tagline + GitHub links present; frontBase guard
-   battery re-run (odd Host → placeholder).
+   script src; the wordmark inline (`<svg>` in the body, not `<img>`); removed content really
+   gone; tagline + GitHub links present; frontBase guard battery re-run (odd Host →
+   placeholder).
 7. Container proof: build from HEAD (`--network=host`, COPY docs works, gomarkdown resolves
    in-build), serve on the standard volume/-p 127.0.0.1:18289:8080 convention, fetch `/docs`,
    one rendered page and the logo, `--version` stamp unaffected; full podman cleanup per the
