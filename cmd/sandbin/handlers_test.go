@@ -17,6 +17,8 @@ import (
 	"testing"
 	"text/template"
 	"time"
+
+	"github.com/yookoala/sandbin/internal/version"
 )
 
 func newTestServer(t *testing.T, apiKey string) *server {
@@ -272,6 +274,23 @@ func TestFrontPageEchoesTheVisitorsAddress(t *testing.T) {
 	}
 }
 
+// TestInstallPinIsTheEmbeddedTagDecision pins installPin() to the one decision in
+// internal/version: SemverTag(EmbeddedTag()) when it is non-empty, the literal latest
+// otherwise. The pin is built only from the embedded tag, so an injected Value or a
+// dev-format stamp can never reach a served install command.
+func TestInstallPinIsTheEmbeddedTagDecision(t *testing.T) {
+	want := version.SemverTag(version.EmbeddedTag())
+	if want == "" {
+		want = "latest"
+	}
+	if got := installPin(); got != want {
+		t.Errorf("installPin() = %q, want %q", got, want)
+	}
+	if tag := version.EmbeddedTag(); version.SemverTag(tag) != "" && installPin() != tag {
+		t.Errorf("installPin() = %q, want the plain semver embedded tag %q verbatim", installPin(), tag)
+	}
+}
+
 func TestInstallScriptRoute(t *testing.T) {
 	h := newTestServer(t, "test-key")
 
@@ -344,6 +363,33 @@ func TestInstallScriptBaseFollowsTheVisitor(t *testing.T) {
 				t.Errorf("install.sh missing %q in:\n%s", want, rec.Body.String())
 			}
 		})
+	}
+}
+
+// TestInstallScriptCarriesTheServerPin is the point of plan 0019: the go install
+// command line in the served install.sh carries exactly "@" plus the server's own
+// pin — the embedded release tag when it is a plain semantic version, latest
+// otherwise — computed from the same embedded source the server reads.
+func TestInstallScriptCarriesTheServerPin(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	req := httptest.NewRequest(http.MethodGet, "/skills/sandbin-preview/install.sh", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET install.sh = %d, want %d", rec.Code, http.StatusOK)
+	}
+	wantLine := fmt.Sprintf(`if GOBIN="$DEST/sandbin-preview" go install github.com/yookoala/sandbin/cmd/sandbin-client@%s; then`, installPin())
+	hits := 0
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		if strings.Contains(line, "sandbin-client@") {
+			hits++
+			if got := strings.TrimSpace(line); got != wantLine {
+				t.Errorf("install.sh go install line = %q, want exactly %q", got, wantLine)
+			}
+		}
+	}
+	if hits != 1 {
+		t.Errorf("install.sh carries %d sandbin-client@ lines, want exactly 1:\n%s", hits, rec.Body.String())
 	}
 }
 
@@ -440,8 +486,10 @@ func TestInstallScriptEndToEnd(t *testing.T) {
 	}
 
 	// With go on PATH the installer must run the same contract the skill documents:
-	// GOBIN set to the skill folder and the module installed @latest. A succeeding
-	// and a failing stub prove both outcomes, and neither may sink the install.
+	// GOBIN set to the skill folder and the module installed at the server's own pin —
+	// the embedded release tag when it is a plain semantic version, latest otherwise.
+	// A succeeding and a failing stub prove both outcomes, and neither may sink the
+	// install.
 	goDir := t.TempDir()
 	goLog := filepath.Join(t.TempDir(), "go.calls")
 	goStub := []byte("#!/bin/sh\necho \"GOBIN=$GOBIN $*\" >>\"" + goLog + "\"\nexit 0\n")
@@ -463,7 +511,7 @@ func TestInstallScriptEndToEnd(t *testing.T) {
 		t.Fatalf("installer never called go (output:\n%s)", out)
 	}
 	wantCall := "GOBIN=" + filepath.Join(home, "agent-skills", "sandbin-preview") +
-		" install github.com/yookoala/sandbin/cmd/sandbin-client@latest"
+		" install github.com/yookoala/sandbin/cmd/sandbin-client@" + installPin()
 	if !strings.Contains(string(calls), wantCall) {
 		t.Errorf("go call = %q, want it to contain %q", calls, wantCall)
 	}
@@ -1951,6 +1999,34 @@ func TestSkillRouteServesRepoSkillFile(t *testing.T) {
 	}
 	if !bytes.Contains(rec.Body.Bytes(), []byte("description:")) {
 		t.Errorf("served skill carries no frontmatter description:\n%s", rec.Body.String())
+	}
+}
+
+// TestSkillRenderUnaffectedByClientVersion guards plan 0019's byte-identity rule: the
+// new skillData field is not a token the skill template references, so filling it
+// changes not one byte of the rendered and served SKILL.md — its first-use build line
+// stays the literal @latest, the resilience path plan 0019 leaves unpinned on purpose.
+func TestSkillRenderUnaffectedByClientVersion(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	rec := get(t, h, "/skills/sandbin-preview/SKILL.md")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /skills/sandbin-preview/SKILL.md = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var bare, filled bytes.Buffer
+	if err := skillTemplate.Execute(&bare, skillData{Base: "http://example.com"}); err != nil {
+		t.Fatalf("render skill without the new field: %v", err)
+	}
+	if err := skillTemplate.Execute(&filled, skillData{Base: "http://example.com", ClientVersion: installPin()}); err != nil {
+		t.Fatalf("render skill with the new field: %v", err)
+	}
+	if !bytes.Equal(bare.Bytes(), filled.Bytes()) {
+		t.Errorf("filling ClientVersion changed the rendered SKILL.md: %d bytes vs %d", bare.Len(), filled.Len())
+	}
+	if !bytes.Equal(rec.Body.Bytes(), filled.Bytes()) {
+		t.Errorf("served SKILL.md differs from the render carrying the new field: %d bytes vs %d", len(rec.Body.Bytes()), filled.Len())
+	}
+	if !bytes.Contains(filled.Bytes(), []byte("sandbin-client@latest")) {
+		t.Errorf("SKILL.md's first-use build line no longer stays @latest:\n%s", filled.String())
 	}
 }
 

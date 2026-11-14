@@ -6,7 +6,8 @@
 # fails) the skill builds it on first use instead. When the client is there and a
 # terminal is available the installer then runs the client's init against this
 # server, asking only for the API key; elsewhere it prints the command that finishes
-# setup instead. Run it as a file or piped:
+# setup instead. The version named below is filled by the server with its own release tag
+# when that tag is a plain vMAJOR.MINOR.PATCH, otherwise latest. Run it as a file or piped:
 #   curl -fsSL https://your.sandbin/skills/sandbin-preview/install.sh | bash
 #   curl -fsSL https://your.sandbin/skills/sandbin-preview/install.sh | bash -s -- --dest "$HOME/.claude/skills"
 set -euo pipefail
@@ -27,7 +28,7 @@ curl -fsSL "$BASE/skills/sandbin-preview/SKILL.md" -o "$DEST/sandbin-preview/SKI
 echo "installed $DEST/sandbin-preview/SKILL.md (from $BASE)"
 
 if command -v go >/dev/null 2>&1; then
-  if GOBIN="$DEST/sandbin-preview" go install github.com/yookoala/sandbin/cmd/sandbin-client@latest; then
+  if GOBIN="$DEST/sandbin-preview" go install github.com/yookoala/sandbin/cmd/sandbin-client@{{.ClientVersion}}; then
     echo "installed $DEST/sandbin-preview/sandbin-client (go install)"
   else
     echo "sandbin-installer: go install failed; the skill will build the client on first use" >&2

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/yookoala/sandbin"
+	"github.com/yookoala/sandbin/internal/version"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -102,7 +103,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			tmpl, contentType = installTemplate, "text/plain; charset=utf-8"
 		}
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, skillData{Base: s.frontBase(r)}); err != nil {
+		if err := tmpl.Execute(&buf, skillData{Base: s.frontBase(r), ClientVersion: installPin()}); err != nil {
 			log.Printf("render %s: %v", r.URL.Path, err)
 			http.Error(w, "render failed", http.StatusInternalServerError)
 			return
@@ -740,8 +741,26 @@ var (
 	installTemplate = template.Must(template.New("install").Parse(sandbin.InstallScript))
 )
 
-// skillData is what both templates receive: the one address the request arrived at.
-type skillData struct{ Base string }
+// skillData is what both templates receive: the one address the request arrived at,
+// and the client version the installer pins. SKILL.md references no ClientVersion
+// token, so its rendered bytes are exactly what they were before the field existed.
+type skillData struct {
+	Base          string
+	ClientVersion string
+}
+
+// installPin is the client version the served installer names: the tag this binary was
+// released from when it is a plain semantic version — the shape scripts/release.sh writes
+// and the only shape a public go install @tag can fetch — and the literal latest
+// otherwise. It reads only the embedded tag: an injected Value or a dev (hash) build
+// stamp is a build state, not a publishable tag, so it must never end up in an install
+// command. Deterministic per binary, like every other startup constant.
+func installPin() string {
+	if tag := version.SemverTag(version.EmbeddedTag()); tag != "" {
+		return tag
+	}
+	return "latest"
+}
 
 // frontHostRE bounds any host the page may echo: a plain hostname, a bracketed IPv6 or
 // either with a port — nothing that could turn a snippet into other shell text.
