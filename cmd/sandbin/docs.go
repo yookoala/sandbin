@@ -2,8 +2,10 @@ package main
 
 import (
 	"html"
+	"log"
 	"net/http"
 	"strings"
+	"text/template"
 	"unicode"
 
 	"github.com/gomarkdown/markdown"
@@ -16,12 +18,19 @@ import (
 
 // The usage docs the server hosts under /docs come from the module-root embeds in skill.go
 // and are rendered once, here, at package init: the same posture as the skill templates —
-// a doc that cannot be parsed stops the server at startup rather than one request.
+// a doc that cannot be parsed stops the server at startup rather than one request. Each
+// stored page HTML is also parsed as a template at init and executed once with sample data,
+// then executed per request with this instance's own front address (see expandDoc). A
+// markdown page that means to show a literal token escapes it as {{`{{`}} — the pipeline
+// emits exactly those escapes and expands everything else.
 
-// hostedPage is one rendered docs page: its <title> text and the complete HTML of the page.
+// hostedPage is one rendered docs page: its <title> text, the complete HTML of the page, and
+// that HTML parsed once at init as a template. The raw html stands behind the template as the
+// fallback an execute failure logs and serves.
 type hostedPage struct {
 	title string
 	html  string
+	tmpl  *template.Template
 }
 
 // docSet is one of the two doc sets the hub presents: its heading, the summary page, and the
@@ -88,7 +97,8 @@ func buildDocsPages() map[string]hostedPage {
 			panic("read the embedded usage doc " + name + ": " + err.Error())
 		}
 		title, body := renderUsageDoc(raw)
-		pages[page] = hostedPage{title: title, html: docShell(title, body)}
+		pageHTML := docShell(title, body)
+		pages[page] = hostedPage{title: title, html: pageHTML, tmpl: parseDocTemplate("usage doc "+name, pageHTML)}
 	}
 	for _, set := range docSets {
 		for _, page := range append([]string{set.summary}, set.pages...) {
@@ -114,7 +124,7 @@ func buildDocsPages() map[string]hostedPage {
 }
 
 // buildDocsHub writes the hub body: one sentence, then the two doc sets with their pages.
-func buildDocsHub() string {
+func buildDocsHub() hostedPage {
 	var b strings.Builder
 	b.WriteString("<h1 id=\"" + githubSlug("Sandbin usage docs") + "\">Sandbin usage docs</h1>\n")
 	b.WriteString("<p>A running <code>sandbin</code> serves its own usage documentation here: the " +
@@ -131,7 +141,8 @@ func buildDocsHub() string {
 		}
 		b.WriteString("</ul>\n")
 	}
-	return docShell("Sandbin usage docs", b.String())
+	pageHTML := docShell("Sandbin usage docs", b.String())
+	return hostedPage{title: "Sandbin usage docs", html: pageHTML, tmpl: parseDocTemplate("docs hub", pageHTML)}
 }
 
 // renderUsageDoc parses one embedded markdown file and returns its H1 text and its rendered
@@ -304,6 +315,14 @@ padding:0.4em 0.8em;font:inherit;cursor:pointer}
 border:none;border-radius:8px;color:var(--sandbin-purple);text-decoration:none}
 .icon-link:hover,.icon-link:focus-visible{color:var(--sandbin-amber);background:#fff}
 .icon-link svg{width:1.35rem;height:1.35rem;display:block}
+
+.codeblock{position:relative}
+.codeblock pre{margin:1em 0}
+.block-copy{position:absolute;right:0.45em;top:calc(1em + 0.3em);border:1px solid #ded7cb;background:#fff;
+color:var(--sandbin-purple);border-radius:4px;padding:0.25em;line-height:0;cursor:pointer}
+.block-copy:hover,.block-copy:focus-visible{color:var(--sandbin-amber)}
+.block-copy svg{width:1.05rem;height:1.05rem;display:block}
+.block-copy.copied{color:#2e7d32;border-color:#2e7d32}
 `
 
 // logoBlock is the embedded wordmark markup, inlined verbatim inside a sized wrapper: the
@@ -312,6 +331,65 @@ border:none;border-radius:8px;color:var(--sandbin-purple);text-decoration:none}
 func logoBlock(class string) string {
 	return "<div class=\"" + class + "\">" + sandbin.LogoSVG + "</div>"
 }
+
+// docCopyJS wraps every code block under <main> with a copy button, the landing page's
+// pattern: Clipboard API first, an execCommand textarea fallback, and a brief green check on
+// the button when it worked. The button's center aligns with the center of the code's first
+// line: exact vertical center in a single-line block, top-right in a multi-line one.
+const docCopyJS = `<script>
+(function () {
+  var COPY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="13" height="13" x="9" y="9" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+  var CHECK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
+  function flashCopied(button, restore) {
+    button.classList.add("copied");
+    button.innerHTML = CHECK_ICON;
+    setTimeout(function () {
+      button.classList.remove("copied");
+      button.innerHTML = restore;
+    }, 1400);
+  }
+  function copyText(text, button, restore) {
+    function done() { flashCopied(button, restore); }
+    function fallback() {
+      var area = document.createElement("textarea");
+      area.value = text;
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand("copy");
+      document.body.removeChild(area);
+      done();
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else {
+      fallback();
+    }
+  }
+  document.querySelectorAll("main pre").forEach(function (pre) {
+    var wrap = document.createElement("div");
+    wrap.className = "codeblock";
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+    var icon = COPY_ICON;
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "block-copy";
+    button.title = "copy";
+    button.setAttribute("aria-label", "Copy the code block");
+    button.innerHTML = icon;
+    button.addEventListener("click", function () { copyText(pre.textContent, button, icon); });
+    wrap.appendChild(button);
+    var cs = getComputedStyle(pre);
+    var codeEl = pre.querySelector("code") || pre;
+    var lh = parseFloat(getComputedStyle(codeEl).lineHeight);
+    if (!lh) { lh = parseFloat(getComputedStyle(codeEl).fontSize) * 1.5; }
+    var top = pre.getBoundingClientRect().top - wrap.getBoundingClientRect().top +
+      parseFloat(cs.paddingTop) + lh / 2 - button.offsetHeight / 2;
+    button.style.top = top + "px";
+  });
+})();
+</script>
+`
 
 // docShell wraps one rendered body in the branded page: the logo, the icon nav — home, docs,
 // and the fixed GitHub door — then the body inside a <main> that fills the viewport, then the
@@ -329,6 +407,7 @@ func docShell(title, bodyHTML string) string {
 	b.WriteString(bodyHTML)
 	b.WriteString("</main>\n")
 	b.WriteString("<footer class=\"site-footer\">Powered by Sandbin | version: " + version.String() + "</footer>\n")
+	b.WriteString(docCopyJS)
 	b.WriteString("</body>\n</html>\n")
 	return b.String()
 }
@@ -360,6 +439,54 @@ func docHead() string {
 	return b.String()
 }
 
+// docInstance and docData are what bundled-doc templates may read. Instance names this
+// instance itself for the request at hand: URL is its own front address, exactly as frontBase
+// answers it for the landing page and the skill routes. Later fields join the same shape as
+// docs need them.
+type docInstance struct {
+	URL string
+}
+
+type docData struct {
+	Instance docInstance
+}
+
+// sampleDocData is the stand-in instance the init-time execution of every stored template
+// runs with, so a page that cannot execute against the doc data is a startup panic, not a
+// runtime surprise.
+func sampleDocData() docData {
+	return docData{Instance: docInstance{URL: "https://sandbin.example"}}
+}
+
+// parseDocTemplate parses one stored page HTML once and executes it once with sample data.
+// Either failure panics at init, the way the embedded-tree mismatches do: the panic says
+// which doc is at fault and why.
+func parseDocTemplate(subject, pageHTML string) *template.Template {
+	tmpl, err := template.New(subject).Parse(pageHTML)
+	if err != nil {
+		panic("the embedded " + subject + " is not a valid template: " + err.Error())
+	}
+	var buf strings.Builder
+	if err := tmpl.Execute(&buf, sampleDocData()); err != nil {
+		panic("the embedded " + subject + " does not execute with sample instance data: " + err.Error())
+	}
+	return tmpl
+}
+
+// expandDoc executes a stored page's template with this request's data, so bundled docs can
+// name the address the request arrived at. Only bundled docs take this pass; markdown hosted
+// in bins is never templated. An execute failure — unreachable for the embedded tree, whose
+// pages init already executed — logs and serves the page's raw html.
+func (s *server) expandDoc(page hostedPage, r *http.Request) string {
+	var buf strings.Builder
+	data := docData{Instance: docInstance{URL: s.frontBase(r)}}
+	if err := page.tmpl.Execute(&buf, data); err != nil {
+		log.Printf("render docs page %s: %v", r.URL.Path, err)
+		return page.html
+	}
+	return buf.String()
+}
+
 // serveDocs answers GET and HEAD on the docs routes: the hub, a hosted page named whole, and
 // the embedded logo. Everything else under /docs is the plain 404 shape, and every other
 // method is the plain 405 shape.
@@ -370,7 +497,7 @@ func (s *server) serveDocs(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.URL.Path {
 	case "/docs", "/docs/":
-		writeDocsPage(w, docsHub)
+		writeDocsPage(w, s.expandDoc(docsHub, r))
 		return
 	case docsLogoPath:
 		w.Header().Set("Content-Type", "image/svg+xml")
@@ -378,7 +505,7 @@ func (s *server) serveDocs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if page, ok := docsPages[strings.TrimPrefix(r.URL.Path, "/docs/")]; ok {
-		writeDocsPage(w, page.html)
+		writeDocsPage(w, s.expandDoc(page, r))
 		return
 	}
 	http.Error(w, "unknown bin", http.StatusNotFound)

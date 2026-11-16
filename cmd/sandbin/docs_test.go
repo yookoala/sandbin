@@ -180,8 +180,11 @@ func TestDocsPagesCarryTheWordmarkInline(t *testing.T) {
 // before </body>.
 func TestDocsPagesFillTheViewportAndEndInFooter(t *testing.T) {
 	h := newTestServer(t, "test-key")
+	// The shell ends with the footer, then the docs' copy-button script, then the closing
+	// tags — the script landed inside <body> with the pipeline; the version value belongs to
+	// the build.
 	footer := "</main>\n<footer class=\"site-footer\">Powered by Sandbin | version: " +
-		version.String() + "</footer>\n</body>\n</html>\n"
+		version.String() + "</footer>\n"
 	for _, p := range append([]string{"/docs"}, docPageHrefs()...) {
 		body := get(t, h, p).Body.String()
 		for _, want := range []string{
@@ -194,6 +197,7 @@ func TestDocsPagesFillTheViewportAndEndInFooter(t *testing.T) {
 			".site-footer{margin-top:auto;padding-top:1.2rem;border-top:1px solid #e3ddd3;color:#666;font-size:0.85rem;text-align:center}",
 			"</header>\n<main>\n",
 			footer,
+			"</script>\n</body>\n</html>\n",
 		} {
 			if !strings.Contains(body, want) {
 				t.Errorf("GET %s misses %q in:\n%s", p, want, body)
@@ -420,8 +424,10 @@ func TestDocsMethodDiscipline(t *testing.T) {
 	}
 }
 
-// TestDocsPagesCarryNoStrayTemplateTokens counts the {{ tokens a page carries against the
-// ones its own markdown source holds: the shell adds none.
+// TestDocsPagesCarryNoStrayTemplateTokens counts the {{ tokens a served page holds against
+// the literal tokens its markdown source asked for: the pipeline expands everything else, so
+// the only {{ a page may serve are the ones its source escaped as {{`{{`}}. The shell adds
+// none of its own.
 func TestDocsPagesCarryNoStrayTemplateTokens(t *testing.T) {
 	h := newTestServer(t, "test-key")
 	for _, name := range wantDocPages {
@@ -430,9 +436,12 @@ func TestDocsPagesCarryNoStrayTemplateTokens(t *testing.T) {
 			t.Fatalf("read the source of %s: %v", name, err)
 		}
 		body := get(t, h, "/docs/"+name).Body.String()
-		source, page := strings.Count(string(raw), "{{"), strings.Count(body, "{{")
-		if source != page {
-			t.Errorf("%s carries %d {{ tokens, its markdown source holds %d:\n%s", name, page, source, body)
+		want, page := strings.Count(string(raw), "{{`{{`}}"), strings.Count(body, "{{")
+		if want != page {
+			t.Errorf("%s carries %d {{ tokens, its markdown source escaped %d:\n%s", name, page, want, body)
+		}
+		if strings.Contains(body, "<no value>") {
+			t.Errorf("%s serves a <no value> where a template field was missing:\n%s", name, body)
 		}
 	}
 	for _, p := range []string{"/docs", "/docs/"} {
@@ -462,6 +471,159 @@ func TestDocsRoutesDoNotShadowBins(t *testing.T) {
 	}
 	if base2 := createTestBin(t, h, "test-key"); base2 == "" {
 		t.Error("POST / stopped creating bins")
+	}
+}
+
+// fixtureDocPage runs one fixture markdown through the exact pipeline the bundled docs take:
+// rendered, shelled, and parsed plus sample-executed by parseDocTemplate.
+func fixtureDocPage(t *testing.T, markdown string) hostedPage {
+	t.Helper()
+	title, body := renderUsageDoc([]byte(markdown))
+	pageHTML := docShell(title, body)
+	return hostedPage{title: title, html: pageHTML, tmpl: parseDocTemplate("usage doc fixture ("+t.Name()+")", pageHTML)}
+}
+
+// TestBundledDocsNameTheRequestAddress serves a fixture page that carries a
+// {{ .Instance.URL }} token: under a chosen Host named by a request the server trusts
+// (loopback socket + X-Forwarded-Proto: https) the page names that address and no token
+// survives the execution; under a plain Host it renders that host with the scheme frontBase
+// implies.
+func TestBundledDocsNameTheRequestAddress(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	fixture := "# Token fixture\n\n```sh\ncurl {{ .Instance.URL }}/x\n```\n"
+	docsPages["fixture.html"] = fixtureDocPage(t, fixture)
+	t.Cleanup(func() { delete(docsPages, "fixture.html") })
+
+	req := httptest.NewRequest(http.MethodGet, "/docs/fixture.html", nil)
+	req.Host = "preview.yookoala.dev"
+	req.RemoteAddr = "127.0.0.1:4321"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /docs/fixture.html = %d; body %q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "curl https://preview.yookoala.dev/x") {
+		t.Errorf("the fixture page does not name the addressed host+proto:\n%s", body)
+	}
+	if strings.Contains(body, "{{") || strings.Contains(body, "sandbin.example") {
+		t.Errorf("the fixture page serves a token leftover or the init-time sample data:\n%s", body)
+	}
+
+	// A plain Host under the default untrusted socket: the Host httptest.NewRequest names,
+	// with the http scheme frontBase falls to.
+	if rec = get(t, s, "/docs/fixture.html"); rec.Code != http.StatusOK {
+		t.Fatalf("GET /docs/fixture.html plain = %d; body %q", rec.Code, rec.Body.String())
+	}
+	body = rec.Body.String()
+	if !strings.Contains(body, "curl http://example.com/x") {
+		t.Errorf("the fixture page does not render the plain Host:\n%s", body)
+	}
+	if strings.Contains(body, "{{") {
+		t.Errorf("the fixture page serves a token leftover:\n%s", body)
+	}
+}
+
+// TestEveryBundledDocExecutesWithFreshData walks the real doc set and executes each stored
+// template with fresh sample data: no execute error, the output holds only the literal
+// tokens its own markdown escaped as {{`{{`}}, and a page whose markdown names
+// {{ .Instance. shows the fresh address where the token stood.
+func TestEveryBundledDocExecutesWithFreshData(t *testing.T) {
+	data := docData{Instance: docInstance{URL: "https://fresh.example"}}
+	one := func(name string, page hostedPage) {
+		t.Helper()
+		if page.tmpl == nil {
+			t.Errorf("%s carries no stored template", name)
+			return
+		}
+		raw, err := sandbin.UsageDocs.ReadFile("docs/usages/" + strings.TrimSuffix(name, ".html") + ".md")
+		if err != nil {
+			t.Errorf("read the embedded source of %s: %v", name, err)
+			return
+		}
+		var buf strings.Builder
+		if err := page.tmpl.Execute(&buf, data); err != nil {
+			t.Errorf("%s does not execute with fresh sample data: %v", name, err)
+			return
+		}
+		out := buf.String()
+		if left, want := strings.Count(out, "{{"), strings.Count(string(raw), "{{`{{`}}"); left != want {
+			t.Errorf("%s leaves %d {{ tokens behind; its markdown escaped %d", name, left, want)
+		}
+		if strings.Contains(out, "<no value>") {
+			t.Errorf("%s renders <no value> where a template field was missing", name)
+		}
+		if strings.Contains(string(raw), "{{ .Instance.") && !strings.Contains(out, "https://fresh.example") {
+			t.Errorf("%s does not render the fresh instance address where its token stood", name)
+		}
+	}
+	for _, set := range docSets {
+		for _, page := range append([]string{set.summary}, set.pages...) {
+			one(page, docsPages[page])
+		}
+	}
+	var buf strings.Builder
+	if err := docsHub.tmpl.Execute(&buf, data); err != nil {
+		t.Errorf("the hub does not execute with fresh sample data: %v", err)
+	}
+	if strings.Contains(buf.String(), "{{") {
+		t.Errorf("the hub leaves a token leftover:\n%s", buf.String())
+	}
+}
+
+// TestBinBytesCarryTemplateTokensVerbatim keeps the template pass inside the docs: a bin file
+// whose body carries template-shaped text travels PUT to GET byte-identical.
+func TestBinBytesCarryTemplateTokensVerbatim(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	base := createTestBin(t, h, "test-key")
+	body := "value: {{ .Instance.URL }} and {{.State.Health.Status}}\n"
+	if rec := put(t, h, base+"tokens.md", "test-key", body); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT = %d; body %q", rec.Code, rec.Body.String())
+	}
+	rec := get(t, h, base+"tokens.md")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET = %d; body %q", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != body {
+		t.Errorf("the bin round trip changed the bytes:\ngot  %q\nwant %q", rec.Body.String(), body)
+	}
+}
+
+// TestDocsCarryCopyButtonsAndTheLandingDoesNot pins the copy machinery's reach: every docs
+// page (the hub and each member) carries the docCopyJS script inside its <body> and its CSS
+// in the shell's <style>, while the landing page's own <body> region gains neither — its
+// copy button stays the landing's own.
+func TestDocsCarryCopyButtonsAndTheLandingDoesNot(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	for _, p := range append([]string{"/docs"}, docPageHrefs()...) {
+		body := get(t, h, p).Body.String()
+		for _, want := range []string{
+			"document.querySelectorAll(\"main pre\")",
+			"wrap.className = \"codeblock\"",
+			"button.className = \"block-copy\"",
+			"navigator.clipboard.writeText",
+			"document.execCommand(\"copy\")",
+			".codeblock{position:relative}",
+			".block-copy{position:absolute",
+			".block-copy.copied{color:#2e7d32;border-color:#2e7d32}",
+			"</script>\n</body>\n</html>\n",
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("GET %s misses %q in:\n%s", p, want, body[:min(len(body), 400)])
+			}
+		}
+	}
+	front := get(t, h, "/").Body.String()
+	start, end := strings.Index(front, "<body>"), strings.Index(front, "</body>")
+	if start < 0 || end < 0 || end < start {
+		t.Fatalf("the landing page carries no <body>…</body> region:\n%s", front[:min(len(front), 400)])
+	}
+	region := front[start:end]
+	for _, gone := range []string{"block-copy", "codeblock"} {
+		if strings.Contains(region, gone) {
+			t.Errorf("the landing page body gained %q in:\n%s", gone, region[:min(len(region), 400)])
+		}
 	}
 }
 

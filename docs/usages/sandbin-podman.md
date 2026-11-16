@@ -33,7 +33,7 @@ podman run -d --name sandbin -p 127.0.0.1:8080:8080 -v sandbin-data:/data \
   --health-cmd "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1" \
   --health-interval=30s --health-start-period=5s --health-retries=3 \
   localhost/sandbin:latest   # runs serve --db /data/sandbin.db
-podman inspect --format '{{.State.Health.Status}}' sandbin   # probed every 30s, healthy on a healthy server
+podman inspect --format '{{`{{`}}.State.Health.Status}}' sandbin   # probed every 30s, healthy on a healthy server
 ```
 
 As a systemd user service through podman quadlet:

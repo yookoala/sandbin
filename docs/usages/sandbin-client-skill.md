@@ -10,7 +10,7 @@ run `"$SKILL/sandbin-client"` from there.
 The served skill is a text/template: `GET /skills/sandbin-preview/SKILL.md` renders every
 address in it to the one the request arrived at (the same detection the front page uses), so a
 downloaded skill names exactly your server, frontmatter description included. The copy in git
-carries the raw `{{.Base}}` tokens — install from a running server, not from a checkout. The
+carries the raw ``{{`{{`}}.Base}}`` tokens — install from a running server, not from a checkout. The
 server also serves a small installer at `GET /skills/sandbin-preview/install.sh` with the
 server's own address filled in, so one command installs the skill into
 `$HOME/.agents/skills/sandbin-preview` — a folder OpenCode picks up in every project without any
