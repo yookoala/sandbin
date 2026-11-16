@@ -1,17 +1,29 @@
 # Plan: client doc set restructure — Building and Config page, verb-grouped upload page, sectioned skill page
 
-Status: open — implemented at `a696900`, awaiting review. Spec:
+Status: implemented and closed. Commit `a696900` (four client pages + serve page from the
+approved mockups, `sandbin-client-config.md` deleted, `docSets` swap, test re-pins and three new
+structure tests) and `39efe0a` (implementation counts). Spec:
 `docs/decisions/0027-client-docs-restructure.md` — its seven items settle
 the merged setup page, its three-group structure, the verb-grouped upload page, the client
 example style, the skill page's new title/sections with template-coverage removal, the serve
-page tag refresh, and cross-link retitles. Baseline HEAD is `5e12292` (`cmd/sandbin` 210 tests,
+page tag refresh, and cross-link retitles. Baseline HEAD was `5e12292` (`cmd/sandbin` 210 tests,
 `cmd/sandbin-client` 107, `internal/frontpage` 17, `internal/robots` 2, `internal/version` 6,
 all gates green). The implementation commit lands the five preserved drafts byte-for-byte,
 deletes `sandbin-client-config.md`, retargets the two pointers and swaps the `docSets` client
 pages literal, with `cmd/sandbin/docs_test.go` re-pinned and three new structure pins added
 (`cmd/sandbin` 213 tests, `cmd/sandbin-client` 107, `internal/frontpage` 17, `internal/robots`
 2, `internal/version` 6; `gofmt -l .` empty, `go vet ./...`, `go build ./...`,
-`go test -count=1 ./...`, `go test -race -count=1 ./...` all green).
+`go test -count=1 ./...`, `go test -race -count=1 ./...` all green). Review verdict: accept,
+no FAILs. Its one WARN is a plan-text clarification rather than a code fix: the repo grep in
+Reviewer TODO 2 ("only historical records may contain `sandbin-client-config`") is contradicted
+by the 404 pin at `cmd/sandbin/docs_test.go:606` that TODO 4a itself mandates — the pin stands
+(established home, precedent with the lockout/ip 404 pins), and TODO 2's grep is read as scoped
+to docs pages, which the review confirmed zero. Review rulings A–F on the implementer's judgment
+calls all accepted, including the full-ordered h2 assertions in the three structure tests and
+the key-rotation replacement of the `--url http://other.example` re-init example (decision 4).
+A review side-finding worth noting: the old skill page's "Skill Install Path:" quote was stale
+against the landing page since plan 0025's retitle; the new page quotes the current landing
+labels "I use …" and "Skill will be installed to:", verified against `internal/frontpage/front.html`.
 
 Design source of truth: the approved mockups, preserved at `docs/plans/0027-client-docs-restructure/`
 — `client-init-restructured.md`, `client-upload-restructured.md`, `client-skill-restructured.md`,
