@@ -1,11 +1,17 @@
 # Plan: client doc set restructure — Building and Config page, verb-grouped upload page, sectioned skill page
 
-Status: open. Spec: `docs/decisions/0027-client-docs-restructure.md` — its seven items settle
+Status: open — implemented at `a696900`, awaiting review. Spec:
+`docs/decisions/0027-client-docs-restructure.md` — its seven items settle
 the merged setup page, its three-group structure, the verb-grouped upload page, the client
 example style, the skill page's new title/sections with template-coverage removal, the serve
 page tag refresh, and cross-link retitles. Baseline HEAD is `5e12292` (`cmd/sandbin` 210 tests,
 `cmd/sandbin-client` 107, `internal/frontpage` 17, `internal/robots` 2, `internal/version` 6,
-all gates green).
+all gates green). The implementation commit lands the five preserved drafts byte-for-byte,
+deletes `sandbin-client-config.md`, retargets the two pointers and swaps the `docSets` client
+pages literal, with `cmd/sandbin/docs_test.go` re-pinned and three new structure pins added
+(`cmd/sandbin` 213 tests, `cmd/sandbin-client` 107, `internal/frontpage` 17, `internal/robots`
+2, `internal/version` 6; `gofmt -l .` empty, `go vet ./...`, `go build ./...`,
+`go test -count=1 ./...`, `go test -race -count=1 ./...` all green).
 
 Design source of truth: the approved mockups, preserved at `docs/plans/0027-client-docs-restructure/`
 — `client-init-restructured.md`, `client-upload-restructured.md`, `client-skill-restructured.md`,
