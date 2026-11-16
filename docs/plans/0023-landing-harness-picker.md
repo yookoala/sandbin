@@ -1,6 +1,6 @@
 # Plan: the landing page becomes the harness picker; the docs header joins its icon style
 
-Status: open. Spec: `docs/decisions/0023-landing-harness-picker.md` — the copy set, the
+Status: implemented and closed. Spec: `docs/decisions/0023-landing-harness-picker.md` — the copy set, the
 `Harness{Label, Cmd, Path}` table, the JSON data island, the verbatim picker behavior, the docs
 icon nav and shared `brandCSS` rules are settled there. Baseline HEAD is the plan-0022 close-out
 `23041d0` (`cmd/sandbin` 200 tests, `cmd/sandbin-client` 107, `internal/version` 6,
@@ -187,3 +187,42 @@ sentence survives), `docs/usages/sandbin-client-skill.md` (tab-row wording → c
 Everything in the decisions record's Skipped section, plus: localStorage remembering of the
 picked harness across visits, keyboard type-to-select on the closed face, dark-mode styling, and
 any `X-Robots-Tag` follow-up (0022's deferred item stays deferred).
+
+## Outcome
+
+Implemented in `0b91eca` (landing), `66fca38` (docs header) and `3acc480` (usage prose) on
+plan-open `4358464`; reviewer verdict APPROVE WITH FINDINGS — no blockers; findings closed in
+`6dfa2bb` and `9318c76`.
+
+- Counts: 200/107/6/14/2 vs baseline 200/107/6/13/2 — zero removals; the addition is
+  `TestHostileBaseStaysInsideTheJSONIsland`. `handlers.go` itself is comment-only.
+- Mockup fidelity (reviewer-verified): serving HEAD with Host `sandbin.example.org` +
+  XFP `https` and normalizing only the JSON island, the landing equals the approved mockup
+  byte-for-byte — the whole picker script and all behavior-bearing markup identical. The
+  reviewer's full browser scenario matrix (pinned order, `co`/`zz`, Windsurf+`c`, Enter/
+  arrows/Escape/blur/click, select-all, copy byte-equality through the island, execCommand
+  fallback on plain HTTP, flash pointer-transparency and retrigger, swap animations, Tab
+  identical to the mockup run side by side) passed everywhere with an empty console.
+- Battery: 25 routes byte-identical baseline-vs-HEAD outside the intentional list; every docs
+  page changed exactly 13 lines (6 nav lines + 6 CSS rules + blank), plus body prose only on
+  `sandbin-api.html` and `sandbin-client-skill.html`; the 0022 robots sentence and route
+  survive. Hostile-Host probes land on the placeholder or on Go's own 400; the island never
+  carries a raw `</script>`; landing `Content-Type` unchanged.
+- Install proofs (both parties): generic, OpenCode, Claude Code and Windsurf commands copied
+  from the served page landed exactly the folders named on their `Skill Install Path:` lines
+  in scratch HOMEs, with the pinned client binary built.
+- Findings closed: `sandbin-serve.md` still described the tab-era landing (and a never-shipped
+  `--dest .agents/skills` row) — rewritten in `9318c76`, which the plan's file list had
+  forgotten; three stale "tab"-named frontpage tests renamed in `6dfa2bb`; the a11y regression
+  inherited from the mockup (unlabeled command input, static `aria-expanded` on the type box)
+  fixed in `6dfa2bb` and recorded as a decision amendment; the implementer's report
+  misdescribed shipped markup (ids, noscript, reduced-motion that do not exist — the shipped
+  page is mockup-identical) — recorded here so the archive matches the code.
+- Accepted limits: no Go test executes the picker JS — mutations of the pinning/ordering/
+  separator/copy-flash logic pass the suite and are caught only by the browser matrix, which
+  the review ran in full; `}}` is unpinable (the page's own CSS legitimately contains it), `{{`
+  is pinned; test renames in `6dfa2bb` follow the zero-removal plan gate (which held at the
+  implementation commits).
+- Environment notes for future batteries: Chrome CDP cannot override Host (the review mapped
+  `sandbin.example.org` to loopback via `/etc/hosts`, reverted after); podman needs
+  `--network=host` in this sandbox.

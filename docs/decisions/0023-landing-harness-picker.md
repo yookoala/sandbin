@@ -42,11 +42,16 @@ and one shared icon-header language across landing and docs.
    it — including the no-typing state (`[current, generic?, ---, alphabetical rest]`) — and is
    absent only when the group covers the whole table; the first item is highlighted while typing;
    Enter/click selects the highlighted row, arrows move the highlight (the separator is inert),
-   Escape closes unchanged, blur commits the top; unmatched text falls back to generic on top;
+   Escape closes unchanged, blur commits the highlighted row (the group's top until arrow keys
+   move it; a review pass tightened this wording); unmatched text falls back to generic on top;
    the command/path/label update with the 0.28s swap fade; the copy button is an icon inside the
    full-width readonly input's right end, focus/click on the input selects all, and copying
    flashes the non-interactive "Copied" overlay (`pointer-events:none`, hold then 2.2s fade,
    retriggerable). Clipboard API first, `execCommand` fallback — the shipped posture.
+   Post-review amendment (`6dfa2bb`): `#cmd-input` carries `aria-label="Install command"` and
+   the type box toggles its own `aria-expanded` with the popup, clearing the only
+   accessibility regression the approved mockup carried (axe critical unlabeled input); the
+   preserved mockup stays the pre-amendment reference.
 5. **The docs shell adopts the same header.** `docHead`'s text nav becomes three borderless
    icons: home (house glyph → `/`, aria-label "Sandbin home"), book (`/docs`, "Documentation"),
    and GitHub keeping each page's own `sourceURL`. The icon CSS (`.page-head nav.icon-nav`,
