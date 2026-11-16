@@ -257,7 +257,9 @@ func rewriteDocLink(dest string) string {
 
 // brandCSS is the one branding style the docs shell and the landing page share. The names
 // here never borrow the logo's own brand-* class names: its <style> is inlined on the same
-// page, and the two must not reach each other.
+// page, and the two must not reach each other. The icon rules at the end style the icon nav
+// every docs page and the landing carry; the plain .page-head nav a margin rule stays for
+// any text nav, overridden for the icon nav.
 const brandCSS = `:root{--sandbin-purple:#4E1680;--sandbin-amber:#EA9B25;--sandbin-canvas:#F8F7F4}
 body{max-width:44rem;margin:0 auto;padding:1.25rem 1rem 3rem;background:#F8F7F4;color:#222;
 font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.55}
@@ -289,6 +291,13 @@ padding-bottom:0.8rem;margin-bottom:1.4rem;flex-wrap:wrap}
 .cmd pre{flex:1 1 auto;margin:0}
 .copy{flex:none;border:1px solid #4E1680;background:#fff;color:#4E1680;border-radius:4px;
 padding:0.4em 0.8em;font:inherit;cursor:pointer}
+
+.page-head nav.icon-nav{margin-left:auto;display:flex;gap:0.55rem;align-items:center}
+.page-head nav.icon-nav a{margin-right:0}
+.icon-link{display:inline-flex;align-items:center;justify-content:center;width:2.1rem;height:2.1rem;
+border:none;border-radius:8px;color:var(--sandbin-purple);text-decoration:none}
+.icon-link:hover,.icon-link:focus-visible{color:var(--sandbin-amber);background:#fff}
+.icon-link svg{width:1.35rem;height:1.35rem;display:block}
 `
 
 // logoBlock is the embedded wordmark markup, inlined verbatim inside a sized wrapper: the
@@ -314,14 +323,28 @@ func docShell(title, sourceURL, bodyHTML string) string {
 	return b.String()
 }
 
+// The three icon glyphs of the shared icon nav, exactly as the approved mockup carries them:
+// a house, an open book, and the GitHub mark.
+const (
+	docIconHome = "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/><polyline points=\"9 22 9 12 15 12 15 22\"/></svg>"
+	docIconBook = "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z\"/><path d=\"M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z\"/></svg>"
+	// docIconGitHub is the GitHub mark shared by every docs page; the link around it is the
+	// page's own sourceURL.
+	docIconGitHub = "<svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.615-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12\"/></svg>"
+)
+
 // docHead is the header the docs shell and the landing page share: the inline wordmark
-// linking home, then the links back to / and /docs and to a GitHub source.
+// linking home, then the borderless icon nav — home, docs, and the page's own GitHub source
+// — with root-relative hrefs.
 func docHead(sourceURL string) string {
 	var b strings.Builder
 	b.WriteString("<header class=\"page-head\">\n")
 	b.WriteString("<a class=\"logo-link\" href=\"/\" aria-label=\"Sandbin home\">" + logoBlock("wordmark") + "</a>\n")
-	b.WriteString("<nav><a href=\"/\">Sandbin</a><a href=\"/docs\">docs</a>")
-	b.WriteString("<a href=\"" + sourceURL + "\">source on GitHub</a></nav>\n")
+	b.WriteString("<nav class=\"icon-nav\">\n")
+	b.WriteString("<a class=\"icon-link\" href=\"/\" title=\"home\" aria-label=\"Sandbin home\">" + docIconHome + "</a>\n")
+	b.WriteString("<a class=\"icon-link\" href=\"/docs\" title=\"docs\" aria-label=\"Documentation\">" + docIconBook + "</a>\n")
+	b.WriteString("<a class=\"icon-link\" href=\"" + sourceURL + "\" title=\"source on GitHub\" aria-label=\"Source on GitHub\">" + docIconGitHub + "</a>\n")
+	b.WriteString("</nav>\n")
 	b.WriteString("</header>\n")
 	return b.String()
 }

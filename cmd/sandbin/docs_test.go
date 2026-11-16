@@ -108,6 +108,15 @@ func TestDocsPagesServeEveryUsageDoc(t *testing.T) {
 				"href=\"/\"",
 				"href=\"/docs\"",
 				"https://github.com/yookoala/sandbin/blob/main/docs/usages/",
+				// The icon nav the landing and the docs share: three borderless icons with
+				// root-relative hrefs and their aria-labels, styled by the shared brandCSS.
+				"<nav class=\"icon-nav\">",
+				"class=\"icon-link\"",
+				"aria-label=\"Sandbin home\"",
+				"aria-label=\"Documentation\"",
+				"aria-label=\"Source on GitHub\"",
+				".page-head nav.icon-nav{",
+				".icon-link{",
 			} {
 				if !strings.Contains(body, want) {
 					t.Errorf("page shell missing %q in:\n%s", want, body)
