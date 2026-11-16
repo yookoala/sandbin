@@ -56,7 +56,7 @@ control socket.
 `GET /` answers the branded landing page: the wordmark, a "This is a Sandbin instance" heading
 with its tagline, and the harness picker — a combobox under "Tell Your Agent to use This" that
 names the harness you use and fills a readonly command field with that harness's one-line
-installer, above a "Skill Install Path:" line naming the folder the shown command installs
+installer, above a "Skill will be installed to:" line naming the folder the shown command installs
 into. The hosted
 docs live under `/docs`: `GET /docs` and `GET /docs/` answer a hub page listing the two doc sets
 and every page each set covers, `GET /docs/<name>.html` answers the page rendered from the
