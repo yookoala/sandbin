@@ -1,8 +1,11 @@
 # The HTTP API
 
-`GET /` answers a small branded front page: the wordmark, the tagline, the GitHub links, the
-one-line installer with its copy button and the links into the hosted docs; its example command
-echoes the address your request arrived at (the `Host`, or `X-Forwarded-Host` and
+`GET /` answers a branded front page: the wordmark, a "This is a Sandbin instance" heading with
+its tagline, and a harness picker — a combobox under "Tell Your Agent to use This" that names
+the harness you use and fills a readonly command field with that harness's one-line installer,
+whose inner copy icon copies it with a brief "Copied" flash — above a "Skill Install Path:" line
+naming the folder the shown command installs into; its example commands echo the address your
+request arrived at (the `Host`, or `X-Forwarded-Host` and
 `X-Forwarded-Proto: https` from a proxy on a trusted address — the same trust rule as blocked
 addresses use), falling back to a `this.host` placeholder for anything odd. Creating a bin stays
 the key-checked `POST /`, and every other method on `/` still answers `405 method not allowed`.
