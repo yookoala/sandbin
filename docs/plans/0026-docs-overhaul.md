@@ -1,6 +1,9 @@
 # Plan: swagger-style API docs, a restructured doc set, and a templated copy-button docs pipeline
 
-Status: open. Spec: `docs/decisions/0026-docs-overhaul.md` — its seven items settle the page
+Status: open; implementation landed (pipeline commit + content commit), counts `cmd/sandbin` 210
+(grew from 202, no test removed), `cmd/sandbin-client` 107, `internal/frontpage` 17,
+`internal/robots` 2, `internal/version` 6, all gates green at each commit. Spec:
+`docs/decisions/0026-docs-overhaul.md` — its seven items settle the page
 structure, example style, per-request templating, copy buttons, the serve page's scope, the
 lockout+ip merge, and the summary page's new section. Baseline HEAD is `1f5469a`
 (`cmd/sandbin` 202 tests, `cmd/sandbin-client` 107, `internal/frontpage` 17, `internal/robots`

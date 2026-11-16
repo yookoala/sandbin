@@ -14,14 +14,13 @@ import (
 	"github.com/yookoala/sandbin/internal/version"
 )
 
-// wantDocPages are the ten hosted pages, named after the embedded usage files.
+// wantDocPages are the nine hosted pages, named after the embedded usage files.
 var wantDocPages = []string{
 	"sandbin.html",
 	"sandbin-serve.html",
 	"sandbin-api.html",
-	"sandbin-lockout.html",
+	"sandbin-ip-blocking.html",
 	"sandbin-podman.html",
-	"sandbin-ip.html",
 	"sandbin-client.html",
 	"sandbin-client-upload.html",
 	"sandbin-client-config.html",
@@ -33,9 +32,8 @@ var wantDocTitles = map[string]string{
 	"sandbin.html":               "sandbin — usage documentation",
 	"sandbin-serve.html":         "Running the server",
 	"sandbin-api.html":           "The HTTP API",
-	"sandbin-lockout.html":       "API key lockout",
+	"sandbin-ip-blocking.html":   "IP Address Blocking",
 	"sandbin-podman.html":        "Run it with podman",
-	"sandbin-ip.html":            "Managing blocked addresses",
 	"sandbin-client.html":        "sandbin-client — usage documentation",
 	"sandbin-client-upload.html": "Upload previews with sandbin-client",
 	"sandbin-client-config.html": "Point sandbin-client at a server",
@@ -73,6 +71,15 @@ func TestDocsHubServesBothPaths(t *testing.T) {
 	// The hub is fixed markup, so no template token of any kind may survive into it.
 	if strings.Contains(body, "{{") {
 		t.Errorf("the hub page carries a template token:\n%s", body)
+	}
+	// The hub lists exactly the merged set: one link per hosted page, nothing more.
+	if n := strings.Count(body, "href=\"/docs/"); n != len(wantDocPages) {
+		t.Errorf("the hub links %q %d times, want %d in:\n%s", "href=\"/docs/", n, len(wantDocPages), body)
+	}
+	for _, gone := range []string{"sandbin-lockout.html", "sandbin-ip.html"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("the hub still links the removed page %q:\n%s", gone, body)
+		}
 	}
 }
 
@@ -217,12 +224,12 @@ func TestDocsPagesFillTheViewportAndEndInFooter(t *testing.T) {
 func TestDocsHeadingSlugIDs(t *testing.T) {
 	h := newTestServer(t, "test-key")
 
-	rec := get(t, h, "/docs/sandbin-lockout.html")
+	rec := get(t, h, "/docs/sandbin-ip-blocking.html")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /docs/sandbin-lockout.html = %d", rec.Code)
+		t.Fatalf("GET /docs/sandbin-ip-blocking.html = %d", rec.Code)
 	}
 	if !strings.Contains(rec.Body.String(), "id=\"trusted-proxies\"") {
-		t.Errorf("lockout page has no id=\"trusted-proxies\" for its Trusted proxies heading:\n%s", rec.Body.String())
+		t.Errorf("IP Address Blocking page has no id=\"trusted-proxies\" for its Trusted proxies heading:\n%s", rec.Body.String())
 	}
 
 	headingRE := regexp.MustCompile(`<h([1-6])>([^<]*)</h[1-6]>`)
@@ -335,13 +342,101 @@ func TestDocsLinksAreRewrittenToHTML(t *testing.T) {
 	server := get(t, h, "/docs/sandbin.html").Body.String()
 	for _, want := range []string{
 		"href=\"sandbin-client.html\"",
-		"href=\"sandbin-lockout.html#trusted-proxies\"",
+		"href=\"sandbin-ip-blocking.html#trusted-proxies\"",
 		"href=\"sandbin-serve.html\"",
 		"href=\"sandbin-api.html\"",
 	} {
 		if !strings.Contains(server, want) {
 			t.Errorf("the server summary does not carry %q in:\n%s", want, server)
 		}
+	}
+}
+
+// TestDocsIPBlockingPageMergesBothMachineries pins the merged page's content: it carries the
+// corrected key-checked list with PATCH, the escalation and 429 answers, the address-detection
+// rule with its Trusted proxies section, and the control socket machinery both old pages held.
+func TestDocsIPBlockingPageMergesBothMachineries(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	body := get(t, h, "/docs/sandbin-ip-blocking.html").Body.String()
+	for _, want := range []string{
+		"<title>IP Address Blocking</title>",
+		"id=\"trusted-proxies\"",
+		"<code>PATCH /{hash}/</code>",
+		"30 minutes",
+		"<code>Retry-After</code>",
+		"<code>--trusted-proxy</code>",
+		"<code>--trusted-proxy-file</code>",
+		"no blocked addresses",
+		"the control socket",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the IP Address Blocking page misses %q in:\n%s", want, body[:min(len(body), 400)])
+		}
+	}
+}
+
+// TestDocsAPIPageIsSwaggerStyle pins the swagger shape of the new API page: the Conventions
+// opener with the one-time $API_KEY export, path and method sections by their slug ids, the
+// usage split under PUT, and none of the old localhost placeholders.
+func TestDocsAPIPageIsSwaggerStyle(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	body := get(t, h, "/docs/sandbin-api.html").Body.String()
+	for _, want := range []string{
+		"<h2 id=\"conventions\">Conventions</h2>",
+		"<code>export API_KEY=your-key</code>",
+		"id=\"" + githubSlugForTest("/ — the instance root") + "\"",
+		"id=\"" + githubSlugForTest("POST — create a bin") + "\"",
+		"id=\"" + githubSlugForTest("Archive uploads unpack themselves") + "\"",
+		"X-API-Key: $API_KEY",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the API page misses %q in:\n%s", want, body[:min(len(body), 400)])
+		}
+	}
+	if strings.Contains(body, "http://localhost:8080") {
+		t.Error("the API page still carries a localhost placeholder address")
+	}
+}
+
+// TestDocsServePageCarriesTheCoreSettings pins the rebuilt serve page: the new download and
+// build sections, the key precedence sentence, and the --version section gone from it.
+func TestDocsServePageCarriesTheCoreSettings(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	body := get(t, h, "/docs/sandbin-serve.html").Body.String()
+	for _, want := range []string{
+		"<h2 id=\"download-the-source\">Download the source</h2>",
+		"<h2 id=\"build-the-server\">Build the server</h2>",
+		"id=\"" + githubSlugForTest("The serve subcommand") + "\"",
+		"go install github.com/yookoala/sandbin/cmd/sandbin@v0.4.2",
+		"The flag wins over the variable, and with neither set the server refuses to start.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the serve page misses %q in:\n%s", want, body[:min(len(body), 400)])
+		}
+	}
+	if strings.Contains(body, "id=\"what---version-reports\"") {
+		t.Error("the serve page still carries the What `--version` reports section")
+	}
+}
+
+// TestDocsSummaryPageOwnsTheRobotsSentence pins the doc set's division: the robots behaviour
+// sentence has its documented home on the server summary page, not on the API page, and the
+// summary table links the merged page where the two old rows stood.
+func TestDocsSummaryPageOwnsTheRobotsSentence(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	summary := get(t, h, "/docs/sandbin.html").Body.String()
+	for _, want := range []string{
+		"<h2 id=\"beyond-the-api\">Beyond the API</h2>",
+		"a two-line file asking",
+		"href=\"sandbin-ip-blocking.html#trusted-proxies\"",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Errorf("the server summary misses %q in:\n%s", want, summary[:min(len(summary), 400)])
+		}
+	}
+	api := get(t, h, "/docs/sandbin-api.html").Body.String()
+	if strings.Contains(api, "a two-line file asking") {
+		t.Error("the API page still carries the robots behaviour sentence")
 	}
 }
 
@@ -376,6 +471,8 @@ func TestDocsUnknownPathsArePlainNotFound(t *testing.T) {
 		"/docs/nope.html", "/docs/SANDBIN.html", "/docs/sandbin.md", "/docs/assets/nope.svg",
 		"/docs/../etc/passwd", "/docs/..%2f..%2fetc/passwd", "/docs//sandbin.html",
 		"/docs/sandbin/", "/docs/sandbin.html/x", "/docs/assets", "/docs/assets/",
+		// The two pages the merged IP Address Blocking page replaced answer the plain 404 shape.
+		"/docs/sandbin-lockout.html", "/docs/sandbin-ip.html",
 	} {
 		rec := get(t, h, p)
 		if rec.Code != http.StatusNotFound {
@@ -628,8 +725,8 @@ func TestDocsCarryCopyButtonsAndTheLandingDoesNot(t *testing.T) {
 }
 
 // TestRenderUsageDocRewritesUnhostedRelativeLinks feeds the renderer a document no usage
-// file is: links to pages that are not hosted become their GitHub source, absolute links
-// pass through, and code stays verbatim.
+// file is: links to pages that are not hosted — the merged-away sandbin-lockout.md included —
+// become their GitHub source, absolute links pass through, and code stays verbatim.
 func TestRenderUsageDocRewritesUnhostedRelativeLinks(t *testing.T) {
 	_, body := renderUsageDoc([]byte("# Linked\n\n" +
 		"[lockout](sandbin-lockout.md#trusted-proxies) [summary](sandbin.md) [license](LICENSE.md) " +
@@ -637,7 +734,7 @@ func TestRenderUsageDocRewritesUnhostedRelativeLinks(t *testing.T) {
 		"`keep [this](other.md)` and `curl -fsSL https://host/skills/sandbin-preview/install.sh`\n"))
 
 	for _, want := range []string{
-		"href=\"sandbin-lockout.html#trusted-proxies\"",
+		"href=\"https://github.com/yookoala/sandbin/blob/main/docs/usages/sandbin-lockout.md#trusted-proxies\"",
 		"href=\"sandbin.html\"",
 		"href=\"https://github.com/yookoala/sandbin/blob/main/docs/usages/LICENSE.md\"",
 		"href=\"https://github.com/yookoala/sandbin/blob/main/docs/usages/notes.md#top\"",
@@ -677,7 +774,7 @@ func resolveDocHref(pagePath, href string) (target, frag string, ok bool) {
 	}
 }
 
-// docPageHrefs are the /docs paths of the ten hosted pages.
+// docPageHrefs are the /docs paths of the nine hosted pages.
 func docPageHrefs() []string {
 	out := make([]string, 0, len(wantDocPages))
 	for _, name := range wantDocPages {

@@ -1,67 +1,87 @@
 # Running the server
 
-Build and run:
+This page covers the machine side of a Sandbin instance: getting the source, building the
+binaries, and running the `serve` subcommand. What the server answers on its port is [the API
+page](sandbin-api.md); the blocking machinery behind bad keys is [IP Address
+Blocking](sandbin-ip-blocking.md); running under podman is [the podman page](sandbin-podman.md).
+
+## Download the source
+
+The repository is [github.com/yookoala/sandbin](https://github.com/yookoala/sandbin):
 
 ```sh
-make                                    # -> dist/sandbin and dist/sandbin-client, stamped from git
-SANDBIN_API_KEY=your-key ./dist/sandbin serve
+git clone https://github.com/yookoala/sandbin
+cd sandbin
 ```
 
-`make` is the source-build entry point, and its other targets are the rest of the workflow:
-`make test` runs the five gates (`gofmt`, `go vet`, `go build`, `go test`, `go test -race`),
-`make container` builds the podman image carrying the same version string, `make release
-TAG=v0.3.0` records a release tag (it commits and tags, and never pushes), and `make version`
-prints the string `make build` would stamp. `VERSION='anything' make build` overrides the stamp.
+`main` is the working branch, and every release is a tag on it (`v0.4.2` is the newest), so a
+named release of the source is one `git checkout v0.4.2` away. You can also skip the clone
+entirely: the Go module proxy serves any tagged release, and `go install` builds it for you:
 
-## What `--version` reports
+```sh
+go install github.com/yookoala/sandbin/cmd/sandbin@v0.4.2
+go install github.com/yookoala/sandbin/cmd/sandbin-client@v0.4.2
+```
 
-Both binaries print one line, `sandbin version <string>` or `sandbin-client version <string>`,
-and `internal/version` picks the first source that knows something:
+Those land as `sandbin` and `sandbin-client` under `$GOPATH/bin`, and each reports its tag as
+its version string — a proxy-downloaded module zip has no git history to derive more from.
 
-1. a value injected at build time with `-ldflags -X github.com/yookoala/sandbin/internal/version.Value`
-   — what `make build`, the Containerfile and any manual `VERSION=` override do, used verbatim;
-2. Go's own stamping of the git checkout it was built from, which knows the commit and whether
-   anything differs from HEAD — tracked edits *and* new untracked files (measured: a clean HEAD
-   with only an untracked scratch folder stamps `dev (3abcdef+)`) — but cannot know a tag:
-   `dev (3abcdef)` or `dev (3abcdef+)`;
-3. the tag `scripts/release.sh` embedded in `internal/version/release.txt`, which travels inside
-   the module zip: the tag alone;
-4. the module version the build info carries, the backstop for an empty `release.txt`;
-5. plain `dev`.
+## Build the server
 
-So the stamped `make build` gives the three git-aware formats (`scripts/version.sh` computes
-them: exact tag `v0.3.0 (1abcdef)`, tag plus offset `v0.3.0+ (2abcdef)`, dirty `dev
-(3abcdef+)`, no reachable `v*` tag `dev (4abcdef)`), while `go build ./cmd/sandbin` in the same
-checkout reports `dev (hash)` — an honest answer, since a build that never ran `git describe`
-has no idea a tag exists. `go build -buildvcs=false`, or a build made outside a repository,
-knows neither and falls to the embedded tag, or to plain `dev` where `release.txt` is still
-empty. `go install github.com/yookoala/sandbin/cmd/sandbin@v0.3.0` prints the tag alone: a
-proxy-downloaded module has no `.git` and `@version` builds take no `-ldflags`, so no
-clean route puts a commit hash into it. Building from a checkout with `go install ./cmd/...`
-behaves like `go build` and gets the `dev (hash)` form.
+Building from a checkout needs Go 1.26.10 or newer (the `go` line of `go.mod`) and `make`. One
+command builds both binaries:
 
-Every invocation names its verb: `serve` runs the server, `ip list`, `ip show <ip>`, `ip unblock
-<ip>` and `ip clear` inspect and lift the API key blocks through that server's control socket
-(see [Managing blocked addresses](sandbin-ip.md)), and `help` prints the usage. A bare `sandbin`, `sandbin help`
-and `--help` print that usage on stdout and exit 0; an unknown verb answers
-`No help topic for 'x'` on stderr and exits 1.
+```sh
+make
+```
 
-`--api-key` (default `$SANDBIN_API_KEY`), `--db` (default `sandbin.db`), `--addr` (default
-`:8080`) and `--socket` (default `$SANDBIN_SOCKET`, otherwise the `--db` path plus `.sock`; see [Managing blocked addresses](sandbin-ip.md)) are `serve`'s core settings; `--trusted-proxy` and
-`--trusted-proxy-file` (defaults `$SANDBIN_TRUSTED_PROXIES` and `$SANDBIN_TRUSTED_PROXIES_FILE`,
-see [Trusted proxies](sandbin-lockout.md#trusted-proxies)) optionally name the proxies the server believes. The server exits when no API
-key is configured, a trusted proxy value cannot be read, or another serve already answers on its
-control socket.
+That is `make build`: it stamps `dist/sandbin` and `dist/sandbin-client` with the version
+string `scripts/version.sh` computes from the checkout. The other targets are the rest of the
+workflow: `make test` runs the five gates (`gofmt`, `go vet`, `go build`, `go test`,
+`go test -race`), `make container` builds the podman image carrying the same version string,
+`make release TAG=v0.4.2` records a release tag (it commits and tags, and never pushes), and
+`make version` prints the string `make build` would stamp. `VERSION='anything' make build`
+overrides the stamp. Plain `go build ./cmd/sandbin` works too, but its version string reports
+`dev (hash)` — an honest answer, since that build never asked git which tag it sits on.
 
-`GET /` answers the branded landing page: the wordmark, a "This is a Sandbin instance" heading
-with its tagline, and the harness picker — a combobox under "Tell Your Agent to use This" that
-names the harness you use and fills a readonly command field with that harness's one-line
-installer, above a "Skill will be installed to:" line naming the folder the shown command installs
-into. The hosted
-docs live under `/docs`: `GET /docs` and `GET /docs/` answer a hub page listing the two doc sets
-and every page each set covers, `GET /docs/<name>.html` answers the page rendered from the
-`docs/usages/<name>.md` of the same name — the markdown is embedded in the binary at build time,
-so nothing under `/docs` is read from disk — and `GET /docs/assets/sandbin-logo.svg` answers the
-logo as `image/svg+xml`. None of them need a key, every method but GET and HEAD on them answers
-`405` (HEAD answers `200` with an empty body), and an unknown name under `/docs` is the plain
-`404 unknown bin`.
+## The `serve` subcommand
+
+`serve` runs the server: it opens the sqlite database named by `--db` (creating it when
+missing), binds the HTTP address named by `--addr`, and serves until stopped.
+
+The server needs an API key, and there are two ways to give it one. The flag:
+
+```sh
+./dist/sandbin serve --api-key your-key
+```
+
+or the environment variable, which is the form the container and quadlet flows use:
+
+```sh
+export SANDBIN_API_KEY=your-key
+./dist/sandbin serve
+```
+
+The flag wins over the variable, and with neither set the server refuses to start. This key is
+what every key-checked request — `POST /`, `PUT`, `PATCH`, `DELETE` and `POST /verify-key` —
+must present in `X-API-Key` (see [the API page](sandbin-api.md)); a wrong one answers `403`
+and charges the address to the [block table](sandbin-ip-blocking.md).
+
+The rest of `serve`'s core settings are flags with environment fallbacks:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--api-key` | `$SANDBIN_API_KEY` | the write key every key-checked request must present |
+| `--db` | `sandbin.db` | the sqlite file holding every bin and file |
+| `--addr` | `:8080` | the address to listen on |
+| `--socket` | `$SANDBIN_SOCKET`, else the `--db` path plus `.sock` | the control socket the `ip` family drives (see [IP Address Blocking](sandbin-ip-blocking.md)) |
+| `--trusted-proxy` | `$SANDBIN_TRUSTED_PROXIES` | proxy addresses and CIDRs whose `X-Forwarded-For` is believed (see [Trusted proxies](sandbin-ip-blocking.md#trusted-proxies)) |
+| `--trusted-proxy-file` | `$SANDBIN_TRUSTED_PROXIES_FILE` | the same proxy list, one entry per line in a file |
+
+Beyond a missing API key, the server exits when a trusted-proxy value cannot be read or when
+another serve already answers on its control socket.
+
+The CLI names its verb: `serve` runs the server and `help` prints the usage. A bare `sandbin`,
+`sandbin help` and `--help` print that usage on stdout and exit 0; an unknown verb answers
+`No help topic for 'x'` on stderr and exits 1. The `ip` family inspects and lifts API key
+blocks and belongs to the blocking machinery: see [IP Address Blocking](sandbin-ip-blocking.md).
