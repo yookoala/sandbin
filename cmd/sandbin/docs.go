@@ -268,7 +268,7 @@ body{max-width:44rem;margin:0 auto;padding:1.25rem 1rem 3rem;background:#F8F7F4;
 font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.55;
 display:flex;flex-direction:column;box-sizing:border-box;min-height:100vh}
 main{flex:1 0 auto}
-.site-footer{margin-top:auto;padding-top:1.2rem;border-top:1px solid #e3ddd3;color:#666;font-size:0.85rem}
+.site-footer{margin-top:auto;padding-top:1.2rem;border-top:1px solid #e3ddd3;color:#666;font-size:0.85rem;text-align:center}
 h1,h2,h3,h4,h5,h6{font-family: 'Poetsen One', sans-serif;color:#4E1680;line-height:1.2}
 h1{font-size:1.9rem;margin:0 0 0.4em}
 h2{font-size:1.35rem;margin:1.6em 0 0.4em}

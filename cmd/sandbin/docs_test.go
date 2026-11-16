@@ -191,7 +191,7 @@ func TestDocsPagesFillTheViewportAndEndInFooter(t *testing.T) {
 			// to the bottom edge.
 			"display:flex;flex-direction:column;box-sizing:border-box;min-height:100vh",
 			"main{flex:1 0 auto}",
-			".site-footer{margin-top:auto;padding-top:1.2rem;border-top:1px solid #e3ddd3;color:#666;font-size:0.85rem}",
+			".site-footer{margin-top:auto;padding-top:1.2rem;border-top:1px solid #e3ddd3;color:#666;font-size:0.85rem;text-align:center}",
 			"</header>\n<main>\n",
 			footer,
 		} {
