@@ -13,7 +13,7 @@
 // assembled with encoding/json, whose escaping is safe inside a <script> element and keeps the
 // quotes of the --dest "$HOME/…" commands intact. Only the table's first row is also baked
 // into the markup — the command widget's initial value, the combobox face's label and the
-// install-path line — so the no-JS page still shows the default row.
+// install-path box — so the no-JS page still shows the default row.
 //
 // The package holds no request logic: which base is safe to echo is decided in cmd/sandbin
 // (frontBase and its frontHostRE guard) and handed over as a finished string. Nothing here
@@ -33,7 +33,7 @@ import (
 
 // frontHTML is the landing page's markup: {{.BrandCSS}} inside the <style>, {{.Logo}} inside
 // its hero-sized wrapper in the header, {{.DefaultLabel}}, {{.DefaultCmd}} and {{.DefaultPath}}
-// in the combobox face, the command widget's initial value and the install-path line,
+// in the combobox face, the command widget's initial value and the install-path box,
 // {{.Version}} in the powered-by footer, and {{.HarnessJSON}} inside the JSON data island the
 // picker script parses.
 //

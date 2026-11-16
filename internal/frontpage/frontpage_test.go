@@ -336,7 +336,7 @@ func TestRenderCarriesEveryHarnessCommand(t *testing.T) {
 }
 
 // The page opens on the generic row without any scripting: the command widget's initial value
-// is that row's command, the face names the row, and the path line names its folder.
+// is that row's command, the face names the row, and the path box names its folder.
 func TestRenderOpensOnTheDefaultRow(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Render(&buf, sampleData()); err != nil {
@@ -348,14 +348,14 @@ func TestRenderOpensOnTheDefaultRow(t *testing.T) {
 	if !strings.Contains(body, visible) {
 		t.Errorf("the command widget's initial value is not the generic row's command (%q) in:\n%s", visible, body)
 	}
-	if n := strings.Count(body, "value=\""); n != 1 {
-		t.Errorf("%d prefilled values, want 1 in:\n%s", n, body)
+	if n := strings.Count(body, "value=\""); n != 2 {
+		t.Errorf("%d prefilled values, want 2 (command and path boxes) in:\n%s", n, body)
 	}
 	if !strings.Contains(body, "<span id=\"pick-label\">a generic harness</span>") {
 		t.Errorf("the combobox face does not open on the generic row in:\n%s", body)
 	}
-	if !strings.Contains(body, "<span class=\"path\" id=\"cmd-path\">"+wantHarnessPaths[0]+"</span>") {
-		t.Errorf("the path line does not open on %q in:\n%s", wantHarnessPaths[0], body)
+	if !strings.Contains(body, "<input class=\"cmd-input path-input\" id=\"cmd-path\" type=\"text\" readonly spellcheck=\"false\" autocomplete=\"off\" aria-label=\"Skill install path\" value=\""+wantHarnessPaths[0]+"\">") {
+		t.Errorf("the path box does not open on %q in:\n%s", wantHarnessPaths[0], body)
 	}
 	if strings.Contains(visible, "--dest") {
 		t.Errorf("the default command carries --dest: %q", visible)
@@ -363,9 +363,9 @@ func TestRenderOpensOnTheDefaultRow(t *testing.T) {
 }
 
 // The copy set the mockup approved: the title and h1, the GitHub tagline line, the section
-// heading, the picker lead-in, and the command lead-in, plus the install-path line. What the
-// redesign deleted stays deleted: the old wordmark h1, the GitHub-links paragraph, the hosted
-// docs section, and the tab-era prose.
+// heading, the picker lead-in, and the command lead-in, plus the install-path label and its
+// box. What the redesign deleted stays deleted: the old wordmark h1, the GitHub-links
+// paragraph, the hosted docs section, and the tab-era prose.
 func TestRenderCarriesTheApprovedCopySet(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Render(&buf, sampleData()); err != nil {
@@ -381,7 +381,8 @@ func TestRenderCarriesTheApprovedCopySet(t *testing.T) {
 		"<p>Tell me what harness you are using:</p>",
 		"<div class=\"pick-line\">I use <span class=\"pick\" id=\"pick\">",
 		"<p>Run this command in your terminal:</p>",
-		"Skill Install Path: <span class=\"path\" id=\"cmd-path\">",
+		"<p class=\"cmd-target\">Skill Install Path:</p>",
+		"<input class=\"cmd-input path-input\" id=\"cmd-path\"",
 		"aria-label=\"Which harness you use\"",
 		"aria-label=\"Install command\"",
 		// The nav GitHub door: the repo root opened in a new tab; the tagline link stays
@@ -394,6 +395,7 @@ func TestRenderCarriesTheApprovedCopySet(t *testing.T) {
 	}
 	for _, gone := range []string{
 		"<h1 id=\"sandbin\">Sandbin</h1>",
+		"<span class=\"path\" id=\"cmd-path\">",
 		"<h2 id=\"give-the-skill-to-your-agent\">",
 		"<h2 id=\"the-hosted-docs\">The hosted docs",
 		"the usage docs on GitHub",
@@ -440,7 +442,7 @@ func TestRenderFollowsTheHarnessSlice(t *testing.T) {
 	for _, want := range []string{
 		"value=\"curl -fsSL https://preview.example.org:8443/skills/sandbin-preview/install.sh | bash -s -- --dest &quot;$HOME/.odd/skills&quot;\"",
 		"<span id=\"pick-label\">Odd One</span>",
-		"<span class=\"path\" id=\"cmd-path\">$HOME/.odd/skills/sandbin-preview</span>",
+		"value=\"$HOME/.odd/skills/sandbin-preview\"",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in:\n%s", want, body)

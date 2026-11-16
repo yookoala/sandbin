@@ -41,8 +41,8 @@ pointer-events:none;opacity:0}
 .cmd-flash.show{animation:sandbin-flash 2.2s ease-out forwards}
 .cmd-target{margin:0.55em 0 0;color:#555;font-size:0.95rem}
 @keyframes sandbin-swap{0%{opacity:0;transform:translateY(-5px)}100%{opacity:1;transform:none}}
-.cmd-input.swap,.cmd-target.swap,.pick-face.swap{animation:sandbin-swap 0.28s ease-out}
-.cmd-target .path{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#444}
+.cmd-input.swap,.path-input.swap,.pick-face.swap{animation:sandbin-swap 0.28s ease-out}
+.path-input{padding-right:0.9em}
 </style>
 </head>
 <body>
@@ -76,7 +76,8 @@ aria-label="Install command" value="{{.DefaultCmd}}">
 onclick="sandbinCopyInstall(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="13" height="13" x="9" y="9" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
 <span class="cmd-flash" id="cmd-flash" aria-hidden="true">Copied</span>
 </div>
-<p class="cmd-target">Skill Install Path: <span class="path" id="cmd-path">{{.DefaultPath}}</span></p>
+<p class="cmd-target">Skill Install Path:</p>
+<div class="cmd"><input class="cmd-input path-input" id="cmd-path" type="text" readonly spellcheck="false" autocomplete="off" aria-label="Skill install path" value="{{.DefaultPath}}"></div>
 </main>
 <footer class="site-footer">Powered by Sandbin | version: {{.Version}}</footer>
 
@@ -90,11 +91,11 @@ function sandbinSwapIn(el) {
 }
 function sandbinApply(h) {
   document.getElementById("cmd-input").value = h.cmd;
-  document.getElementById("cmd-path").textContent = h.path;
+  document.getElementById("cmd-path").value = h.path;
   document.getElementById("pick-label").textContent = h.label;
   sandbinSwapIn(document.getElementById("pick-face"));
   sandbinSwapIn(document.getElementById("cmd-input"));
-  sandbinSwapIn(document.getElementById("cmd-path").parentElement);
+  sandbinSwapIn(document.getElementById("cmd-path"));
 }
 function sandbinHarnessOrder(q) {
   var wanted = q.trim().toLowerCase();

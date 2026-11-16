@@ -260,13 +260,15 @@ func TestFrontPageAtRoot(t *testing.T) {
 		"curl -fsSL http://example.com/skills/sandbin-preview/install.sh | bash -s -- --dest \\\"$HOME/.claude/skills\\\"",
 		"curl -fsSL http://example.com/skills/sandbin-preview/install.sh | bash -s -- --dest \\\"$HOME/.codeium/windsurf/skills\\\"",
 		// The command widget the page opens on: the generic row's command as the readonly
-		// input's value, the inner copy icon button, the Copied flash, and the install-path line.
+		// input's value, the inner copy icon button, the Copied flash, and the install-path
+		// box naming the generic row's folder.
 		"value=\"curl -fsSL http://example.com/skills/sandbin-preview/install.sh | bash\"",
 		"class=\"cmd-input\"",
 		"class=\"cmd-copy\"",
 		"class=\"cmd-flash\"",
 		">Copied</span>",
-		"Skill Install Path: <span class=\"path\" id=\"cmd-path\">$HOME/.agents/skills/sandbin-preview</span>",
+		"<p class=\"cmd-target\">Skill Install Path:</p>",
+		"<input class=\"cmd-input path-input\" id=\"cmd-path\" type=\"text\" readonly spellcheck=\"false\" autocomplete=\"off\" aria-label=\"Skill install path\" value=\"$HOME/.agents/skills/sandbin-preview\">",
 		// The combobox markup and its picker.
 		"<nav class=\"icon-nav\">",
 		"<a class=\"icon-link\" href=\"/docs\"",
