@@ -70,7 +70,7 @@ prototype files, and hand a human plain preview URLs.</p>
 <p>Run this command in your terminal:</p>
 <div class="cmd">
 <input class="cmd-input" id="cmd-input" type="text" readonly spellcheck="false" autocomplete="off"
-value="{{.DefaultCmd}}">
+aria-label="Install command" value="{{.DefaultCmd}}">
 <button type="button" class="cmd-copy" id="cmd-copy" aria-label="Copy the install command" title="copy"
 onclick="sandbinCopyInstall(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="13" height="13" x="9" y="9" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
 <span class="cmd-flash" id="cmd-flash" aria-hidden="true">Copied</span>
@@ -180,6 +180,7 @@ function sandbinChoose(i) {
 function sandbinOpenPick() {
   document.getElementById("pick-pop").hidden = false;
   document.getElementById("pick-face").setAttribute("aria-expanded", "true");
+  document.getElementById("pick-input").setAttribute("aria-expanded", "true");
   document.getElementById("pick-input").value = "";
   sandbinPick.hl = 0;
   sandbinRenderPick();
@@ -188,6 +189,7 @@ function sandbinOpenPick() {
 function sandbinClosePick() {
   document.getElementById("pick-pop").hidden = true;
   document.getElementById("pick-face").setAttribute("aria-expanded", "false");
+  document.getElementById("pick-input").setAttribute("aria-expanded", "false");
 }
 document.getElementById("pick-face").addEventListener("click", sandbinOpenPick);
 var pickInput = document.getElementById("pick-input");

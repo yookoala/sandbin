@@ -306,7 +306,7 @@ func TestRenderCarriesEveryHarnessCommand(t *testing.T) {
 
 // The page opens on the generic row without any scripting: the command widget's initial value
 // is that row's command, the face names the row, and the path line names its folder.
-func TestRenderShowsOnlyTheFirstTabCommand(t *testing.T) {
+func TestRenderOpensOnTheDefaultRow(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Render(&buf, sampleData()); err != nil {
 		t.Fatalf("Render: %v", err)
@@ -335,7 +335,7 @@ func TestRenderShowsOnlyTheFirstTabCommand(t *testing.T) {
 // heading, the picker lead-in, and the command lead-in, plus the install-path line. What the
 // redesign deleted stays deleted: the old wordmark h1, the GitHub-links paragraph, the hosted
 // docs section, and the tab-era prose.
-func TestRenderCarriesTheDefaultTabSentenceAndProjectNote(t *testing.T) {
+func TestRenderCarriesTheApprovedCopySet(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Render(&buf, sampleData()); err != nil {
 		t.Fatalf("Render: %v", err)
@@ -352,6 +352,7 @@ func TestRenderCarriesTheDefaultTabSentenceAndProjectNote(t *testing.T) {
 		"<p>Run this command in your terminal:</p>",
 		"Skill Install Path: <span class=\"path\" id=\"cmd-path\">",
 		"aria-label=\"Which harness you use\"",
+		"aria-label=\"Install command\"",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in:\n%s", want, body)
@@ -380,7 +381,7 @@ func TestRenderCarriesTheDefaultTabSentenceAndProjectNote(t *testing.T) {
 // The island and the initial widget both come from the slice the handler hands over: a
 // different list renders a different page, and the command shown server-side escapes its
 // quotes as &quot; so the attribute survives.
-func TestRenderTabsFollowTheHarnessSlice(t *testing.T) {
+func TestRenderFollowsTheHarnessSlice(t *testing.T) {
 	var buf bytes.Buffer
 	d := sampleData()
 	d.Harnesses = []Harness{
