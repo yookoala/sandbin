@@ -1,8 +1,19 @@
 # Plan: swagger-style API docs, a restructured doc set, and a templated copy-button docs pipeline
 
-Status: open; implementation landed (pipeline commit + content commit), counts `cmd/sandbin` 210
+Status: implemented and closed. Commits `4d0883d` (pipeline: per-request docs templating with
+init-time parse/sample-execute, copy buttons) and `84a7887` (content: swagger API page, serve
+page restructure, lockout+ip merged into IP Address Blocking, summary page owns the non-API
+routes), plus `4520b54` (review follow-up: page-count comments refreshed to nine, and the podman
+page now explains its brace escape). Counts `cmd/sandbin` 210
 (grew from 202, no test removed), `cmd/sandbin-client` 107, `internal/frontpage` 17,
-`internal/robots` 2, `internal/version` 6, all gates green at each commit. Spec:
+`internal/robots` 2, `internal/version` 6, all gates green at each commit and at the close.
+Review verdict: accept, no FAILs; its three WARNs — the podman escape note, the stale "ten"
+comments, and the API page's out-of-scope route *mentions* (framed as pointers to the owning
+pages, matching decision 1, so kept) — landed or were dismissed as recorded. The implementation's
+two judgment calls, both reviewed as sound: raw `{{...}}` strings quoted in the podman and
+client-skill pages had to gain the `{{`{{`}}` escape the moment docs themselves take the
+template pass (they joined the pipeline commit), and the plan's claim that current page texts
+carry no tokens was wrong for exactly those two files. Spec:
 `docs/decisions/0026-docs-overhaul.md` — its seven items settle the page
 structure, example style, per-request templating, copy buttons, the serve page's scope, the
 lockout+ip merge, and the summary page's new section. Baseline HEAD is `1f5469a`
