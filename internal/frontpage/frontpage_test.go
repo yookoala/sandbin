@@ -414,6 +414,25 @@ func TestRenderCarriesTheApprovedCopySet(t *testing.T) {
 	}
 }
 
+// The swap tint the mockup approved: on top of the 0.28s move/opacity swap, every swapping
+// widget also runs the warm sandbin-swapbg keyframe that fades #f7e7cb to white over 1.4s.
+func TestRenderCarriesTheSwapTint(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Render(&buf, sampleData()); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	body := buf.String()
+
+	for _, want := range []string{
+		"@keyframes sandbin-swapbg{0%{background-color:#f7e7cb}100%{background-color:#fff}}",
+		".cmd-input.swap,.path-input.swap,.pick-face.swap{animation:sandbin-swap 0.28s ease-out,sandbin-swapbg 1.4s ease-out}",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in:\n%s", want, body)
+		}
+	}
+}
+
 // The responsive modal the mockup approved: outside the query the scrim and the hint stay
 // display:none and the type box's placeholder is styled muted; under the 30rem query the scrim
 // becomes the fixed dark wash and #pick-pop becomes the fixed panel with a full-width input
