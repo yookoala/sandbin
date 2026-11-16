@@ -174,14 +174,48 @@ func TestRobotsTxt(t *testing.T) {
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST /robots.txt = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
 	}
+	if body := rec.Body.String(); body != "method not allowed\n" {
+		t.Errorf("POST /robots.txt body = %q, want the same wording healthz uses", body)
+	}
 
-	// The branch must not shadow a real bin: a full round trip still works.
+	// The branch is an exact path: near misses keep the plain 404 bin fallback.
+	for _, near := range []string{"/robotx.txt", "/robots.txtx", "/robots.txt/"} {
+		if rec := get(t, h, near); rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want %d; body %q", near, rec.Code, http.StatusNotFound, rec.Body.String())
+		}
+	}
+
+	// A crawler with a wrong key charges nothing: no ip_blocks row appears.
+	for range 3 {
+		if rec := getFrom(t, h, "198.51.100.7:1234", "/robots.txt", "wrong"); rec.Code != http.StatusOK {
+			t.Errorf("GET /robots.txt with a wrong key = %d, want %d", rec.Code, http.StatusOK)
+		}
+	}
+	var rows int
+	if err := h.store.db.QueryRow(`SELECT COUNT(*) FROM ip_blocks`).Scan(&rows); err != nil {
+		t.Fatalf("count ip_blocks rows: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("ip_blocks rows after wrong-key robots GETs = %d, want 0", rows)
+	}
+
+	// The branch must not shadow a real bin: a full round trip still works,
+	// and a bin may hold a file of the very same name, which serves its own bytes.
 	base := createTestBin(t, h, "test-key")
 	if rec := put(t, h, base+"page.html", "test-key", "<h1>Hello</h1>"); rec.Code != http.StatusCreated {
 		t.Fatalf("PUT after the robots.txt branch = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
 	}
 	if rec := get(t, h, base+"page.html"); rec.Code != http.StatusOK || rec.Body.String() != "<h1>Hello</h1>" {
 		t.Errorf("GET after the robots.txt branch = %d, body %q", rec.Code, rec.Body.String())
+	}
+	if rec := put(t, h, base+"robots.txt", "test-key", "my own robots"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT robots.txt under a bin = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if rec := get(t, h, base+"robots.txt"); rec.Code != http.StatusOK || rec.Body.String() != "my own robots" {
+		t.Errorf("GET bin robots.txt = %d, body %q, want the uploaded bytes", rec.Code, rec.Body.String())
+	}
+	if rec := get(t, h, "/robots.txt"); rec.Code != http.StatusOK || rec.Body.String() != wantBody {
+		t.Errorf("GET /robots.txt after the bin round trip = %d, body %q, want the embedded file", rec.Code, rec.Body.String())
 	}
 }
 
