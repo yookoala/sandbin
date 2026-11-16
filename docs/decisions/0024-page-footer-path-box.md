@@ -23,10 +23,12 @@ plan-0023 pages. These change the shipped pages away from the preserved mockup a
    `</footer>`; front.html wraps its content in `<main>` and carries the same footer built from
    a new `frontpage.Data.Version` string that `renderFrontPage` supplies as `version.String()`.
    Footer style lives in `brandCSS` (`.site-footer`: pushed down by `margin-top:auto`, thin top
-   rule, muted small type) so both page families share it. The version shown is exactly what
+   rule, muted small type, `text-align:center` — the line centered was a post-release amendment
+   (`147edff`)) so both page families share it. The version shown is exactly what
    `sandbin --version` prints.
 3. **The landing's path line becomes a box.** "Skill Install Path:" stays its own short
-   paragraph; the path itself moves to a full-width readonly `<input id="cmd-path">` on the next
+   paragraph — a plain `<p>`, computing identically to "Run this command in your terminal:";
+   its planned `.cmd-target` styling was dropped as a post-release amendment (`e024064`). the path itself moves to a full-width readonly `<input id="cmd-path">` on the next
    line, styled like the command box above it (same monospace type, same white field with the
    amber left border) but without the copy icon. Its swap animation rides with it (the class
    that animated the old inline span moves to the box), and the picker script writes
