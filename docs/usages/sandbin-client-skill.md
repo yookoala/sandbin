@@ -1,67 +1,63 @@
-# Give the skill to your agent
+# Using this instance with Agent skill
 
-The repo ships `skills/sandbin-preview/SKILL.md`: an agent skill that teaches an agent to run
-this client — first-time `init` in a project directory, uploading files with `upload`, uploading
-a whole folder with `upload --archive`, and what the caps refuse. The skill keeps its own client
-binary: it tells the agent to build it into the skill folder with
-`GOBIN="$SKILL" go install github.com/yookoala/sandbin/cmd/sandbin-client@latest` and to always
-run `"$SKILL/sandbin-client"` from there.
+This instance ships an agent skill (`skills/sandbin-preview/SKILL.md`) that teaches an agent to
+work with this server through `sandbin-client`: first-time `init` in a project directory,
+uploading files with `upload`, uploading a whole folder with `upload --archive`, and what the
+caps refuse. The skill keeps its own client binary: it tells the agent to build it into the
+skill folder with `GOBIN="$SKILL" go install
+github.com/yookoala/sandbin/cmd/sandbin-client@latest` and to always run `"$SKILL/sandbin-client"`
+from there.
 
-The served skill is a text/template: `GET /skills/sandbin-preview/SKILL.md` renders every
-address in it to the one the request arrived at (the same detection the front page uses), so a
-downloaded skill names exactly your server, frontmatter description included. The copy in git
-carries the raw ``{{`{{`}}.Base}}`` tokens — install from a running server, not from a checkout. The
-server also serves a small installer at `GET /skills/sandbin-preview/install.sh` with the
-server's own address filled in, so one command installs the skill into
-`$HOME/.agents/skills/sandbin-preview` — a folder OpenCode picks up in every project without any
-configuration:
+## General Install
+
+The server serves a small installer at `GET /skills/sandbin-preview/install.sh`, and one command
+installs the skill into `$HOME/.agents/skills/sandbin-preview` — a folder OpenCode picks up in
+every project without any configuration:
 
 ```sh
-curl -fsSL http://localhost:8080/skills/sandbin-preview/install.sh | bash
+curl -fsSL {{ .Instance.URL }}/skills/sandbin-preview/install.sh | bash
 ```
 
-The landing page at `GET /` presents that as a harness picker: the sentence "I use …" opens on a
-combobox listing every harness, and the row you pick fills a readonly command field below it —
-the generic row is the no-`--dest` one-liner for `$HOME/.agents/skills`, every other row the same
-pipe with `--dest "$HOME/<folder>"` for that harness's own skills folder — above a "Skill Install
-Path:" line naming the folder the shown command installs into. The field's inner copy icon
-copies the command, flashing a brief "Copied" over the field; clicking the field selects the
-whole command for manual copying.
-
-The installer takes an optional `-d` or `--dest` to pick the skills folder instead, passed
-through the pipe with `bash -s --`; for a single project that means:
-
-```sh
-curl -fsSL http://localhost:8080/skills/sandbin-preview/install.sh | bash -s -- --dest .opencode/skills
-```
-
-and for an agent with its own folder, for example Claude, `--dest "$HOME/.claude/skills"`.
-`--help` prints the usage; anything else stops with `unknown argument` and installs nothing.
-When the machine has Go, the installer also builds the client binary into the skill folder,
-pinned to the release that served it: the served script carries `GOBIN` at the skill dir and
-`go install github.com/yookoala/sandbin/cmd/sandbin-client@vX.Y.Z`, the fill naming the
-server's own release tag when that tag is a plain `vMAJOR.MINOR.PATCH` and `latest`
-otherwise; without Go, or if that install fails, it says so, exits 0 anyway, and the skill
-builds the client on first use instead.
+When the machine has Go the installer also builds the client binary into the skill folder, and
+the build is pinned to the serving server's own release: on a plain `vMAJOR.MINOR.PATCH`
+release, installer, server and built client share one version string end to end, and the built
+client's `--version` names that tag alone because the tag travels inside the downloaded module
+zip; [Running the server](sandbin-serve.md) explains how that stamping works. Otherwise the pin
+is `@latest`, which resolves to the newest published tag. Without Go, or if that install fails,
+the installer says so, exits 0 anyway, and the skill builds the client on first use instead.
 
 With the client binary in place the installer also initializes the current directory. At a
-terminal with `/dev/tty` available it runs `sandbin-client init --url http://localhost:8080`
+terminal with `/dev/tty` available it runs `sandbin-client init --url {{ .Instance.URL }}`
 against the serving address, so the single question it asks is the API key — the url arrives
-with the served script. The re-initialization guard question for an already initialized project
+with the installer. The re-initialization guard question for an already initialized project
 arrives the same way: answering `n` leaves that project alone and the install still stands; a
 failed init prints a `sandbin-installer:` warning naming the command and `--reinit` and still
 exits 0, because the skill files are installed regardless. Without a terminal nothing is asked
 and the command is printed instead:
 
 ```sh
-# sandbin-installer: run "$HOME/.agents/skills/sandbin-preview/sandbin-client init --url http://localhost:8080 --api-key YOUR_KEY" to finish setup
+# sandbin-installer: run "$HOME/.agents/skills/sandbin-preview/sandbin-client init --url {{ .Instance.URL }} --api-key YOUR_KEY" to finish setup
 ```
 
 so an agent or a CI job finishes the setup with that one line.
 
-A client the installer built with `go install ...@vX.Y.Z` is a proxy download of exactly the
-tag the serving server was released from — the tag travels inside the module zip — so its
-`--version` line names that tag alone, and installer, server and client share one version
-string end to end. A `@latest` build — the installer's fallback when the server's release tag
-is not a plain `vMAJOR.MINOR.PATCH`, and the skill's own first-use build line — resolves to
-the newest published tag (see [Running the server](sandbin-serve.md)).
+## Install for Specific AI Harness
+
+Not every harness reads `$HOME/.agents/skills`. The installer takes an optional `-d` or `--dest`
+to pick the skills folder instead, passed through the pipe with `bash -s --`; for a single
+project that means:
+
+```sh
+curl -fsSL {{ .Instance.URL }}/skills/sandbin-preview/install.sh | bash -s -- --dest .opencode/skills
+```
+
+and for an agent with its own folder, for example Claude, `--dest "$HOME/.claude/skills"`.
+`--help` prints the usage; anything else stops with `unknown argument` and installs nothing.
+
+The landing page at `GET /` presents exactly these commands as a harness picker: the sentence
+"I use …" opens on a combobox listing every harness, and the row you pick fills a readonly
+command field below it — the generic row is the no-`--dest` one-liner for `$HOME/.agents/skills`,
+every other row the same pipe with `--dest "$HOME/<folder>"` for that harness's own skills
+folder — above a "Skill will be installed to:" line naming the folder the shown command
+installs into. The field's inner copy icon copies the command, flashing a brief "Copied" over
+the field; clicking the field selects the whole command for manual copying.

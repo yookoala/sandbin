@@ -9,6 +9,6 @@ rules — applies to every run. A running server hosts this whole set under `/do
 
 | Page | What it covers |
 |---|---|
-| [Upload previews with sandbin-client](sandbin-client-upload.md) | the `upload`/`delete`/`describe` verbs, stdin and `--archive` folder uploads, hand-built archives, `--title`/`--description` metadata, deleting files and folders, `.sandbin.yaml` bin reuse, the no-retry rule |
-| [Point sandbin-client at a server](sandbin-client-config.md) | the `init` wizard, the key check against the server, the re-initialization guard and `--reinit`, settings precedence flag > env > file |
-| [Give the skill to your agent](sandbin-client-skill.md) | the served `SKILL.md`, the one-line installer and what it does (including its single API-key question) |
+| [Building and Config](sandbin-client-init.md) | installing the client with `go install`, building it from source (clone from GitHub, `make build` versus a plain `go build`), the `init` wizard and its key check, the re-initialization guard and `--reinit`, `.sandbin.yaml`, settings precedence flag > env > file |
+| [Upload previews with sandbin-client](sandbin-client-upload.md) | the `upload`/`delete`/`describe` verbs one section each, bin finding and `.sandbin.yaml` reuse, stdin and `--archive` folder uploads, hand-built archives, `--title`/`--description` metadata, deleting files and folders, the no-retry rule, `index.html` at the bin root |
+| [Using this instance with Agent skill](sandbin-client-skill.md) | the general install one-liner into the skills folder, its pinned client build and the `init` it runs, and the harness-specific install through `--dest` and the landing-page picker |

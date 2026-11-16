@@ -19,8 +19,8 @@ Two routes answer without belonging to the API. `GET /` answers the branded land
 wordmark, a "This is a Sandbin instance" heading with its tagline, and the harness picker — a
 combobox under "Tell Your Agent to use This" that names the harness you use and fills a
 readonly command field with that harness's one-line installer, above a "Skill will be
-installed to:" line naming the folder the shown command installs into (see [Give the skill to
-your agent](sandbin-client-skill.md)). A `GET /robots.txt` answers a two-line file asking
+installed to:" line naming the folder the shown command installs into (see [Using this instance
+with Agent skill](sandbin-client-skill.md)). A `GET /robots.txt` answers a two-line file asking
 search engines not to crawl anything on the instance. Neither needs a key and neither charges.
 
 Every client user should also read the [IP Address Blocking](sandbin-ip-blocking.md) page: it

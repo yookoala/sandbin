@@ -14,13 +14,13 @@ git clone https://github.com/yookoala/sandbin
 cd sandbin
 ```
 
-`main` is the working branch, and every release is a tag on it (`v0.4.2` is the newest), so a
-named release of the source is one `git checkout v0.4.2` away. You can also skip the clone
+`main` is the working branch, and every release is a tag on it (`v0.4.3` is the newest), so a
+named release of the source is one `git checkout v0.4.3` away. You can also skip the clone
 entirely: the Go module proxy serves any tagged release, and `go install` builds it for you:
 
 ```sh
-go install github.com/yookoala/sandbin/cmd/sandbin@v0.4.2
-go install github.com/yookoala/sandbin/cmd/sandbin-client@v0.4.2
+go install github.com/yookoala/sandbin/cmd/sandbin@v0.4.3
+go install github.com/yookoala/sandbin/cmd/sandbin-client@v0.4.3
 ```
 
 Those land as `sandbin` and `sandbin-client` under `$GOPATH/bin`, and each reports its tag as
@@ -39,7 +39,7 @@ That is `make build`: it stamps `dist/sandbin` and `dist/sandbin-client` with th
 string `scripts/version.sh` computes from the checkout. The other targets are the rest of the
 workflow: `make test` runs the five gates (`gofmt`, `go vet`, `go build`, `go test`,
 `go test -race`), `make container` builds the podman image carrying the same version string,
-`make release TAG=v0.4.2` records a release tag (it commits and tags, and never pushes), and
+`make release TAG=v0.4.3` records a release tag (it commits and tags, and never pushes), and
 `make version` prints the string `make build` would stamp. `VERSION='anything' make build`
 overrides the stamp. Plain `go build ./cmd/sandbin` works too, but its version string reports
 `dev (hash)` — an honest answer, since that build never asked git which tag it sits on.

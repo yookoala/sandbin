@@ -330,8 +330,7 @@ The key-check route; it answers `POST` alone and every other method `405`.
 
 Answers `key ok` for an API key that works, or `403 invalid API key` for one that does not.
 A failure is charged exactly like `POST /` does — same lockout accounting — and nothing is
-created. `sandbin-client init` uses it to check a key before saving it (see [Point
-sandbin-client at a server](sandbin-client-config.md)).
+created. `sandbin-client init` uses it to check a key before saving it (see [Building and Config](sandbin-client-init.md)).
 
 ```sh
 curl -s \

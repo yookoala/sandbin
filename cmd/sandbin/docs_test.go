@@ -22,8 +22,8 @@ var wantDocPages = []string{
 	"sandbin-ip-blocking.html",
 	"sandbin-podman.html",
 	"sandbin-client.html",
+	"sandbin-client-init.html",
 	"sandbin-client-upload.html",
-	"sandbin-client-config.html",
 	"sandbin-client-skill.html",
 }
 
@@ -35,9 +35,9 @@ var wantDocTitles = map[string]string{
 	"sandbin-ip-blocking.html":   "IP Address Blocking",
 	"sandbin-podman.html":        "Run it with podman",
 	"sandbin-client.html":        "sandbin-client — usage documentation",
+	"sandbin-client-init.html":   "Building and Config",
 	"sandbin-client-upload.html": "Upload previews with sandbin-client",
-	"sandbin-client-config.html": "Point sandbin-client at a server",
-	"sandbin-client-skill.html":  "Give the skill to your agent",
+	"sandbin-client-skill.html":  "Using this instance with Agent skill",
 }
 
 // hrefRE picks every href out of a served page.
@@ -75,6 +75,15 @@ func TestDocsHubServesBothPaths(t *testing.T) {
 	// The hub lists exactly the merged set: one link per hosted page, nothing more.
 	if n := strings.Count(body, "href=\"/docs/"); n != len(wantDocPages) {
 		t.Errorf("the hub links %q %d times, want %d in:\n%s", "href=\"/docs/", n, len(wantDocPages), body)
+	}
+	// and in doc-set order: each summary first, then the pages it covers — so the client set
+	// reads Building and Config, then the upload page, then the Agent skill page.
+	var listed []string
+	for _, m := range regexp.MustCompile(`href="/docs/([^"]+)"`).FindAllStringSubmatch(body, -1) {
+		listed = append(listed, m[1])
+	}
+	if strings.Join(listed, " ") != strings.Join(wantDocPages, " ") {
+		t.Errorf("the hub lists %v in that order, want %v in:\n%s", listed, wantDocPages, body)
 	}
 	for _, gone := range []string{"sandbin-lockout.html", "sandbin-ip.html"} {
 		if strings.Contains(body, gone) {
@@ -345,10 +354,32 @@ func TestDocsLinksAreRewrittenToHTML(t *testing.T) {
 		"href=\"sandbin-ip-blocking.html#trusted-proxies\"",
 		"href=\"sandbin-serve.html\"",
 		"href=\"sandbin-api.html\"",
+		// The server summary's Beyond the API pointer carries the skill page's new title.
+		"<a href=\"sandbin-client-skill.html\">Using this instance\nwith Agent skill</a>",
 	} {
 		if !strings.Contains(server, want) {
 			t.Errorf("the server summary does not carry %q in:\n%s", want, server)
 		}
+	}
+
+	// The client summary's table rows are the new set, in the new order, with the new titles.
+	client := get(t, h, "/docs/sandbin-client.html").Body.String()
+	rows := []string{
+		"<a href=\"sandbin-client-init.html\">Building and Config</a>",
+		"<a href=\"sandbin-client-upload.html\">Upload previews with sandbin-client</a>",
+		"<a href=\"sandbin-client-skill.html\">Using this instance with Agent skill</a>",
+	}
+	at := -1
+	for _, want := range rows {
+		i := strings.Index(client, want)
+		if i < 0 {
+			t.Errorf("the client summary does not carry %q in:\n%s", want, client)
+			continue
+		}
+		if i < at {
+			t.Errorf("the client summary lists %q out of order in:\n%s", want, client)
+		}
+		at = i
 	}
 }
 
@@ -407,12 +438,19 @@ func TestDocsServePageCarriesTheCoreSettings(t *testing.T) {
 		"<h2 id=\"download-the-source\">Download the source</h2>",
 		"<h2 id=\"build-the-server\">Build the server</h2>",
 		"id=\"" + githubSlugForTest("The serve subcommand") + "\"",
-		"go install github.com/yookoala/sandbin/cmd/sandbin@v0.4.2",
+		"go install github.com/yookoala/sandbin/cmd/sandbin@v0.4.3",
+		"go install github.com/yookoala/sandbin/cmd/sandbin-client@v0.4.3",
+		"<code>v0.4.3</code> is the newest",
+		"<code>git checkout v0.4.3</code>",
+		"<code>make release TAG=v0.4.3</code>",
 		"The flag wins over the variable, and with neither set the server refuses to start.",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the serve page misses %q in:\n%s", want, body[:min(len(body), 400)])
 		}
+	}
+	if strings.Contains(body, "v0.4.2") {
+		t.Error("the serve page still names the superseded v0.4.2 release")
 	}
 	if strings.Contains(body, "id=\"what---version-reports\"") {
 		t.Error("the serve page still carries the What `--version` reports section")
@@ -437,6 +475,97 @@ func TestDocsSummaryPageOwnsTheRobotsSentence(t *testing.T) {
 	api := get(t, h, "/docs/sandbin-api.html").Body.String()
 	if strings.Contains(api, "a two-line file asking") {
 		t.Error("the API page still carries the robots behaviour sentence")
+	}
+}
+
+// TestDocsClientInitPageCarriesTheMergedSetup pins the merged setup page's shape: the three H2
+// groups the decision settled, in order, each carrying its decided H3 subsections.
+func TestDocsClientInitPageCarriesTheMergedSetup(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	body := get(t, h, "/docs/sandbin-client-init.html").Body.String()
+	for _, want := range []string{
+		"<title>Building and Config</title>",
+		"<h2 id=\"installing-with-go-install\">Installing with <code>go install</code></h2>",
+		"<h2 id=\"building-from-source\">Building from Source</h2>",
+		"<h2 id=\"init\">init</h2>",
+		"<h3 id=\"download-from-github\">Download from GitHub</h3>",
+		"<h3 id=\"build-from-a-checkout\">Build from a checkout</h3>",
+		"<h3 id=\"check-the-binary\">Check the binary</h3>",
+		"<h3 id=\"without-a-terminal\">Without a terminal</h3>",
+		"<h3 id=\"re-initializing-a-project\">Re-initializing a project</h3>",
+		"<h3 id=\"the-sandbinyaml-file\">The <code>.sandbin.yaml</code> file</h3>",
+		"<h3 id=\"settings-precedence\">Settings precedence</h3>",
+		// the two-ways structure, and the pages the setup hands the reader on to.
+		"go install github.com/yookoala/sandbin/cmd/sandbin-client@v0.4.3",
+		"href=\"sandbin-client-upload.html\"",
+		"href=\"sandbin-client-skill.html\"",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the Building and Config page misses %q in:\n%s", want, body[:min(len(body), 400)])
+		}
+	}
+	// exactly the three decided H2 groups, in the decided order.
+	if got, want := strings.Join(docHeadingIDs(body, "2"), " "), "installing-with-go-install building-from-source init"; got != want {
+		t.Errorf("the Building and Config page's h2 sections read %q, want %q in:\n%s", got, want, body)
+	}
+}
+
+// TestDocsClientUploadPageGroupsByVerb pins the upload page's grouping: one H2 per verb plus the
+// shared-rules section, in order, with the decided H3 use cases under the verbs.
+func TestDocsClientUploadPageGroupsByVerb(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	body := get(t, h, "/docs/sandbin-client-upload.html").Body.String()
+	for _, want := range []string{
+		"<h2 id=\"upload\">upload</h2>",
+		"<h2 id=\"delete\">delete</h2>",
+		"<h2 id=\"describe\">describe</h2>",
+		"<h2 id=\"rules-that-hold-for-every-run\">Rules that hold for every run</h2>",
+		"<h3 id=\"finding-or-creating-the-bin\">Finding or creating the bin</h3>",
+		"<h3 id=\"upload-files\">Upload files</h3>",
+		"<h3 id=\"pipe-stdin\">Pipe stdin</h3>",
+		"<h3 id=\"upload-a-whole-folder-as-one-archive\">Upload a whole folder as one archive</h3>",
+		"<h3 id=\"upload-a-hand-built-archive\">Upload a hand-built archive</h3>",
+		"<h3 id=\"give-the-bin-a-title-and-description\">Give the bin a title and description</h3>",
+		"<h3 id=\"do-not-retry-a-failing-run-from-a-script\">Do not retry a failing run from a script</h3>",
+		"<h3 id=\"a-prototype-needs-indexhtml-at-the-bin-root\">A prototype needs index.html at the bin root</h3>",
+		// the setup facts live on the merged page; the run behavior stays here.
+		"href=\"sandbin-client-init.html\"",
+		"href=\"#finding-or-creating-the-bin\"",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the upload page misses %q in:\n%s", want, body[:min(len(body), 400)])
+		}
+	}
+	if got, want := strings.Join(docHeadingIDs(body, "2"), " "), "upload delete describe rules-that-hold-for-every-run"; got != want {
+		t.Errorf("the upload page's h2 sections read %q, want %q in:\n%s", got, want, body)
+	}
+}
+
+// TestDocsClientSkillPageIsSectionedWithoutTemplateProse pins the skill page's two H2 sections
+// and its new title, and decision 5's removals: no template-generation prose, and no brace
+// escape anywhere in its served bytes — every token that page's markdown carries names this
+// instance, so nothing brace-shaped survives the render.
+func TestDocsClientSkillPageIsSectionedWithoutTemplateProse(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	body := get(t, h, "/docs/sandbin-client-skill.html").Body.String()
+	for _, want := range []string{
+		"<title>Using this instance with Agent skill</title>",
+		"<h1 id=\"using-this-instance-with-agent-skill\">Using this instance with Agent skill</h1>",
+		"<h2 id=\"general-install\">General Install</h2>",
+		"<h2 id=\"install-for-specific-ai-harness\">Install for Specific AI Harness</h2>",
+		"<code>GET /skills/sandbin-preview/install.sh</code>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the skill page misses %q in:\n%s", want, body[:min(len(body), 400)])
+		}
+	}
+	if got, want := strings.Join(docHeadingIDs(body, "2"), " "), "general-install install-for-specific-ai-harness"; got != want {
+		t.Errorf("the skill page's h2 sections read %q, want %q in:\n%s", got, want, body)
+	}
+	for _, gone := range []string{"{{", "text/template", "{{.Base}}"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("the skill page still carries %q in:\n%s", gone, body)
+		}
 	}
 }
 
@@ -473,6 +602,8 @@ func TestDocsUnknownPathsArePlainNotFound(t *testing.T) {
 		"/docs/sandbin/", "/docs/sandbin.html/x", "/docs/assets", "/docs/assets/",
 		// The two pages the merged IP Address Blocking page replaced answer the plain 404 shape.
 		"/docs/sandbin-lockout.html", "/docs/sandbin-ip.html",
+		// The page the merged Building and Config page replaced answers it the same way.
+		"/docs/sandbin-client-config.html",
 	} {
 		rec := get(t, h, p)
 		if rec.Code != http.StatusNotFound {
@@ -781,6 +912,15 @@ func docPageHrefs() []string {
 		out = append(out, "/docs/"+name)
 	}
 	return out
+}
+
+// docHeadingIDs lists the id of every heading of one level in a served page, in document order.
+func docHeadingIDs(body string, level string) []string {
+	var ids []string
+	for _, m := range regexp.MustCompile(`<h`+level+` id="([^"]*)">`).FindAllStringSubmatch(body, -1) {
+		ids = append(ids, m[1])
+	}
+	return ids
 }
 
 // githubSlugForTest is the anchor rule the hosted pages must follow: lowercase, spaces to
