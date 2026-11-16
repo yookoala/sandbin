@@ -1,6 +1,6 @@
 # Plan: fixed GitHub door in a new tab, viewport-filling pages with a footer, a path box on the landing
 
-Status: open. Spec: `docs/decisions/0024-page-footer-path-box.md` — the three changes and their
+Status: implemented and closed. Spec: `docs/decisions/0024-page-footer-path-box.md` — the three changes and their
 limits are settled there. Baseline HEAD is the plan-0023 close-out `a8f94e3` (`cmd/sandbin` 200
 tests, `cmd/sandbin-client` 107, `internal/version` 6, `internal/frontpage` 14, `internal/robots` 2,
 all gates green).
@@ -130,3 +130,39 @@ rules join `brandCSS`; front.html wraps its content in `<main>`, gains the foote
 Everything in the decision record's Skipped section, plus: dark-mode footer colors, any per-page
 "edit this doc" link (the nav door is the only GitHub exit), and X-Robots-Tag (0022's deferred
 item stays deferred).
+
+## Outcome
+
+Implemented in `4445c22` (nav door), `46fabb7` (viewport footer) and `94aa7a5` (path box) on
+plan-open `bb20f9c`; reviewer verdict APPROVE — no findings, nits only.
+
+- Counts: 202/107/6/15/2 vs baseline 200/107/6/14/2 — zero removals; the additions are
+  `TestDocsNavCarriesTheFixedGitHubDoor`, `TestDocsPagesFillTheViewportAndEndInFooter`,
+  `TestRenderCarriesThePoweredByFooter`.
+- Nav (reviewer-verified on the landing, hub and all ten member pages): the door is the literal
+  `<a class="icon-link" href="https://github.com/yookoala/sandbin" target="_blank"
+  rel="noopener">` on every page, zero blob/tree URLs in any nav; real clicks open new tabs at
+  the repo root. Body cross-link rewriting untouched; the landing's tagline GitHub link stays
+  same-tab. The dead `docsTreeURL` const was deleted (its only use was the hub's nav
+  sourceURL); `docsSourceBase` stays for the body rewriter.
+- Layout (reviewer-measured): with border-box body + `main{flex:1 0 auto}` + footer
+  `margin-top:auto`, the footer's bottom edge sits exactly at `innerHeight − 48px` (the body's
+  3rem bottom padding) on short and long pages alike, `scrollHeight == innerHeight` for short
+  pages — no phantom scroll. Footer text equals the served binary's own `--version` on landing
+  and docs alike; test pins take the prefix or fixture versions, never a build-dependent value.
+- Path box (reviewer-verified): one readonly `#cmd-path` input styled like the command box
+  (monospace, amber left border, 0.9em right padding, swap animation), updated via `value` and
+  byte-equal to the island row's path; the 0023 picker matrix re-ran intact; the `.value` write
+  itself is JS-only — Go pins cover the markup shape (`id="cmd-path"`, `readonly`, `value=`),
+  the browser catches the write.
+- Battery: baseline-vs-HEAD byte-identical on healthz, robots.txt, install.sh, SKILL.md, logo,
+  404/405 bodies, bin round trip, 301 shape, listing bodies; every docs page diff is exactly
+  2 removed/8 added lines (brandCSS block, nav-door swap, main/footer wrapper); the landing's
+  JSON island byte-identical (1553 B). Hostile `Host: bad.host!x` → placeholder island, host
+  echoed nowhere; `</script>`-bearing Host is refused by Go's parser with 400 (pre-existing).
+- Mutation battery (scratch clone): dropping target/rel, dropping the footer, restoring a
+  per-page nav source, dropping readonly, and deleting the `.site-footer` rule each fail named
+  tests; only the JS `.textContent` mutation sails the Go suite, covered by the browser checks.
+- Environment notes: an archive-built binary prints the embedded `v0.3.3` while a tree build
+  prints `dev (hash+)` — `internal/version`'s defined precedence, not a 0024 artifact;
+  `release.txt` lagging the v0.4.0 tag is pre-existing and out of scope.

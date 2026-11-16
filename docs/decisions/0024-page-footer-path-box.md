@@ -15,8 +15,10 @@ plan-0023 pages. These change the shipped pages away from the preserved mockup a
    stays same-tab. The landing's inline tagline "…on GitHub." link also stays same-tab — only
    the top-menu icon opens a new tab.
 2. **Every hosted page fills the viewport and ends in a footer.** `brandCSS` makes `body` a
-   flex column with `min-height:100vh` and gives `main{flex:1 0 auto}`; `docShell` wraps the
-   rendered body in `<main>` and appends
+   flex column with `min-height:100vh` and `box-sizing:border-box` (found at verification:
+   without it the body's own padding sits outside the 100vh and the footer falls below the
+   fold) and gives `main{flex:1 0 auto}`; `docShell` wraps the rendered body in `<main>` and
+   appends
    `<footer class="site-footer">Powered by Sandbin | version: ` + `version.String()` +
    `</footer>`; front.html wraps its content in `<main>` and carries the same footer built from
    a new `frontpage.Data.Version` string that `renderFrontPage` supplies as `version.String()`.
@@ -32,6 +34,8 @@ plan-0023 pages. These change the shipped pages away from the preserved mockup a
 
 ## Skipped on purpose
 
-- Body cross-links and the hub's docs-tree link (same-tab as today), the inline tagline GitHub
-  link, `robots.txt`, bin/skill routes, install.sh, the picker's ordering contract, and the
-  client. No client or installer behavior is involved.
+- Body cross-links (same-tab as today), the inline tagline GitHub link, `robots.txt`, bin/skill
+  routes, install.sh, the picker's ordering contract, and the client. No client or installer
+  behavior is involved. (Amended at close: the hub's docs-tree link had exactly one use — the
+  nav sourceURL decision 1 replaces — so it went away with `docHead`'s parameter; `docsSourceBase`
+  survives for the body-link rewriter.)
