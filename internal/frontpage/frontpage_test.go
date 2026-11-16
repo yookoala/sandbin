@@ -353,6 +353,9 @@ func TestRenderCarriesTheApprovedCopySet(t *testing.T) {
 		"Skill Install Path: <span class=\"path\" id=\"cmd-path\">",
 		"aria-label=\"Which harness you use\"",
 		"aria-label=\"Install command\"",
+		// The nav GitHub door: the repo root opened in a new tab; the tagline link stays
+		// same-tab.
+		"<a class=\"icon-link\" href=\"https://github.com/yookoala/sandbin\" target=\"_blank\" rel=\"noopener\"",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in:\n%s", want, body)

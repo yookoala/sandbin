@@ -93,7 +93,7 @@ func TestDocsPagesServeEveryUsageDoc(t *testing.T) {
 			if !strings.Contains(body, "<title>"+title+"</title>") {
 				t.Errorf("page carries no <title>%s</title> in:\n%s", title, body)
 			}
-			// The body carries the H1 itself, and the shell names the page's GitHub source.
+			// The body carries the H1 itself, and the shell carries the fixed GitHub door.
 			if !strings.Contains(body, "<h1 id=\""+githubSlugForTest(title)+"\">"+title+"</h1>") {
 				t.Errorf("page carries no slug-id'd <h1>%s</h1> in:\n%s", title, body)
 			}
@@ -107,7 +107,8 @@ func TestDocsPagesServeEveryUsageDoc(t *testing.T) {
 				"'Poetsen One', sans-serif",
 				"href=\"/\"",
 				"href=\"/docs\"",
-				"https://github.com/yookoala/sandbin/blob/main/docs/usages/",
+				// The nav GitHub door: one fixed repo URL opened in a new tab.
+				"href=\"https://github.com/yookoala/sandbin\" target=\"_blank\" rel=\"noopener\"",
 				// The icon nav the landing and the docs share: three borderless icons with
 				// root-relative hrefs and their aria-labels, styled by the shared brandCSS.
 				"<nav class=\"icon-nav\">",
@@ -123,6 +124,30 @@ func TestDocsPagesServeEveryUsageDoc(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestDocsNavCarriesTheFixedGitHubDoor checks the nav of every docs page (hub and members):
+// the GitHub icon links exactly the repo root with target/rel, and no nav carries a
+// per-page blob/main/docs/usages source link. The body-link rewriter is untouched by this:
+// only the nav changed.
+func TestDocsNavCarriesTheFixedGitHubDoor(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	for _, p := range append([]string{"/docs"}, docPageHrefs()...) {
+		body := get(t, h, p).Body.String()
+		start := strings.Index(body, "<header class=\"page-head\">")
+		end := strings.Index(body, "</header>")
+		if start < 0 || end < 0 || end < start {
+			t.Fatalf("GET %s carries no <header>…</header> block:\n%s", p, body[:min(len(body), 400)])
+		}
+		nav := body[start:end]
+		const door = "<a class=\"icon-link\" href=\"https://github.com/yookoala/sandbin\" target=\"_blank\" rel=\"noopener\" title=\"source on GitHub\""
+		if n := strings.Count(nav, door); n != 1 {
+			t.Errorf("GET %s nav carries the fixed GitHub door %d times, want 1 in:\n%s", p, n, nav)
+		}
+		if strings.Contains(nav, "blob/main/docs/usages") {
+			t.Errorf("GET %s nav still links a per-page source in:\n%s", p, nav)
+		}
 	}
 }
 

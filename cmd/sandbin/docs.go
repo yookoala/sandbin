@@ -48,10 +48,10 @@ var docSets = []docSet{
 const (
 	// docsLogoPath is the logo route, matching its path in the repo.
 	docsLogoPath = "/docs/assets/sandbin-logo.svg"
-	// docsSourceBase is where a hosted page's markdown lives on GitHub.
+	// docsSourceBase is where a hosted page's markdown lives on GitHub: the body-link
+	// rewriter sends a relative .md link with no hosted page there, and only there — the
+	// nav's GitHub door is one fixed repo URL on every page.
 	docsSourceBase = "https://github.com/yookoala/sandbin/blob/main/docs/usages/"
-	// docsTreeURL is the docs tree link the hub and the landing page name.
-	docsTreeURL = "https://github.com/yookoala/sandbin/tree/main/docs/usages"
 )
 
 // docExtensions are the markdown extensions the usage docs need: the GFM tables the two
@@ -87,7 +87,7 @@ func buildDocsPages() map[string]hostedPage {
 			panic("read the embedded usage doc " + name + ": " + err.Error())
 		}
 		title, body := renderUsageDoc(raw)
-		pages[page] = hostedPage{title: title, html: docShell(title, docsSourceBase+name, body)}
+		pages[page] = hostedPage{title: title, html: docShell(title, body)}
 	}
 	for _, set := range docSets {
 		for _, page := range append([]string{set.summary}, set.pages...) {
@@ -130,7 +130,7 @@ func buildDocsHub() string {
 		}
 		b.WriteString("</ul>\n")
 	}
-	return docShell("Sandbin usage docs", docsTreeURL, b.String())
+	return docShell("Sandbin usage docs", b.String())
 }
 
 // renderUsageDoc parses one embedded markdown file and returns its H1 text and its rendered
@@ -307,9 +307,9 @@ func logoBlock(class string) string {
 	return "<div class=\"" + class + "\">" + sandbin.LogoSVG + "</div>"
 }
 
-// docShell wraps one rendered body in the branded page: the logo, links back to / and /docs,
-// a link to the page's own GitHub source, then the body.
-func docShell(title, sourceURL, bodyHTML string) string {
+// docShell wraps one rendered body in the branded page: the logo, the icon nav — home, docs,
+// and the fixed GitHub door — then the body.
+func docShell(title, bodyHTML string) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n<html lang=\"en\">\n<head>\n")
 	b.WriteString("<meta charset=\"utf-8\">\n")
@@ -317,7 +317,7 @@ func docShell(title, sourceURL, bodyHTML string) string {
 	b.WriteString("<title>" + html.EscapeString(title) + "</title>\n")
 	b.WriteString("<style>\n" + brandCSS + "</style>\n")
 	b.WriteString("</head>\n<body>\n")
-	b.WriteString(docHead(sourceURL))
+	b.WriteString(docHead())
 	b.WriteString(bodyHTML)
 	b.WriteString("</body>\n</html>\n")
 	return b.String()
@@ -329,21 +329,22 @@ const (
 	docIconHome = "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/><polyline points=\"9 22 9 12 15 12 15 22\"/></svg>"
 	docIconBook = "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z\"/><path d=\"M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z\"/></svg>"
 	// docIconGitHub is the GitHub mark shared by every docs page; the link around it is the
-	// page's own sourceURL.
+	// fixed repo door that opens in a new tab.
 	docIconGitHub = "<svg viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.615-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12\"/></svg>"
 )
 
 // docHead is the header the docs shell and the landing page share: the inline wordmark
-// linking home, then the borderless icon nav — home, docs, and the page's own GitHub source
-// — with root-relative hrefs.
-func docHead(sourceURL string) string {
+// linking home, then the borderless icon nav — home, docs, and the GitHub door to
+// https://github.com/yookoala/sandbin opened in a new tab — with the first two hrefs
+// root-relative.
+func docHead() string {
 	var b strings.Builder
 	b.WriteString("<header class=\"page-head\">\n")
 	b.WriteString("<a class=\"logo-link\" href=\"/\" aria-label=\"Sandbin home\">" + logoBlock("wordmark") + "</a>\n")
 	b.WriteString("<nav class=\"icon-nav\">\n")
 	b.WriteString("<a class=\"icon-link\" href=\"/\" title=\"home\" aria-label=\"Sandbin home\">" + docIconHome + "</a>\n")
 	b.WriteString("<a class=\"icon-link\" href=\"/docs\" title=\"docs\" aria-label=\"Documentation\">" + docIconBook + "</a>\n")
-	b.WriteString("<a class=\"icon-link\" href=\"" + sourceURL + "\" title=\"source on GitHub\" aria-label=\"Source on GitHub\">" + docIconGitHub + "</a>\n")
+	b.WriteString("<a class=\"icon-link\" href=\"https://github.com/yookoala/sandbin\" target=\"_blank\" rel=\"noopener\" title=\"source on GitHub\" aria-label=\"Source on GitHub\">" + docIconGitHub + "</a>\n")
 	b.WriteString("</nav>\n")
 	b.WriteString("</header>\n")
 	return b.String()

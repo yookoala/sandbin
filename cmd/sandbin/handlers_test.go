@@ -279,6 +279,9 @@ func TestFrontPageAtRoot(t *testing.T) {
 		"navigator.clipboard",
 		"document.execCommand(\"copy\")",
 		"href=\"https://github.com/yookoala/sandbin\"",
+		// The nav GitHub door: the repo root opened in a new tab. The tagline link above
+		// stays same-tab.
+		"<a class=\"icon-link\" href=\"https://github.com/yookoala/sandbin\" target=\"_blank\" rel=\"noopener\"",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("front page missing %q in:\n%s", want, body)
