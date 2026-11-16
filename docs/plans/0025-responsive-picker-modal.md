@@ -1,6 +1,6 @@
 # Plan: a responsive picker modal, a warm swap tint, and the landing copy retitle
 
-Status: open. Spec: `docs/decisions/0025-responsive-picker-modal.md` — its nine items settle
+Status: implemented and closed. Spec: `docs/decisions/0025-responsive-picker-modal.md` — its nine items settle
 the media query, modal box model, scrim, swap-background fade, path-line retitle, mobile "I
 use" hint + placeholder, the closing paragraph, and the tagline retitle. Baseline HEAD is
 `348b102` (`cmd/sandbin` 202 tests, `cmd/sandbin-client` 107, `internal/version` 6,
@@ -134,3 +134,43 @@ quoted old tagline if present); keep cross-links and everything else intact.
 Everything in the decision record's Skipped section, plus: remembering the last harness across
 visits, modal focus trapping, and any release/tag action (releasing the new copy is a separate
 human call).
+
+## Outcome
+
+Implemented in `7fd95d7` (modal), `e5e5f57` (swap tint), `42b6c36` (copy retitle) and `a400501`
+(usage prose) on plan-open `55b6c8c`; reviewer verdict APPROVE WITH FINDINGS — no blockers,
+nits only.
+
+- Counts: 202/107/6/17/2 vs baseline 202/107/6/15/2 — zero removals; the additions are
+  `TestRenderCarriesTheResponsiveModal` and `TestRenderCarriesTheSwapTint`. Touched files:
+  exactly the intentional set; `frontpage.go`, `handlers.go` and `docs.go`/`brandCSS`
+  byte-unchanged. `sandbin-client-skill.md` carried no stale wording, so it needed no edit.
+- Mockup fidelity (reviewer-verified): the served landing (Host `sandbin.example.org`, XFP
+  https) equals the approved mockup except the footer's build-dependent version stamp — a
+  one-line diff, exactly as claimed.
+- Browser matrix (both parties, both viewports): desktop keeps the anchored dropdown with
+  scrim/hint hidden and the 0023 ordering matrix intact; at 390×844 the modal measures exactly
+  as decided (fixed panel 51/51/12 insets, 345px input, "I use" hint above, muted placeholder
+  `rgb(139,129,113)`, list fills the rest, zero horizontal overflow); scrim click commits the
+  highlighted row through the untouched focusout path (scrim probed non-focusable), separator
+  stays inert, row picks close the scrim, Escape unchanged; swap tint samples warm at t≈0,
+  mid-fade `rgb(252,247,238)` at ~700ms (the reviewer's addition, pinning the 1.4s), white
+  after 1.6s — in both modes. Console clean.
+- Battery vs `348b102` (both binaries `-buildvcs=false`, stamp-matched): 9 of 11 docs pages
+  byte-identical; `sandbin-api.html` and `sandbin-serve.html` differ by exactly the retitle
+  line each; landing diff 24/5 lines, all decided; JSON island byte-identical; healthz,
+  robots.txt, install.sh, SKILL.md, logo, 404/405 bodies, bin round trip byte-identical;
+  hostile probes unchanged.
+- Mutation battery (scratch clone): deleting the media block, a scrim toggle, the placeholder
+  attribute, the swapbg selector string, or reverting the tagline each fails a named Go test —
+  the new pins string-pin the CSS/markup/JS blocks. What the suite cannot catch is mutation of
+  unpinned event-handler JS (probed live: removing the separator's mousedown preventDefault
+  sails the suite but flips the browser separator-inert check) — the browser matrix covers that
+  class.
+- Disclosure corrections recorded: the implementer expected the swapbg-duration mutation to
+  escape the Go suite; it does not (the pin quotes `1.4s`) — the claim was conservative, and
+  the plan's "what Go cannot catch" line should have named event-handler mutations like the
+  separator probe. The reviewer also added the missing mid-fade browser sample.
+- Environment note: ~22 zombie `sandbin-*` entries from earlier sessions linger in the process
+  table (all `Z`, holding nothing); they match the plan's "Z dead" convention but a future
+  session could reap them.
