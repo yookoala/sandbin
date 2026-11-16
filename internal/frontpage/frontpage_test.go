@@ -414,6 +414,53 @@ func TestRenderCarriesTheApprovedCopySet(t *testing.T) {
 	}
 }
 
+// The responsive modal the mockup approved: outside the query the scrim and the hint stay
+// display:none and the type box's placeholder is styled muted; under the 30rem query the scrim
+// becomes the fixed dark wash and #pick-pop becomes the fixed panel with a full-width input
+// and a list that fills the remaining height. The markup carries the scrim span after the
+// popup inside #pick and the hint as the popup's first child, and the two open/close
+// functions toggle the scrim alongside #pick-pop.
+func TestRenderCarriesTheResponsiveModal(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Render(&buf, sampleData()); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	body := buf.String()
+
+	for _, want := range []string{
+		// The desktop resting state: scrim and hint hidden, placeholder styled as a hint.
+		".pick-scrim{display:none}",
+		".pick-hint{display:none}",
+		".pick-pop input::placeholder{color:#8b8171;font-weight:400}",
+		// The query and its modal rules: scrim wash under the panel, fixed panel box model.
+		"@media (max-width:30rem){",
+		".pick-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:19;background:rgba(20,14,6,0.55)}",
+		".pick-pop:not([hidden]){position:fixed;left:0.75rem;right:0.75rem;top:6vh;bottom:6vh;z-index:20;",
+		".pick-hint{display:block;margin:0 0 0.3em;color:#222}",
+		".pick-pop input{width:100%;box-sizing:border-box}",
+		".pick-pop ul{flex:1 1 auto;max-height:none;margin:0.5rem 0 0;border:none;box-shadow:none;",
+		// The markup: hint as the popup's first child, scrim after the popup inside #pick,
+		// and the muted placeholder on the type box.
+		"<span class=\"pick-pop\" id=\"pick-pop\" hidden>\n<span class=\"pick-hint\" aria-hidden=\"true\">I use</span>",
+		"<span class=\"pick-scrim\" id=\"pick-scrim\" hidden></span>\n</span>.</div>",
+		"placeholder=\"input harness name\"",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in:\n%s", want, body)
+		}
+	}
+	// The scrim toggles ride the two picker functions, each naming its scrim line right
+	// after its #pick-pop line.
+	for _, want := range []string{
+		"function sandbinOpenPick() {\n  document.getElementById(\"pick-pop\").hidden = false;\n  document.getElementById(\"pick-scrim\").hidden = false;",
+		"function sandbinClosePick() {\n  document.getElementById(\"pick-pop\").hidden = true;\n  document.getElementById(\"pick-scrim\").hidden = true;",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in:\n%s", want, body)
+		}
+	}
+}
+
 // The island and the initial widget both come from the slice the handler hands over: a
 // different list renders a different page, and the command shown server-side escapes its
 // quotes as &quot; so the attribute survives.

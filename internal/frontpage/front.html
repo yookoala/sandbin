@@ -24,6 +24,19 @@ border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15);max-height:14em;overflow
 .pick-pop li.hl{background:#F6EDDD;color:var(--sandbin-purple);font-weight:600}
 .pick-pop li:not(.sep):hover{background:var(--sandbin-canvas)}
 .pick-pop li.sep{padding:0;margin:0.25em 0.5em;border-top:1px solid #b3a994;cursor:default}
+.pick-scrim{display:none}
+.pick-hint{display:none}
+.pick-pop input::placeholder{color:#8b8171;font-weight:400}
+@media (max-width:30rem){
+.pick-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:19;background:rgba(20,14,6,0.55)}
+.pick-pop:not([hidden]){position:fixed;left:0.75rem;right:0.75rem;top:6vh;bottom:6vh;z-index:20;
+display:flex;flex-direction:column;min-width:0;background:#fff;border:1px solid #b3a894;
+border-radius:8px;padding:0.6rem;box-shadow:0 6px 24px rgba(0,0,0,0.3)}
+.pick-hint{display:block;margin:0 0 0.3em;color:#222}
+.pick-pop input{width:100%;box-sizing:border-box}
+.pick-pop ul{flex:1 1 auto;max-height:none;margin:0.5rem 0 0;border:none;box-shadow:none;
+background:none;border-radius:0;padding:0 0.2em}
+}
 .cmd{position:relative}
 .cmd-input{flex:1 1 auto;min-width:0;width:100%;box-sizing:border-box;margin:0;
 font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:0.95em;color:#222;
@@ -63,9 +76,11 @@ prototype files, and hand a human plain preview URLs.</p>
 <div class="pick-line">I use <span class="pick" id="pick">
 <button type="button" class="pick-face" id="pick-face" aria-haspopup="listbox" aria-expanded="false"><span id="pick-label">{{.DefaultLabel}}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
 <span class="pick-pop" id="pick-pop" hidden>
-<input id="pick-input" type="text" spellcheck="false" autocomplete="off" role="combobox" aria-controls="pick-list" aria-expanded="false" aria-label="Which harness you use">
+<span class="pick-hint" aria-hidden="true">I use</span>
+<input id="pick-input" type="text" spellcheck="false" autocomplete="off" role="combobox" aria-controls="pick-list" aria-expanded="false" aria-label="Which harness you use" placeholder="input harness name">
 <ul id="pick-list" role="listbox" aria-label="Harnesses"></ul>
 </span>
+<span class="pick-scrim" id="pick-scrim" hidden></span>
 </span>.</div>
 <p>Run this command in your terminal:</p>
 <div class="cmd">
@@ -182,6 +197,7 @@ function sandbinChoose(i) {
 }
 function sandbinOpenPick() {
   document.getElementById("pick-pop").hidden = false;
+  document.getElementById("pick-scrim").hidden = false;
   document.getElementById("pick-face").setAttribute("aria-expanded", "true");
   document.getElementById("pick-input").setAttribute("aria-expanded", "true");
   document.getElementById("pick-input").value = "";
@@ -191,6 +207,7 @@ function sandbinOpenPick() {
 }
 function sandbinClosePick() {
   document.getElementById("pick-pop").hidden = true;
+  document.getElementById("pick-scrim").hidden = true;
   document.getElementById("pick-face").setAttribute("aria-expanded", "false");
   document.getElementById("pick-input").setAttribute("aria-expanded", "false");
 }
