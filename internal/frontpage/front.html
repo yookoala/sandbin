@@ -69,8 +69,8 @@ pointer-events:none;opacity:0}
 
 <main>
 <h1 id="this-is-a-sandbin-instance">This is a Sandbin instance</h1>
-<p class="tagline">A PUT/GET preview server for CLI agents in a sandbox: submit HTML, ANSI and
-prototype files, and hand a human plain preview URLs.</p>
+<p class="tagline">A small preview service for AI agents to show you HTML+JS+CSS interactive
+preview / presentation or ANSI design mock up.</p>
 <p class="tagline">Learn more about Sandbin on <a href="https://github.com/yookoala/sandbin">GitHub</a>.</p>
 <h2 id="tell-your-agent-to-use-this">Tell Your Agent to use This</h2>
 <p>Tell me what harness you are using:</p>
@@ -91,8 +91,9 @@ aria-label="Install command" value="{{.DefaultCmd}}">
 onclick="sandbinCopyInstall(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="13" height="13" x="9" y="9" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
 <span class="cmd-flash" id="cmd-flash" aria-hidden="true">Copied</span>
 </div>
-<p>Skill Install Path:</p>
+<p>Skill will be installed to:</p>
 <div class="cmd"><input class="cmd-input path-input" id="cmd-path" type="text" readonly spellcheck="false" autocomplete="off" aria-label="Skill install path" value="{{.DefaultPath}}"></div>
+<p>Then tell your agent to use the skill <code>sandbin-preview</code> to show you HTML / ANSI preview here.</p>
 </main>
 <footer class="site-footer">Powered by Sandbin | version: {{.Version}}</footer>
 

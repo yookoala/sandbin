@@ -238,8 +238,8 @@ func TestFrontPageAtRoot(t *testing.T) {
 	for _, want := range []string{
 		"<title>This is a Sandbin instance</title>",
 		"<h1 id=\"this-is-a-sandbin-instance\">This is a Sandbin instance</h1>",
-		"A PUT/GET preview server for CLI agents in a sandbox: submit HTML, ANSI and",
-		"prototype files, and hand a human plain preview URLs.",
+		"A small preview service for AI agents to show you HTML+JS+CSS interactive",
+		"preview / presentation or ANSI design mock up.</p>",
 		"Learn more about Sandbin on <a href=\"https://github.com/yookoala/sandbin\">GitHub</a>",
 		"<svg xmlns=\"http://www.w3.org/2000/svg\"",
 		"<h2 id=\"tell-your-agent-to-use-this\">Tell Your Agent to use This</h2>",
@@ -267,8 +267,9 @@ func TestFrontPageAtRoot(t *testing.T) {
 		"class=\"cmd-copy\"",
 		"class=\"cmd-flash\"",
 		">Copied</span>",
-		"<p>Skill Install Path:</p>",
+		"<p>Skill will be installed to:</p>",
 		"<input class=\"cmd-input path-input\" id=\"cmd-path\" type=\"text\" readonly spellcheck=\"false\" autocomplete=\"off\" aria-label=\"Skill install path\" value=\"$HOME/.agents/skills/sandbin-preview\">",
+		"<p>Then tell your agent to use the skill <code>sandbin-preview</code> to show you HTML / ANSI preview here.</p>",
 		// The combobox markup and its picker.
 		"<nav class=\"icon-nav\">",
 		"<a class=\"icon-link\" href=\"/docs\"",
@@ -293,11 +294,14 @@ func TestFrontPageAtRoot(t *testing.T) {
 			t.Errorf("front page missing %q in:\n%s", want, body)
 		}
 	}
-	// What the page no longer carries: the bin semantics and the privacy paragraph are the
+	// What the page no longer carries: the retitled tagline sentence and the old "Skill
+	// Install Path:" line joined the bin semantics and the privacy paragraph — those are the
 	// hosted API docs' business; the tab row, its script and their prose are replaced by the
 	// combobox and the data island; the hosted-docs links and the usage-docs tree link left
 	// with the tab-era layout; the logo stays inlined markup rather than an <img> reference.
 	for _, gone := range []string{
+		"A PUT/GET preview server for CLI agents",
+		"<p>Skill Install Path:</p>",
 		"A bin is a collection of files under a random eight-hex path",
 		"curl -X POST -H \"X-API-Key: your-key\" http://example.com/",
 		"open http://example.com/abc1234/",

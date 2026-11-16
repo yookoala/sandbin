@@ -362,10 +362,12 @@ func TestRenderOpensOnTheDefaultRow(t *testing.T) {
 	}
 }
 
-// The copy set the mockup approved: the title and h1, the GitHub tagline line, the section
-// heading, the picker lead-in, and the command lead-in, plus the install-path label and its
-// box. What the redesign deleted stays deleted: the old wordmark h1, the GitHub-links
-// paragraph, the hosted docs section, and the tab-era prose.
+// The copy set the mockup approved: the title and h1, the retitled tagline, the GitHub
+// tagline line, the section heading, the picker lead-in, and the command lead-in, plus the
+// retitled install-path label, its box, and the closing sandbin-preview paragraph. What the
+// retitle deleted stays deleted: the old tagline sentence and the old "Skill Install Path:"
+// line, on top of the older removals — the old wordmark h1, the GitHub-links paragraph, the
+// hosted docs section, and the tab-era prose.
 func TestRenderCarriesTheApprovedCopySet(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Render(&buf, sampleData()); err != nil {
@@ -376,13 +378,16 @@ func TestRenderCarriesTheApprovedCopySet(t *testing.T) {
 	for _, want := range []string{
 		"<title>This is a Sandbin instance</title>",
 		"<h1 id=\"this-is-a-sandbin-instance\">This is a Sandbin instance</h1>",
+		"A small preview service for AI agents to show you HTML+JS+CSS interactive",
+		"preview / presentation or ANSI design mock up.</p>",
 		"Learn more about Sandbin on <a href=\"https://github.com/yookoala/sandbin\">GitHub</a>",
 		"<h2 id=\"tell-your-agent-to-use-this\">Tell Your Agent to use This</h2>",
 		"<p>Tell me what harness you are using:</p>",
 		"<div class=\"pick-line\">I use <span class=\"pick\" id=\"pick\">",
 		"<p>Run this command in your terminal:</p>",
-		"<p>Skill Install Path:</p>",
+		"<p>Skill will be installed to:</p>",
 		"<input class=\"cmd-input path-input\" id=\"cmd-path\"",
+		"<p>Then tell your agent to use the skill <code>sandbin-preview</code> to show you HTML / ANSI preview here.</p>",
 		"aria-label=\"Which harness you use\"",
 		"aria-label=\"Install command\"",
 		// The nav GitHub door: the repo root opened in a new tab; the tagline link stays
@@ -395,6 +400,8 @@ func TestRenderCarriesTheApprovedCopySet(t *testing.T) {
 	}
 	for _, gone := range []string{
 		"<h1 id=\"sandbin\">Sandbin</h1>",
+		"A PUT/GET preview server for CLI agents",
+		"<p>Skill Install Path:</p>",
 		"<span class=\"path\" id=\"cmd-path\">",
 		"<h2 id=\"give-the-skill-to-your-agent\">",
 		"<h2 id=\"the-hosted-docs\">The hosted docs",
