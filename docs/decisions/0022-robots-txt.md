@@ -44,3 +44,14 @@ compliant crawlers.
 - Any change to the landing page or docs pages themselves; the plan touches no HTML.
 - Rate-limiting or blocking known crawler addresses; robots.txt is an ask, and enforcement is a
   different problem.
+
+## Review outcome (plan closed at `9d74d1c`)
+
+APPROVE WITH FINDINGS, no blockers. The exact-path branch, its byte-identity against the
+`0adf64e` baseline, the no-charge behavior and the container build were all re-proven live by
+the reviewer. One correction to the record: decision 4's "no HTML" scope claim held for the
+landing page, but the required sentence in `docs/usages/sandbin-api.md` necessarily changes the
+rendered `/docs/sandbin-api.html` member page — the only expected diff in the additivity battery.
+All coverage findings (near-miss 404s, verbatim 405 body, no-charge assertion, and a bin holding
+a file named `robots.txt`) were pinned in follow-up commit `9d74d1c`, each verified to fail a
+named assertion under the matching mutation.

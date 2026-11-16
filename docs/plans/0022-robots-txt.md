@@ -1,6 +1,7 @@
 # Plan: GET /robots.txt asks search engines not to index the instance
 
-Status: open. Spec: `docs/decisions/0022-robots-txt.md` — why robots.txt alone is enough for
+Status: implemented and closed. Spec: `docs/decisions/0022-robots-txt.md` — why robots.txt alone
+is enough for
 now, where the file is embedded, its exact two lines, and the route shape are settled there.
 Baseline HEAD is the plan-0021 close-out `0adf64e` (`cmd/sandbin` 199 tests, `cmd/sandbin-client`
 107, `internal/version` 6, `internal/frontpage` 13, all gates green). This is a purely additive
@@ -128,3 +129,35 @@ the healthz block); modify `docs/usages/sandbin-api.md` (one sentence).
 Everything in the decisions record's Skipped section (notably the `X-Robots-Tag` header layer,
 deferred as the follow-up if search engines index content anyway), plus: robots.txt variations
 per user-agent, caching headers for /robots.txt, and any mention on the landing page itself.
+
+## Outcome
+
+Implemented in `e68b2ca` on plan-open `a89c105`, with a reviewer-finding follow-up in `9d74d1c`.
+Reviewer verdict: APPROVE WITH FINDINGS — no blockers; every finding was test coverage, not
+behavior, and all four were closed in the follow-up commit.
+
+- Counts: `cmd/sandbin` 199 → 200 (`TestRobotsTxt` only), `cmd/sandbin-client` 107,
+  `internal/version` 6, `internal/frontpage` 13, new `internal/robots` 2. `comm` on test-name
+  lists: zero removals everywhere.
+- Scope: implementation commit is exactly the six planned files; handlers.go diff is two hunks
+  (import + the branch after healthz), 405 wording verbatim.
+- Reviewer's own battery (HEAD vs `0adf64e` binaries, 30 probes with matched Host headers): zero
+  diffs on landing, docs hub, `/docs/`, all member pages, assets, skill routes, healthz, 404 and
+  405 shapes, and a normalized bin round trip. The single expected body diff is
+  `/docs/sandbin-api.html`, which gains exactly the required docs sentence — the plan's own
+  Verification list named that page while also requiring its markdown edit; the review records
+  this as the plan's slip. Baseline `GET /robots.txt` = 404, HEAD = 200 byte-identical to the
+  embedded file (26 bytes, LF, no BOM).
+- Shadow and no-charge proofs (live, reviewer-run): `GET /robotx.txt`, `/robots.txtx`,
+  `/robots.TXT`, `/robots.txt/` and `/<hash>/robots.txt` keep the bin 404/200-file semantics;
+  six wrong-key robots GETs left the block table empty and the control instrument proved it
+  detects charges. Container proof built from HEAD served robots.txt byte-equal to the tree
+  server; full podman cleanup per the keep-list.
+- Findings closed in `9d74d1c`: `TestRobotsTxt` now pins near-miss 404s (exact-path rule), the
+  verbatim 405 body, zero ip_blocks rows after wrong-key robots GETs, and a bin holding its own
+  `robots.txt` (uploaded bytes round-trip; the global route is unaffected). Mutation proofs at
+  the final HEAD: prefix-match, reworded-405, wrong-key-charging, and `path.Base` segment-match
+  mutations each make `TestRobotsTxt` fail with the named assertion, and only it.
+- Environment note: sandboxed shells leave killed scratch servers as unreaped `Z` entries
+  (PID 1 does not reap); they hold no sockets, files or ports. Later verification passes should
+  treat `Z` as dead and confirm no `S`/`R` sandbin processes.
