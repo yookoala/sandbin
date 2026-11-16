@@ -36,6 +36,11 @@ podman run -d --name sandbin -p 127.0.0.1:8080:8080 -v sandbin-data:/data \
 podman inspect --format '{{`{{`}}.State.Health.Status}}' sandbin   # probed every 30s, healthy on a healthy server
 ```
 
+The doubled braces in the `--format` above are an escape for the hosted rendering: this page
+runs through Go's template pass when served, and the doubled form is what delivers the exact
+single pair of braces podman expects. In a plain terminal you type podman's own braces around
+`State.Health.Status`.
+
 As a systemd user service through podman quadlet:
 
 ```sh

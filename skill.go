@@ -17,7 +17,7 @@ var PreviewSkillMD string
 //go:embed skills/sandbin-preview/install.sh
 var InstallScript string
 
-// UsageDocs is the usage documentation tree the server renders under /docs: the ten
+// UsageDocs is the usage documentation tree the server renders under /docs: the nine
 // docs/usages/*.md files travel inside the binary, so a running server never reads docs/
 // from disk and a container image needs no docs volume.
 //

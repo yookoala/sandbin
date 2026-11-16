@@ -83,7 +83,7 @@ func TestDocsHubServesBothPaths(t *testing.T) {
 	}
 }
 
-// TestDocsPagesServeEveryUsageDoc checks each of the ten pages renders from the embedded
+// TestDocsPagesServeEveryUsageDoc checks each of the nine pages renders from the embedded
 // markdown: 200, the H1 as its title, and the shell around it.
 func TestDocsPagesServeEveryUsageDoc(t *testing.T) {
 	h := newTestServer(t, "test-key")
