@@ -3,79 +3,143 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sandbin</title>
+<title>This is a Sandbin instance</title>
 <style>
 {{.BrandCSS}}
 </style>
 <style>
-.tabs{display:flex;flex-wrap:wrap;gap:0.4rem;margin:1.1em 0 0.6em}
-.tab{border:1px solid var(--sandbin-purple);border-radius:4px;background:#fff;
-color:var(--sandbin-purple);font:inherit;padding:0.35em 0.7em;cursor:pointer}
-.tab[aria-pressed=true]{background:var(--sandbin-purple);color:#fff}
-.tab:hover{border-color:var(--sandbin-amber)}
-.cmd-body{margin:0;min-width:0}
-.hidden{display:none}
+.pick-line{margin:1.1em 0 0.4em}
+.pick{position:relative;display:inline-block}
+.pick-face{position:relative;font:inherit;color:var(--sandbin-purple);font-weight:600;background:#fff;
+border:1px solid #b3a894;border-radius:4px;padding:0.15em 1.9em 0.15em 0.55em;cursor:pointer;text-align:left}
+.pick-face svg{position:absolute;right:0.5em;top:50%;transform:translateY(-50%);width:0.9em;height:0.9em}
+.pick-face:hover{border-color:var(--sandbin-amber)}
+.pick-pop{position:absolute;left:0;top:0;z-index:20;display:flex;flex-direction:column;min-width:100%}
+.pick-pop[hidden]{display:none}
+.pick-pop input{font:inherit;font-weight:600;color:var(--sandbin-purple);background:#fff;
+border:1px solid var(--sandbin-purple);border-radius:4px;padding:0.15em 0.55em}
+.pick-pop ul{list-style:none;margin:0.25em 0 0;padding:0.2em 0;background:#fff;border:1px solid #b3a894;
+border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15);max-height:14em;overflow:auto}
+.pick-pop li{padding:0.3em 0.7em;cursor:pointer;color:#333;white-space:nowrap}
+.pick-pop li.hl{background:#F6EDDD;color:var(--sandbin-purple);font-weight:600}
+.pick-pop li:not(.sep):hover{background:var(--sandbin-canvas)}
+.pick-pop li.sep{padding:0;margin:0.25em 0.5em;border-top:1px solid #b3a994;cursor:default}
+.cmd{position:relative}
+.cmd-input{flex:1 1 auto;min-width:0;width:100%;box-sizing:border-box;margin:0;
+font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:0.95em;color:#222;
+background:#fff;border:1px solid #e3ddd3;border-left:4px solid var(--sandbin-amber);border-radius:4px;
+padding:0.9em 3.2em 0.9em 0.9em}
+.cmd-input:focus{outline:2px solid var(--sandbin-purple);outline-offset:1px}
+.cmd-copy{position:absolute;right:0.55em;top:50%;transform:translateY(-50%);border:none;background:#fff;
+color:var(--sandbin-purple);cursor:pointer;padding:0.35em;display:inline-flex;border-radius:4px}
+.cmd-copy:hover{color:var(--sandbin-amber)}
+.cmd-copy svg{width:1.15rem;height:1.15rem;display:block}
+.cmd-flash{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+background:rgba(78,22,128,0.88);color:#fff;border-radius:4px;font-weight:600;letter-spacing:0.04em;
+pointer-events:none;opacity:0}
+@keyframes sandbin-flash{0%{opacity:0.95}45%{opacity:0.95}100%{opacity:0}}
+.cmd-flash.show{animation:sandbin-flash 2.2s ease-out forwards}
+.cmd-target{margin:0.55em 0 0;color:#555;font-size:0.95rem}
+@keyframes sandbin-swap{0%{opacity:0;transform:translateY(-5px)}100%{opacity:1;transform:none}}
+.cmd-input.swap,.cmd-target.swap,.pick-face.swap{animation:sandbin-swap 0.28s ease-out}
+.cmd-target .path{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#444}
+.page-head nav.icon-nav{margin-left:auto;display:flex;gap:0.55rem;align-items:center}
+.icon-link{display:inline-flex;align-items:center;justify-content:center;width:2.1rem;height:2.1rem;
+border:none;border-radius:8px;color:var(--sandbin-purple);text-decoration:none}
+.icon-link:hover,.icon-link:focus-visible{color:var(--sandbin-amber);background:#fff}
+.icon-link svg{width:1.35rem;height:1.35rem;display:block}
 </style>
 </head>
 <body>
 <header class="page-head">
 <a class="logo-link" href="/" aria-label="Sandbin home"><div class="wordmark wordmark-hero">{{.Logo}}</div></a>
-<nav><a href="/docs">docs</a><a href="https://github.com/yookoala/sandbin">source on GitHub</a></nav>
+<nav class="icon-nav">
+<a class="icon-link" href="/docs" title="docs" aria-label="Documentation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg></a>
+<a class="icon-link" href="https://github.com/yookoala/sandbin" title="source on GitHub" aria-label="Source on GitHub"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.615-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></a>
+</nav>
 </header>
 
-<h1 id="sandbin">Sandbin</h1>
+<h1 id="this-is-a-sandbin-instance">This is a Sandbin instance</h1>
 <p class="tagline">A PUT/GET preview server for CLI agents in a sandbox: submit HTML, ANSI and
 prototype files, and hand a human plain preview URLs.</p>
-<p><a href="https://github.com/yookoala/sandbin">github.com/yookoala/sandbin</a> &middot;
-<a href="https://github.com/yookoala/sandbin/tree/main/docs/usages">the usage docs on GitHub</a></p>
-<h2 id="give-the-skill-to-your-agent">Give the skill to your agent</h2>
-<p>The <code>sandbin-preview</code> skill teaches an agent to set up <code>sandbin-client</code> in a
-directory and upload files or whole folders for preview. Install it with one command:</p>
-<div class="tabs">
-{{range $i, $h := .Harnesses}}<button type="button" class="tab" aria-pressed="{{if eq $i 0}}true{{else}}false{{end}}" onclick="sandbinSelectTab(this)">{{$h.Label}}</button>
-{{end}}</div>
+<p class="tagline">Learn more about Sandbin on <a href="https://github.com/yookoala/sandbin">GitHub</a>.</p>
+<h2 id="tell-your-agent-to-use-this">Tell Your Agent to use This</h2>
+<p>Tell me what harness you are using:</p>
+<div class="pick-line">I use <span class="pick" id="pick">
+<button type="button" class="pick-face" id="pick-face" aria-haspopup="listbox" aria-expanded="false"><span id="pick-label">{{.DefaultLabel}}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+<span class="pick-pop" id="pick-pop" hidden>
+<input id="pick-input" type="text" spellcheck="false" autocomplete="off" role="combobox" aria-controls="pick-list" aria-expanded="false" aria-label="Which harness you use">
+<ul id="pick-list" role="listbox" aria-label="Harnesses"></ul>
+</span>
+</span>.</div>
+<p>Run this command in your terminal:</p>
 <div class="cmd">
-{{range $i, $h := .Harnesses}}<pre class="cmd-body{{if ne $i 0}} hidden{{end}}" id="cmd-{{$i}}">{{$h.Cmd}}</pre>
-{{end}}<button type="button" class="copy" onclick="sandbinCopyInstall(this)">copy</button>
+<input class="cmd-input" id="cmd-input" type="text" readonly spellcheck="false" autocomplete="off"
+value="{{.DefaultCmd}}">
+<button type="button" class="cmd-copy" id="cmd-copy" aria-label="Copy the install command" title="copy"
+onclick="sandbinCopyInstall(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="13" height="13" x="9" y="9" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+<span class="cmd-flash" id="cmd-flash" aria-hidden="true">Copied</span>
 </div>
-<p>The first tab is the shared folder: with no <code>--dest</code> the installer writes to
-<code>$HOME/.agents/skills/sandbin-preview</code>, and every harness listed here but Claude Code
-also read <code>.agents/skills</code>; Claude Code reads <code>.claude/skills</code>, which its own tab
-names.</p>
-<p>To install into the current project instead, pass the installer a folder of the same pipe:
-<code>| bash -s -- --dest .agents/skills</code>.</p>
-<h2 id="the-hosted-docs">The hosted docs</h2>
-<p>A running <code>sandbin</code> serves its own usage documentation: <a href="/docs">the docs
-hub</a>, <a href="/docs/sandbin.html">sandbin, the server</a> and
-<a href="/docs/sandbin-client.html">sandbin-client, the client</a>.</p>
+<p class="cmd-target">Skill Install Path: <span class="path" id="cmd-path">{{.DefaultPath}}</span></p>
+
+<script id="harness-data" type="application/json">{{.HarnessJSON}}</script>
 <script>
-function sandbinVisibleCommand() {
-  var block = document.querySelector(".cmd-body:not(.hidden)");
-  return block ? block.textContent : "";
+var SANDBIN_HARNESSES = JSON.parse(document.getElementById("harness-data").textContent);
+function sandbinSwapIn(el) {
+  el.classList.remove("swap");
+  void el.offsetWidth;
+  el.classList.add("swap");
 }
-function sandbinSelectTab(button) {
-  var tabs = document.querySelectorAll(".tab");
-  var chosen = -1;
-  for (var i = 0; i < tabs.length; i++) {
-    if (tabs[i] === button) { chosen = i; }
+function sandbinApply(h) {
+  document.getElementById("cmd-input").value = h.cmd;
+  document.getElementById("cmd-path").textContent = h.path;
+  document.getElementById("pick-label").textContent = h.label;
+  sandbinSwapIn(document.getElementById("pick-face"));
+  sandbinSwapIn(document.getElementById("cmd-input"));
+  sandbinSwapIn(document.getElementById("cmd-path").parentElement);
+}
+function sandbinHarnessOrder(q) {
+  var wanted = q.trim().toLowerCase();
+  var generic = SANDBIN_HARNESSES[0];
+  if (!wanted) {
+    var upper = [sandbinPick.current];
+    if (sandbinPick.current !== generic) { upper.push(generic); }
+    var rest = SANDBIN_HARNESSES.filter(function (h) { return upper.indexOf(h) < 0; }).sort(function (a, b) {
+      return a.label.toLowerCase() < b.label.toLowerCase() ? -1 : 1;
+    });
+    return { list: upper.concat(rest), split: upper.length };
   }
-  if (chosen < 0) { return; }
-  var blocks = document.querySelectorAll(".cmd-body");
-  for (var b = 0; b < blocks.length; b++) {
-    if (b === chosen) { blocks[b].classList.remove("hidden"); } else { blocks[b].classList.add("hidden"); }
+  var upper = SANDBIN_HARNESSES.filter(function (h) { return h.label.toLowerCase().indexOf(wanted) >= 0; });
+  var genericMatched = upper.indexOf(generic) >= 0;
+  if (!genericMatched) { upper.push(generic); }
+  var cur = sandbinPick.current;
+  if (cur !== generic) {
+    if (upper.indexOf(cur) < 0) {
+      upper.splice(upper.indexOf(generic), 0, cur);
+    } else if (genericMatched && upper.indexOf(generic) < upper.indexOf(cur)) {
+      upper.splice(upper.indexOf(cur), 1);
+      upper.splice(upper.indexOf(generic), 0, cur);
+    }
   }
-  for (var t = 0; t < tabs.length; t++) {
-    tabs[t].setAttribute("aria-pressed", t === chosen ? "true" : "false");
-  }
+  var rest = SANDBIN_HARNESSES.filter(function (h) { return upper.indexOf(h) < 0; }).sort(function (a, b) {
+    return a.label.toLowerCase() < b.label.toLowerCase() ? -1 : 1;
+  });
+  return { list: upper.concat(rest), split: rest.length ? upper.length : 0 };
+}
+function sandbinFlashCopied() {
+  var flash = document.getElementById("cmd-flash");
+  flash.classList.remove("show");
+  void flash.offsetWidth;
+  flash.classList.add("show");
 }
 function sandbinCopyInstall(button) {
-  var command = sandbinVisibleCommand();
-  function done() { button.textContent = "copied"; }
+  var command = document.getElementById("cmd-input").value;
+  function done() {
+    sandbinFlashCopied();
+  }
   function fallback() {
     var area = document.createElement("textarea");
-    // Re-read the visible block here too: on a plain-HTTP page the clipboard API always
-    // rejects, and this is the tab the visitor has just switched to.
-    area.value = sandbinVisibleCommand() || command;
+    area.value = document.getElementById("cmd-input").value || command;
     document.body.appendChild(area);
     area.select();
     document.execCommand("copy");
@@ -88,6 +152,67 @@ function sandbinCopyInstall(button) {
     fallback();
   }
 }
+var sandbinPick = { current: SANDBIN_HARNESSES[0], order: SANDBIN_HARNESSES.slice(), hl: 0 };
+function sandbinRenderPick() {
+  var list = document.getElementById("pick-list");
+  var ord = sandbinHarnessOrder(document.getElementById("pick-input").value);
+  sandbinPick.order = ord.list;
+  list.innerHTML = "";
+  sandbinPick.order.forEach(function (h, i) {
+    var li = document.createElement("li");
+    li.setAttribute("role", "option");
+    li.textContent = h.label;
+    li.classList.toggle("hl", i === sandbinPick.hl);
+    li.setAttribute("aria-selected", i === sandbinPick.hl ? "true" : "false");
+    li.addEventListener("mousedown", function (e) { e.preventDefault(); });
+    li.addEventListener("click", function () { sandbinChoose(i); });
+    list.appendChild(li);
+    if (i + 1 === ord.split && ord.split < ord.list.length) {
+      var sep = document.createElement("li");
+      sep.setAttribute("role", "separator");
+      sep.setAttribute("aria-orientation", "horizontal");
+      sep.className = "sep";
+      sep.addEventListener("mousedown", function (e) { e.preventDefault(); });
+      list.appendChild(sep);
+    }
+  });
+}
+function sandbinChoose(i) {
+  sandbinPick.current = sandbinPick.order[i] || sandbinPick.current;
+  sandbinApply(sandbinPick.current);
+  sandbinClosePick();
+}
+function sandbinOpenPick() {
+  document.getElementById("pick-pop").hidden = false;
+  document.getElementById("pick-face").setAttribute("aria-expanded", "true");
+  document.getElementById("pick-input").value = "";
+  sandbinPick.hl = 0;
+  sandbinRenderPick();
+  document.getElementById("pick-input").focus();
+}
+function sandbinClosePick() {
+  document.getElementById("pick-pop").hidden = true;
+  document.getElementById("pick-face").setAttribute("aria-expanded", "false");
+}
+document.getElementById("pick-face").addEventListener("click", sandbinOpenPick);
+var pickInput = document.getElementById("pick-input");
+pickInput.addEventListener("input", function () { sandbinPick.hl = 0; sandbinRenderPick(); });
+pickInput.addEventListener("keydown", function (e) {
+  if (e.key === "ArrowDown") { e.preventDefault(); sandbinPick.hl = Math.min(sandbinPick.hl + 1, sandbinPick.order.length - 1); sandbinRenderPick(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); sandbinPick.hl = Math.max(sandbinPick.hl - 1, 0); sandbinRenderPick(); }
+  else if (e.key === "Enter") { e.preventDefault(); sandbinChoose(sandbinPick.hl); }
+  else if (e.key === "Escape") { e.preventDefault(); sandbinClosePick(); }
+});
+document.getElementById("pick").addEventListener("focusout", function (e) {
+  if (document.getElementById("pick-pop").hidden) { return; }
+  if (this.contains(e.relatedTarget)) { return; }
+  sandbinChoose(sandbinPick.hl);
+});
+var cmdInput = document.getElementById("cmd-input");
+function selectAll() { cmdInput.select(); }
+cmdInput.addEventListener("focus", selectAll);
+cmdInput.addEventListener("click", selectAll);
+sandbinApply(sandbinPick.current);
 </script>
 </body>
 </html>

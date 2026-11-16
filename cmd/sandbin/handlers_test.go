@@ -236,49 +236,58 @@ func TestFrontPageAtRoot(t *testing.T) {
 	// The request is a plain loopback GET with Host example.com, so its own address is
 	// what the examples echo.
 	for _, want := range []string{
-		"<title>Sandbin</title>",
-		"<h1 id=\"sandbin\">Sandbin</h1>",
+		"<title>This is a Sandbin instance</title>",
+		"<h1 id=\"this-is-a-sandbin-instance\">This is a Sandbin instance</h1>",
 		"A PUT/GET preview server for CLI agents in a sandbox: submit HTML, ANSI and",
 		"prototype files, and hand a human plain preview URLs.",
+		"Learn more about Sandbin on <a href=\"https://github.com/yookoala/sandbin\">GitHub</a>",
 		"<svg xmlns=\"http://www.w3.org/2000/svg\"",
+		"<h2 id=\"tell-your-agent-to-use-this\">Tell Your Agent to use This</h2>",
+		"<p>Tell me what harness you are using:</p>",
+		"<p>Run this command in your terminal:</p>",
+		// The harness table rides the JSON data island the picker script parses: the eight
+		// labels, each naming that harness's own skills folder as a quoted $HOME path.
+		"<script id=\"harness-data\" type=\"application/json\">",
+		"\"label\":\"a generic harness\"",
+		"\"label\":\"OpenCode\"",
+		"\"label\":\"Claude Code\"",
+		"\"label\":\"Codex\"",
+		"\"label\":\"Cursor\"",
+		"\"label\":\"Copilot\"",
+		"\"label\":\"Gemini CLI\"",
+		"\"label\":\"Windsurf\"",
 		"curl -fsSL http://example.com/skills/sandbin-preview/install.sh | bash",
-		// The install block is a harness selector: the eight tabs of the decisions table,
-		// each naming that harness's own skills folder as a quoted $HOME path.
-		"class=\"tab\"",
-		"aria-pressed",
-		"cmd-body",
-		">Agents</button>",
-		">OpenCode</button>",
-		">Claude Code</button>",
-		">Codex</button>",
-		">Cursor</button>",
-		">Copilot</button>",
-		">Gemini CLI</button>",
-		">Windsurf</button>",
-		"curl -fsSL http://example.com/skills/sandbin-preview/install.sh | bash -s -- --dest \"$HOME/.claude/skills\"",
-		"curl -fsSL http://example.com/skills/sandbin-preview/install.sh | bash -s -- --dest \"$HOME/.codeium/windsurf/skills\"",
-		// The two sentences that replaced the old --dest paragraph.
-		"The first tab is the shared folder: with no <code>--dest</code> the installer writes to",
-		"<code>$HOME/.agents/skills/sandbin-preview</code>",
-		"<code>| bash -s -- --dest .agents/skills</code>",
-		"href=\"https://github.com/yookoala/sandbin\"",
-		"href=\"https://github.com/yookoala/sandbin/tree/main/docs/usages\"",
-		"href=\"/docs\"",
-		"href=\"/docs/sandbin.html\"",
-		"href=\"/docs/sandbin-client.html\"",
-		"class=\"copy\"",
+		"curl -fsSL http://example.com/skills/sandbin-preview/install.sh | bash -s -- --dest \\\"$HOME/.claude/skills\\\"",
+		"curl -fsSL http://example.com/skills/sandbin-preview/install.sh | bash -s -- --dest \\\"$HOME/.codeium/windsurf/skills\\\"",
+		// The command widget the page opens on: the generic row's command as the readonly
+		// input's value, the inner copy icon button, the Copied flash, and the install-path line.
+		"value=\"curl -fsSL http://example.com/skills/sandbin-preview/install.sh | bash\"",
+		"class=\"cmd-input\"",
+		"class=\"cmd-copy\"",
+		"class=\"cmd-flash\"",
+		">Copied</span>",
+		"Skill Install Path: <span class=\"path\" id=\"cmd-path\">$HOME/.agents/skills/sandbin-preview</span>",
+		// The combobox markup and its picker.
+		"<nav class=\"icon-nav\">",
+		"<a class=\"icon-link\" href=\"/docs\"",
+		"aria-label=\"Documentation\"",
+		"aria-label=\"Source on GitHub\"",
+		"role=\"combobox\"",
+		"role=\"listbox\"",
+		"JSON.parse(document.getElementById(\"harness-data\").textContent)",
+		"function sandbinHarnessOrder(q) {",
 		"navigator.clipboard",
 		"document.execCommand(\"copy\")",
-		"copied",
+		"href=\"https://github.com/yookoala/sandbin\"",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("front page missing %q in:\n%s", want, body)
 		}
 	}
-	// What the page no longer carries: the bin semantics, the three-line curl trio and the
-	// privacy paragraph are the hosted API docs' business now, the wordmark is inlined
-	// markup rather than an <img> reference, and the single --dest paragraph is now the
-	// tabs and the two sentences under them.
+	// What the page no longer carries: the bin semantics and the privacy paragraph are the
+	// hosted API docs' business; the tab row, its script and their prose are replaced by the
+	// combobox and the data island; the hosted-docs links and the usage-docs tree link left
+	// with the tab-era layout; the logo stays inlined markup rather than an <img> reference.
 	for _, gone := range []string{
 		"A bin is a collection of files under a random eight-hex path",
 		"curl -X POST -H \"X-API-Key: your-key\" http://example.com/",
@@ -288,6 +297,16 @@ func TestFrontPageAtRoot(t *testing.T) {
 		"hand the installer a destination",
 		"<img",
 		"<script src=",
+		"class=\"tab\"",
+		"aria-pressed",
+		"cmd-body",
+		">Agents</button>",
+		"sandbinSelectTab",
+		"The first tab is the shared folder",
+		"the usage docs on GitHub",
+		"<h2 id=\"the-hosted-docs\">The hosted docs",
+		"href=\"/docs/sandbin.html\"",
+		"href=\"/docs/sandbin-client.html\"",
 	} {
 		if strings.Contains(body, gone) {
 			t.Errorf("front page still carries %q in:\n%s", gone, body)
@@ -351,9 +370,21 @@ func TestFrontPageEchoesTheVisitorsAddress(t *testing.T) {
 				t.Fatalf("GET / = %d, want %d", rec.Code, http.StatusOK)
 			}
 			body := rec.Body.String()
+			// The visitor's address now reaches the page through the JSON data island: pin it
+			// inside the island itself, not just somewhere on the page.
+			const islandOpen = "<script id=\"harness-data\" type=\"application/json\">"
+			if strings.Count(body, islandOpen) != 1 {
+				t.Fatalf("front page carries %d harness data islands, want 1 in:\n%s", strings.Count(body, islandOpen), body)
+			}
+			islandStart := strings.Index(body, islandOpen) + len(islandOpen)
+			islandEnd := strings.Index(body[islandStart:], "</script>")
+			if islandEnd < 0 {
+				t.Fatal("the harness data island is never closed")
+			}
+			island := body[islandStart : islandStart+islandEnd]
 			for _, want := range []string{c.want + "/skills/sandbin-preview/install.sh"} {
-				if !strings.Contains(body, want) {
-					t.Errorf("front page missing %q in:\n%s", want, body)
+				if !strings.Contains(island, want) {
+					t.Errorf("the data island misses %q in:\n%s", want, island)
 				}
 			}
 			// The install line is the page's only templated command: a Host the page may echo
@@ -361,6 +392,11 @@ func TestFrontPageEchoesTheVisitorsAddress(t *testing.T) {
 			if c.want == "https://this.host" {
 				if !strings.Contains(body, "curl -fsSL https://this.host/skills/sandbin-preview/install.sh | bash") {
 					t.Errorf("front page does not fall back to the placeholder in:\n%s", body)
+				}
+				// A Host that is not a plain address never reaches the page as its own text,
+				// and its markup can never appear raw anywhere on it.
+				if c.host != "" && strings.Contains(body, c.host) {
+					t.Errorf("front page echoes the rejected host %q in:\n%s", c.host, body)
 				}
 			} else if strings.Contains(body, "this.host") {
 				t.Errorf("front page still carries the placeholder for host %q in:\n%s", c.host, body)

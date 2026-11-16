@@ -781,8 +781,8 @@ func installPin() string {
 var frontHostRE = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9.\-]*|\[[0-9A-Fa-f:.]+\])(:[0-9]+)?$`)
 
 // renderFrontPage writes the branded page the root answers with on GET: the wordmark inline,
-// the one-line tagline, the GitHub links, the per-harness install tabs and their one-liners with
-// the copy button, and the links into the hosted docs. It says nothing about any bin, address or
+// the icon nav, the copy set, the harness combobox fed by a JSON data island, and the command
+// widget with its inner copy icon and Copied flash. It says nothing about any bin, address or
 // key; only the base URL those commands name is dynamic — see frontBase. The page itself is the
 // embedded template of internal/frontpage: this handler only supplies its four values, and its
 // Execute failure path is the one the skill routes already use.

@@ -2,7 +2,7 @@ package frontpage
 
 import (
 	"bytes"
-	"strconv"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -39,6 +39,65 @@ var wantHarnessCmds = []string{
 	"curl -fsSL https://preview.example.org:8443/skills/sandbin-preview/install.sh | bash -s -- --dest \"$HOME/.codeium/windsurf/skills\"",
 }
 
+// wantHarnessLabels and wantHarnessPaths are the same eight rows' other two columns: the label
+// on the combobox face and the folder each command installs into (the folder named on the
+// command plus its sandbin-preview subfolder).
+var (
+	wantHarnessLabels = []string{"a generic harness", "OpenCode", "Claude Code", "Codex", "Cursor", "Copilot", "Gemini CLI", "Windsurf"}
+	wantHarnessPaths  = []string{
+		"$HOME/.agents/skills/sandbin-preview",
+		"$HOME/.config/opencode/skills/sandbin-preview",
+		"$HOME/.claude/skills/sandbin-preview",
+		"$HOME/.codex/skills/sandbin-preview",
+		"$HOME/.cursor/skills/sandbin-preview",
+		"$HOME/.copilot/skills/sandbin-preview",
+		"$HOME/.gemini/skills/sandbin-preview",
+		"$HOME/.codeium/windsurf/skills/sandbin-preview",
+	}
+)
+
+// islandOpen and islandClose bracket the JSON data island in front.html; the island tests
+// below read exactly what sits between them.
+const (
+	islandOpen  = "<script id=\"harness-data\" type=\"application/json\">"
+	islandClose = "</script>"
+)
+
+// harnessIsland extracts the data island's raw text from a rendered page and fails the test
+// when the island is not opened exactly once.
+func harnessIsland(t *testing.T, body string) string {
+	t.Helper()
+	if n := strings.Count(body, islandOpen); n != 1 {
+		t.Fatalf("%d harness data islands, want 1 in:\n%s", n, body)
+	}
+	start := strings.Index(body, islandOpen) + len(islandOpen)
+	end := strings.Index(body[start:], islandClose)
+	if end < 0 {
+		t.Fatalf("the harness data island is never closed in:\n%s", body)
+	}
+	return body[start : start+end]
+}
+
+// parseIsland JSON-parses the island the way the page's own script does and returns its rows:
+// a round trip that must preserve every quote the commands carry.
+func parseIsland(t *testing.T, body string) []struct {
+	Label string `json:"label"`
+	Cmd   string `json:"cmd"`
+	Path  string `json:"path"`
+} {
+	t.Helper()
+	var rows []struct {
+		Label string `json:"label"`
+		Cmd   string `json:"cmd"`
+		Path  string `json:"path"`
+	}
+	raw := harnessIsland(t, body)
+	if err := json.Unmarshal([]byte(raw), &rows); err != nil {
+		t.Fatalf("the data island does not parse as JSON (%v):\n%s", err, raw)
+	}
+	return rows
+}
+
 // The template is parsed at package init: a front.html that does not parse stops the server
 // at startup, which is what template.Must is for.
 func TestPageTemplateParsesAtInit(t *testing.T) {
@@ -50,8 +109,9 @@ func TestPageTemplateParsesAtInit(t *testing.T) {
 	}
 }
 
-// Every action in front.html must be filled by its Data field: a surviving "{{" means a token
-// the executor never saw, and a field that never reaches the page is a rendering bug.
+// Every action in front.html must be filled by its Data field or by what Render computes from
+// it: a surviving "{{" means a token the executor never saw, and a field that never reaches
+// the page is a rendering bug.
 func TestRenderFillsEveryField(t *testing.T) {
 	d := sampleData()
 	var buf bytes.Buffer
@@ -60,23 +120,24 @@ func TestRenderFillsEveryField(t *testing.T) {
 	}
 	body := buf.String()
 
-	for _, gone := range []string{"{{", "}}"} {
-		if strings.Contains(body, gone) {
-			t.Errorf("Render left %q in the page:\n%s", gone, body)
-		}
+	// No action survives. A }} may legitimately appear — the page's own CSS spells its
+	// keyframe blocks with adjacent braces — but every }} must belong to a closed pair, and
+	// the only way an action reaches the page in the first place is a {{ the executor missed.
+	if strings.Contains(body, "{{") {
+		t.Errorf("Render left {{ in the page:\n%s", body)
 	}
 
 	for _, want := range []string{
 		// BrandCSS lands inside the <style> element, which keeps its own newline before the
 		// closing tag exactly as the page has always had it.
 		"<style>\n" + sampleCSS + "\n</style>",
-		// Base lands inside the install commands, whole: the default tab's line is the one the
+		// Base lands inside the install commands, whole: the default row's line is the one the
 		// page has always carried.
 		"curl -fsSL https://preview.example.org:8443/skills/sandbin-preview/install.sh | bash",
 		// The header closes and the static body resumes: the page has always carried the
 		// header's own trailing newline on top of the newline that ended its line, which is
 		// one blank line between the two.
-		"</header>\n\n<h1 id=\"sandbin\">Sandbin</h1>",
+		"</header>\n\n<h1 id=\"this-is-a-sandbin-instance\">This is a Sandbin instance</h1>",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("Render missing %q in:\n%s", want, body)
@@ -100,7 +161,7 @@ func TestRenderPlacesTheLogoInItsHeroWrapper(t *testing.T) {
 	// The wrapper is opened once and its closing tag belongs to it: the logo is not left to
 	// wander into the nav or the body.
 	if n := strings.Count(body, "<div class=\"wordmark wordmark-hero\">"); n != 1 {
-		t.Errorf("hero wrapper opened %d times, want 1", n)
+		t.Errorf("hero wrapper opened %d times, want 1 in:\n%s", n, body)
 	}
 	open := strings.Index(body, "<div class=\"wordmark wordmark-hero\">")
 	header := strings.Index(body, "</header>")
@@ -113,8 +174,8 @@ func TestRenderPlacesTheLogoInItsHeroWrapper(t *testing.T) {
 }
 
 // The base arrives in every harness command as one unbroken string: the placeholder frontBase
-// falls back to for an odd Host is rendered like any other base, and the tab row names the
-// command once per harness and nowhere else.
+// falls back to for an odd Host is rendered like any other base. Eight commands ride the data
+// island and the command widget's initial value names the default one once more.
 func TestRenderCarriesTheInstallCommandLine(t *testing.T) {
 	for _, base := range []string{
 		"http://127.0.0.1:8080",
@@ -132,24 +193,23 @@ func TestRenderCarriesTheInstallCommandLine(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("base %q missing install line %q in:\n%s", base, want, got)
 		}
-		if n := strings.Count(got, "curl -fsSL "); n != len(wantHarnessCmds) {
-			t.Errorf("base %q: %d install commands, want %d", base, n, len(wantHarnessCmds))
+		if n := strings.Count(got, "curl -fsSL "); n != len(wantHarnessCmds)+1 {
+			t.Errorf("base %q: %d install commands, want %d in:\n%s", base, n, len(wantHarnessCmds)+1, got)
 		}
 	}
 }
 
-// DefaultHarnesses is the decisions table: eight rows in order, every command a form the
-// existing installer accepts, the shared-folder row alone without --dest, and every other
-// destination a quoted $HOME path rather than a tilde bash would not expand.
+// DefaultHarnesses is the decisions table: eight rows in order, the generic row first with no
+// --dest at all, every other destination a quoted $HOME path rather than a tilde bash would
+// not expand, and every row's Path naming the folder its command installs into.
 func TestDefaultHarnessesAreTheDecisionsTable(t *testing.T) {
 	hs := DefaultHarnesses()
-	wantLabels := []string{"Agents", "OpenCode", "Claude Code", "Codex", "Cursor", "Copilot", "Gemini CLI", "Windsurf"}
-	if len(hs) != len(wantLabels) {
-		t.Fatalf("DefaultHarnesses returned %d rows, want %d", len(hs), len(wantLabels))
+	if len(hs) != len(wantHarnessLabels) {
+		t.Fatalf("DefaultHarnesses returned %d rows, want %d", len(hs), len(wantHarnessLabels))
 	}
 	for i, h := range hs {
-		if h.Label != wantLabels[i] {
-			t.Errorf("row %d label = %q, want %q", i, h.Label, wantLabels[i])
+		if h.Label != wantHarnessLabels[i] {
+			t.Errorf("row %d label = %q, want %q", i, h.Label, wantHarnessLabels[i])
 		}
 		// Each stored command names the page's own token for the server address, which Render
 		// fills with the address the request arrived at.
@@ -157,9 +217,12 @@ func TestDefaultHarnessesAreTheDecisionsTable(t *testing.T) {
 		if h.Cmd != wantCmd {
 			t.Errorf("row %d (%s) Cmd = %q, want %q", i, h.Label, h.Cmd, wantCmd)
 		}
+		if h.Path != wantHarnessPaths[i] {
+			t.Errorf("row %d (%s) Path = %q, want %q", i, h.Label, h.Path, wantHarnessPaths[i])
+		}
 		if i == 0 {
 			if strings.Contains(h.Cmd, "--dest") {
-				t.Errorf("the default row %q names --dest: %q", h.Label, h.Cmd)
+				t.Errorf("the generic row %q names --dest: %q", h.Label, h.Cmd)
 			}
 			continue
 		}
@@ -169,10 +232,18 @@ func TestDefaultHarnessesAreTheDecisionsTable(t *testing.T) {
 		if !strings.HasSuffix(h.Cmd, "/skills\"") {
 			t.Errorf("row %d (%s) destination is not a quoted skills folder: %q", i, h.Label, h.Cmd)
 		}
+		// The Path is the command's own destination plus the sandbin-preview subfolder.
+		dest := h.Cmd[strings.Index(h.Cmd, "--dest \"")+len("--dest \"") : strings.LastIndex(h.Cmd, "\"")]
+		if h.Path != dest+"/sandbin-preview" {
+			t.Errorf("row %d (%s) Path %q is not its command's folder %q plus sandbin-preview", i, h.Label, h.Path, dest)
+		}
 	}
 	for _, h := range hs {
 		if strings.Contains(h.Cmd, "~/") {
 			t.Errorf("row %q names a tilde bash would not expand: %q", h.Label, h.Cmd)
+		}
+		if strings.HasPrefix(h.Cmd, "\"") || strings.Contains(h.Path, "~/") {
+			t.Errorf("row %q carries an unanchored path: %q / %q", h.Label, h.Cmd, h.Path)
 		}
 	}
 }
@@ -187,8 +258,8 @@ func TestDefaultHarnessesReturnAFreshSlice(t *testing.T) {
 	if len(second) != 8 {
 		t.Fatalf("a second DefaultHarnesses has %d rows, want 8", len(second))
 	}
-	if second[0].Label != "Agents" {
-		t.Errorf("a second DefaultHarnesses names row 0 %q, want %q", second[0].Label, "Agents")
+	if second[0].Label != "a generic harness" {
+		t.Errorf("a second DefaultHarnesses names row 0 %q, want %q", second[0].Label, "a generic harness")
 	}
 	for _, h := range second {
 		if h.Label == "Edited" || h.Label == "Extra" {
@@ -197,8 +268,9 @@ func TestDefaultHarnessesReturnAFreshSlice(t *testing.T) {
 	}
 }
 
-// The eight tabs render as eight commands with the request's own address filled in, each one
-// the whole text of its command block and nothing else in it.
+// The eight harness rows reach the page as the JSON data island: a JSON.parse of the island
+// yields the eight labels, base-filled commands and install paths in order, and the quoted
+// --dest "$HOME/…" commands round-trip through it whole.
 func TestRenderCarriesEveryHarnessCommand(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Render(&buf, sampleData()); err != nil {
@@ -206,26 +278,34 @@ func TestRenderCarriesEveryHarnessCommand(t *testing.T) {
 	}
 	body := buf.String()
 
-	for i, want := range wantHarnessCmds {
-		block := "<pre class=\"cmd-body" + hiddenSuffix(i) + "\" id=\"cmd-" + strconv.Itoa(i) + "\">" + want + "</pre>"
-		if !strings.Contains(body, block) {
-			t.Errorf("tab %d missing command block %q in:\n%s", i, block, body)
+	rows := parseIsland(t, body)
+	if len(rows) != len(wantHarnessCmds) {
+		t.Fatalf("the data island carries %d rows, want %d", len(rows), len(wantHarnessCmds))
+	}
+	for i, row := range rows {
+		if row.Label != wantHarnessLabels[i] {
+			t.Errorf("island row %d label = %q, want %q", i, row.Label, wantHarnessLabels[i])
+		}
+		if row.Cmd != wantHarnessCmds[i] {
+			t.Errorf("island row %d cmd = %q, want %q", i, row.Cmd, wantHarnessCmds[i])
+		}
+		if row.Path != wantHarnessPaths[i] {
+			t.Errorf("island row %d path = %q, want %q", i, row.Path, wantHarnessPaths[i])
 		}
 	}
-	if n := strings.Count(body, "<pre class=\"cmd-body"); n != len(wantHarnessCmds) {
-		t.Errorf("%d command blocks, want %d in:\n%s", n, len(wantHarnessCmds), body)
+	if n := strings.Count(body, "curl -fsSL "); n != len(wantHarnessCmds)+1 {
+		t.Errorf("%d install commands, want %d in:\n%s", n, len(wantHarnessCmds)+1, body)
 	}
-	if n := strings.Count(body, "curl -fsSL "); n != len(wantHarnessCmds) {
-		t.Errorf("%d install commands, want %d in:\n%s", n, len(wantHarnessCmds), body)
-	}
-	// One copy button for the whole area, and it is still the same posture.
-	if n := strings.Count(body, "class=\"copy\""); n != 1 {
-		t.Errorf("%d copy buttons, want 1 in:\n%s", n, body)
+	// The widget's own parts: one readonly input, one inner copy icon button, one flash span.
+	for _, want := range []string{"class=\"cmd-input\"", "class=\"cmd-copy\"", "class=\"cmd-flash\""} {
+		if n := strings.Count(body, want); n != 1 {
+			t.Errorf("%d copies of %q, want 1 in:\n%s", n, want, body)
+		}
 	}
 }
 
-// The page opens on the shared-folder tab: exactly one command block is visible, it is the
-// Agents one, and exactly one tab button is pressed.
+// The page opens on the generic row without any scripting: the command widget's initial value
+// is that row's command, the face names the row, and the path line names its folder.
 func TestRenderShowsOnlyTheFirstTabCommand(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Render(&buf, sampleData()); err != nil {
@@ -233,29 +313,28 @@ func TestRenderShowsOnlyTheFirstTabCommand(t *testing.T) {
 	}
 	body := buf.String()
 
-	visible := "<pre class=\"cmd-body\" id=\"cmd-0\">" + wantHarnessCmds[0] + "</pre>"
+	visible := "value=\"curl -fsSL https://preview.example.org:8443/skills/sandbin-preview/install.sh | bash\""
 	if !strings.Contains(body, visible) {
-		t.Errorf("the visible command block is not the Agents one (%q) in:\n%s", visible, body)
+		t.Errorf("the command widget's initial value is not the generic row's command (%q) in:\n%s", visible, body)
 	}
-	if n := strings.Count(body, "<pre class=\"cmd-body\""); n != 1 {
-		t.Errorf("%d unhidden command blocks, want 1 in:\n%s", n, body)
+	if n := strings.Count(body, "value=\""); n != 1 {
+		t.Errorf("%d prefilled values, want 1 in:\n%s", n, body)
 	}
-	if n := strings.Count(body, "<pre class=\"cmd-body hidden\""); n != len(wantHarnessCmds)-1 {
-		t.Errorf("%d hidden command blocks, want %d in:\n%s", n, len(wantHarnessCmds)-1, body)
+	if !strings.Contains(body, "<span id=\"pick-label\">a generic harness</span>") {
+		t.Errorf("the combobox face does not open on the generic row in:\n%s", body)
 	}
-	if n := strings.Count(body, "aria-pressed=\"true\""); n != 1 {
-		t.Errorf("%d pressed tabs, want 1 in:\n%s", n, body)
-	}
-	if n := strings.Count(body, "aria-pressed=\"false\""); n != len(wantHarnessCmds)-1 {
-		t.Errorf("%d unpressed tabs, want %d in:\n%s", n, len(wantHarnessCmds)-1, body)
+	if !strings.Contains(body, "<span class=\"path\" id=\"cmd-path\">"+wantHarnessPaths[0]+"</span>") {
+		t.Errorf("the path line does not open on %q in:\n%s", wantHarnessPaths[0], body)
 	}
 	if strings.Contains(visible, "--dest") {
 		t.Errorf("the default command carries --dest: %q", visible)
 	}
 }
 
-// The two sentences that replaced the old --dest paragraph: the default tab names the shared
-// folder, and the project note names the repo-folder form of the same pipe.
+// The copy set the mockup approved: the title and h1, the GitHub tagline line, the section
+// heading, the picker lead-in, and the command lead-in, plus the install-path line. What the
+// redesign deleted stays deleted: the old wordmark h1, the GitHub-links paragraph, the hosted
+// docs section, and the tab-era prose.
 func TestRenderCarriesTheDefaultTabSentenceAndProjectNote(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Render(&buf, sampleData()); err != nil {
@@ -264,20 +343,29 @@ func TestRenderCarriesTheDefaultTabSentenceAndProjectNote(t *testing.T) {
 	body := buf.String()
 
 	for _, want := range []string{
-		"The first tab is the shared folder: with no <code>--dest</code> the installer writes to",
-		"<code>$HOME/.agents/skills/sandbin-preview</code>",
-		"also read <code>.agents/skills</code>",
-		"Claude Code reads <code>.claude/skills</code>",
-		"the current project instead",
-		"<code>| bash -s -- --dest .agents/skills</code>",
+		"<title>This is a Sandbin instance</title>",
+		"<h1 id=\"this-is-a-sandbin-instance\">This is a Sandbin instance</h1>",
+		"Learn more about Sandbin on <a href=\"https://github.com/yookoala/sandbin\">GitHub</a>",
+		"<h2 id=\"tell-your-agent-to-use-this\">Tell Your Agent to use This</h2>",
+		"<p>Tell me what harness you are using:</p>",
+		"<div class=\"pick-line\">I use <span class=\"pick\" id=\"pick\">",
+		"<p>Run this command in your terminal:</p>",
+		"Skill Install Path: <span class=\"path\" id=\"cmd-path\">",
+		"aria-label=\"Which harness you use\"",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in:\n%s", want, body)
 		}
 	}
-	// The paragraph the tabs replaced is gone, and the tabs only switch which command is
-	// visible: every command stays plain selectable text.
 	for _, gone := range []string{
+		"<h1 id=\"sandbin\">Sandbin</h1>",
+		"<h2 id=\"give-the-skill-to-your-agent\">",
+		"<h2 id=\"the-hosted-docs\">The hosted docs",
+		"the usage docs on GitHub",
+		"The first tab is the shared folder",
+		"also read <code>.agents/skills</code>",
+		"the current project instead",
+		"<code>| bash -s -- --dest .agents/skills</code>",
 		"initializes the current directory by asking a single question, the API key",
 		"hand the installer a destination",
 		"<script src=",
@@ -289,46 +377,85 @@ func TestRenderCarriesTheDefaultTabSentenceAndProjectNote(t *testing.T) {
 	}
 }
 
-// The tab row and the command blocks both come from the slice the handler hands over: a
-// different list renders a different page, so the markup cannot drift from the table.
+// The island and the initial widget both come from the slice the handler hands over: a
+// different list renders a different page, and the command shown server-side escapes its
+// quotes as &quot; so the attribute survives.
 func TestRenderTabsFollowTheHarnessSlice(t *testing.T) {
 	var buf bytes.Buffer
 	d := sampleData()
 	d.Harnesses = []Harness{
-		{Label: "Agents", Cmd: "curl -fsSL " + baseToken + "/skills/sandbin-preview/install.sh | bash"},
-		{Label: "Odd One", Cmd: "curl -fsSL " + baseToken + "/skills/sandbin-preview/install.sh | bash -s -- --dest \"$HOME/.odd/skills\""},
+		{Label: "Odd One", Cmd: installCmd + " -s -- --dest \"$HOME/.odd/skills\"", Path: "$HOME/.odd/skills/sandbin-preview"},
+		{Label: "Plain Row", Cmd: installCmd, Path: "$HOME/plain/sandbin-preview"},
 	}
 	if err := Render(&buf, d); err != nil {
 		t.Fatalf("Render(two harnesses): %v", err)
 	}
 	body := buf.String()
 
-	if n := strings.Count(body, "class=\"tab\""); n != 2 {
-		t.Errorf("%d tab buttons, want 2 in:\n%s", n, body)
+	rows := parseIsland(t, body)
+	if len(rows) != 2 {
+		t.Fatalf("the data island carries %d rows, want 2", len(rows))
 	}
-	if n := strings.Count(body, "<pre class=\"cmd-body"); n != 2 {
-		t.Errorf("%d command blocks, want 2 in:\n%s", n, body)
+	if rows[0].Cmd != "curl -fsSL https://preview.example.org:8443/skills/sandbin-preview/install.sh | bash -s -- --dest \"$HOME/.odd/skills\"" {
+		t.Errorf("island row 0 cmd = %q, want the quoted --dest form", rows[0].Cmd)
+	}
+	if rows[1].Label != "Plain Row" {
+		t.Errorf("island row 1 label = %q, want %q", rows[1].Label, "Plain Row")
 	}
 	for _, want := range []string{
-		">Agents</button>",
-		">Odd One</button>",
-		"<pre class=\"cmd-body hidden\" id=\"cmd-1\">curl -fsSL https://preview.example.org:8443/skills/sandbin-preview/install.sh | bash -s -- --dest \"$HOME/.odd/skills\"</pre>",
+		"value=\"curl -fsSL https://preview.example.org:8443/skills/sandbin-preview/install.sh | bash -s -- --dest &quot;$HOME/.odd/skills&quot;\"",
+		"<span id=\"pick-label\">Odd One</span>",
+		"<span class=\"path\" id=\"cmd-path\">$HOME/.odd/skills/sandbin-preview</span>",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in:\n%s", want, body)
 		}
 	}
-	// What a slice cannot bring: the rows of the default table are gone and no token survives.
-	// The sentences front.html carries itself stay, because they are the page's own prose and
-	// not derived from the slice.
-	for _, gone := range []string{"Gemini CLI", "Windsurf", "{{", "}}"} {
+	// What a slice cannot bring: the rows of the default table are gone and no action token
+	// survives. The sentences front.html carries itself stay, because they are the page's own
+	// prose and not derived from the slice.
+	for _, gone := range []string{"Gemini CLI", "Windsurf", "{{"} {
 		if strings.Contains(body, gone) {
 			t.Errorf("the two-row render still carries %q in:\n%s", gone, body)
 		}
 	}
 }
 
-// With the default list the page is finished markup: no template token of any kind survives,
+// A hostile Base must stay inside the island as data: json.Marshal escapes < and >, so a
+// Base carrying </script> lands as \u003c/script\u003e and can never close the script element
+// it is written into. (A base that hostile is never produced by cmd/sandbin's frontBase,
+// which falls back to the placeholder — pinned in the handlers tests — but the island keeps
+// the escape even for a package caller that hands Render one directly.)
+func TestHostileBaseStaysInsideTheJSONIsland(t *testing.T) {
+	hostile := "https://evil.example.org</script><script>alert(1)</script>"
+	var buf bytes.Buffer
+	d := sampleData()
+	d.Base = hostile
+	if err := Render(&buf, d); err != nil {
+		t.Fatalf("Render(hostile base): %v", err)
+	}
+	body := buf.String()
+
+	island := harnessIsland(t, body)
+	// The island's own text carries no raw closer or opener: every < and > of the hostile
+	// base lands JSON-escaped inside it.
+	if strings.Contains(island, "</script>") || strings.Contains(island, "<script") {
+		t.Errorf("the hostile base broke out of the island as raw markup:\n%s", island)
+	}
+	if !strings.Contains(island, "https://evil.example.org\\u003c/script\\u003e") {
+		t.Errorf("the hostile base did not land JSON-escaped in the island:\n%s", island)
+	}
+	// A JSON.parse sees the hostile base whole, exactly as given — escaped, not filtered.
+	rows := parseIsland(t, body)
+	if len(rows) != len(wantHarnessCmds) {
+		t.Fatalf("the hostile render carries %d island rows, want %d", len(rows), len(wantHarnessCmds))
+	}
+	if want := "curl -fsSL " + hostile + "/skills/sandbin-preview/install.sh | bash"; rows[0].Cmd != want {
+		t.Errorf("island row 0 cmd = %q, want the hostile base filled whole", rows[0].Cmd)
+	}
+}
+
+// With the default list the page is finished markup: no action token of any kind survives,
 // and no command names a path bash would hand over literally.
 func TestRenderWithDefaultsLeavesNoTokensOrTildes(t *testing.T) {
 	var buf bytes.Buffer
@@ -337,12 +464,14 @@ func TestRenderWithDefaultsLeavesNoTokensOrTildes(t *testing.T) {
 	}
 	body := buf.String()
 
-	for _, gone := range []string{"{{", "}}", "~/", "baseToken"} {
+	for _, gone := range []string{"{{", "~/", "baseToken"} {
 		if strings.Contains(body, gone) {
 			t.Errorf("the rendered page carries %q in:\n%s", gone, body)
 		}
 	}
-	if n := strings.Count(body, "\"$HOME/"); n != len(wantHarnessCmds)-1 {
+	// The island spells each --dest destination as an escaped quote before $HOME, and the
+	// default row's command — the only one also baked into the widget's value — has none.
+	if n := strings.Count(body, "--dest \\\"$HOME/"); n != len(wantHarnessCmds)-1 {
 		t.Errorf("%d quoted $HOME destinations, want %d in:\n%s", n, len(wantHarnessCmds)-1, body)
 	}
 }
@@ -373,42 +502,36 @@ func TestRenderWithEmptyFields(t *testing.T) {
 	if !bytes.Equal(first.Bytes(), second.Bytes()) {
 		t.Errorf("two empty renders differ:\nfirst:\n%s\nsecond:\n%s", body, second.String())
 	}
-	for _, gone := range []string{"{{", "}}", "<nil>"} {
+	for _, gone := range []string{"{{", "<nil>"} {
 		if strings.Contains(body, gone) {
 			t.Errorf("empty render left %q in the page:\n%s", gone, body)
 		}
 	}
 	// The static page is still the static page: its markup and script are untouched by the
-	// fields being empty, and an empty harness list simply renders no tabs.
+	// fields being empty, and an empty harness list simply renders an empty island.
 	for _, want := range []string{
 		"<!doctype html>",
 		"<html lang=\"en\">",
-		"<title>Sandbin</title>",
-		"<h1 id=\"sandbin\">Sandbin</h1>",
+		"<title>This is a Sandbin instance</title>",
+		"<h1 id=\"this-is-a-sandbin-instance\">This is a Sandbin instance</h1>",
 		"<header class=\"page-head\">",
-		"<nav><a href=\"/docs\">docs</a>",
+		"<nav class=\"icon-nav\">",
+		"<a class=\"icon-link\" href=\"/docs\"",
+		"function sandbinApply(h) {",
+		"function sandbinHarnessOrder(q) {",
 		"function sandbinCopyInstall(button) {",
-		"function sandbinSelectTab(button) {",
+		"var sandbinPick = { current: SANDBIN_HARNESSES[0], order: SANDBIN_HARNESSES.slice(), hl: 0 };",
 		"</body>\n</html>\n",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("empty render missing %q in:\n%s", want, body)
 		}
 	}
-	if n := strings.Count(body, "<pre class=\"cmd-body"); n != 0 {
-		t.Errorf("an empty harness list rendered %d command blocks, want 0:\n%s", n, body)
+	if island := harnessIsland(t, body); island != "[]" {
+		t.Errorf("an empty harness list rendered island %q, want \"[]\"\n", island)
 	}
 	// An empty BrandCSS leaves the template's own newline between the tags.
 	if n := strings.Count(body, "<style>\n\n</style>"); n != 1 {
 		t.Errorf("empty render has %d empty <style> pairs, want 1:\n%s", n, body)
 	}
-}
-
-// hiddenSuffix spells out what the template composes for a block of the given index, so the
-// pins above are plain strings rather than a second template.
-func hiddenSuffix(i int) string {
-	if i == 0 {
-		return ""
-	}
-	return " hidden"
 }
