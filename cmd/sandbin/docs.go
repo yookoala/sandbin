@@ -11,6 +11,7 @@ import (
 	mdhtml "github.com/gomarkdown/markdown/html"
 	"github.com/gomarkdown/markdown/parser"
 	"github.com/yookoala/sandbin"
+	"github.com/yookoala/sandbin/internal/version"
 )
 
 // The usage docs the server hosts under /docs come from the module-root embeds in skill.go
@@ -257,12 +258,17 @@ func rewriteDocLink(dest string) string {
 
 // brandCSS is the one branding style the docs shell and the landing page share. The names
 // here never borrow the logo's own brand-* class names: its <style> is inlined on the same
-// page, and the two must not reach each other. The icon rules at the end style the icon nav
+// page, and the two must not reach each other. The body rule makes every hosted page a flex
+// column at least as tall as the viewport, main takes the slack, and .site-footer is the
+// powered-by line both page families end with. The icon rules at the end style the icon nav
 // every docs page and the landing carry; the plain .page-head nav a margin rule stays for
 // any text nav, overridden for the icon nav.
 const brandCSS = `:root{--sandbin-purple:#4E1680;--sandbin-amber:#EA9B25;--sandbin-canvas:#F8F7F4}
 body{max-width:44rem;margin:0 auto;padding:1.25rem 1rem 3rem;background:#F8F7F4;color:#222;
-font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.55}
+font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.55;
+display:flex;flex-direction:column;box-sizing:border-box;min-height:100vh}
+main{flex:1 0 auto}
+.site-footer{margin-top:auto;padding-top:1.2rem;border-top:1px solid #e3ddd3;color:#666;font-size:0.85rem}
 h1,h2,h3,h4,h5,h6{font-family: 'Poetsen One', sans-serif;color:#4E1680;line-height:1.2}
 h1{font-size:1.9rem;margin:0 0 0.4em}
 h2{font-size:1.35rem;margin:1.6em 0 0.4em}
@@ -308,7 +314,8 @@ func logoBlock(class string) string {
 }
 
 // docShell wraps one rendered body in the branded page: the logo, the icon nav — home, docs,
-// and the fixed GitHub door — then the body.
+// and the fixed GitHub door — then the body inside a <main> that fills the viewport, then the
+// powered-by footer naming this build's version.
 func docShell(title, bodyHTML string) string {
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n<html lang=\"en\">\n<head>\n")
@@ -318,7 +325,10 @@ func docShell(title, bodyHTML string) string {
 	b.WriteString("<style>\n" + brandCSS + "</style>\n")
 	b.WriteString("</head>\n<body>\n")
 	b.WriteString(docHead())
+	b.WriteString("<main>\n")
 	b.WriteString(bodyHTML)
+	b.WriteString("</main>\n")
+	b.WriteString("<footer class=\"site-footer\">Powered by Sandbin | version: " + version.String() + "</footer>\n")
 	b.WriteString("</body>\n</html>\n")
 	return b.String()
 }

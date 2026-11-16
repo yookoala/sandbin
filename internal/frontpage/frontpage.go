@@ -2,7 +2,8 @@
 // page is one embedded text/template, parsed once at package init: the wordmark, the copy, the
 // icon nav, the harness combobox and the command widget with its copy icon and Copied flash are
 // static markup in front.html, and the values that vary — the branding style the docs shell
-// shares, the embedded wordmark markup, and the harness table — arrive as Data.
+// shares, the embedded wordmark markup, the version the footer names, and the harness table —
+// arrive as Data.
 //
 // The harness commands are page content, so they live here as data rather than as markup:
 // DefaultHarnesses is the table, and each command names the same {{.Base}} token the page
@@ -32,8 +33,9 @@ import (
 
 // frontHTML is the landing page's markup: {{.BrandCSS}} inside the <style>, {{.Logo}} inside
 // its hero-sized wrapper in the header, {{.DefaultLabel}}, {{.DefaultCmd}} and {{.DefaultPath}}
-// in the combobox face, the command widget's initial value and the install-path line, and
-// {{.HarnessJSON}} inside the JSON data island the picker script parses.
+// in the combobox face, the command widget's initial value and the install-path line,
+// {{.Version}} in the powered-by footer, and {{.HarnessJSON}} inside the JSON data island the
+// picker script parses.
 //
 //go:embed front.html
 var frontHTML string
@@ -85,13 +87,15 @@ func DefaultHarnesses() []Harness {
 
 // Data is what the page is assembled from. Base is the example prefix implied by the request
 // ("https://host" or the "https://this.host" placeholder for an odd Host); Logo the embedded
-// wordmark markup; BrandCSS the branding style the docs shell also uses; Harnesses the harness
-// table, which cmd/sandbin supplies as DefaultHarnesses() and a test may replace with its own
-// rows.
+// wordmark markup; BrandCSS the branding style the docs shell also uses; Version the version
+// string the footer names, which cmd/sandbin supplies from internal/version; Harnesses the
+// harness table, which cmd/sandbin supplies as DefaultHarnesses() and a test may replace with
+// its own rows.
 type Data struct {
 	Base      string
 	Logo      string
 	BrandCSS  string
+	Version   string
 	Harnesses []Harness
 }
 

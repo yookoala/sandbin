@@ -54,6 +54,7 @@ pointer-events:none;opacity:0}
 </nav>
 </header>
 
+<main>
 <h1 id="this-is-a-sandbin-instance">This is a Sandbin instance</h1>
 <p class="tagline">A PUT/GET preview server for CLI agents in a sandbox: submit HTML, ANSI and
 prototype files, and hand a human plain preview URLs.</p>
@@ -76,6 +77,8 @@ onclick="sandbinCopyInstall(this)"><svg viewBox="0 0 24 24" fill="none" stroke="
 <span class="cmd-flash" id="cmd-flash" aria-hidden="true">Copied</span>
 </div>
 <p class="cmd-target">Skill Install Path: <span class="path" id="cmd-path">{{.DefaultPath}}</span></p>
+</main>
+<footer class="site-footer">Powered by Sandbin | version: {{.Version}}</footer>
 
 <script id="harness-data" type="application/json">{{.HarnessJSON}}</script>
 <script>

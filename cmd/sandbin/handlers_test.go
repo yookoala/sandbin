@@ -279,6 +279,10 @@ func TestFrontPageAtRoot(t *testing.T) {
 		"navigator.clipboard",
 		"document.execCommand(\"copy\")",
 		"href=\"https://github.com/yookoala/sandbin\"",
+		// The page fills the viewport and ends with the powered-by footer; only the prefix
+		// is pinned — the version value belongs to the build.
+		"<main>",
+		"Powered by Sandbin | version:",
 		// The nav GitHub door: the repo root opened in a new tab. The tagline link above
 		// stays same-tab.
 		"<a class=\"icon-link\" href=\"https://github.com/yookoala/sandbin\" target=\"_blank\" rel=\"noopener\"",

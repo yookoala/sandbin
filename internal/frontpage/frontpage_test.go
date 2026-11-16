@@ -16,12 +16,14 @@ const (
 )
 
 // sampleData is one ordinary render: a https base with a port, as frontBase answers behind a
-// TLS socket or a trusted proxy, and the harness list the handler hands the page.
+// TLS socket or a trusted proxy, the harness list the handler hands the page, and a version
+// string standing in for the one renderFrontPage supplies from internal/version.
 func sampleData() Data {
 	return Data{
 		Base:      "https://preview.example.org:8443",
 		Logo:      sampleLogo,
 		BrandCSS:  sampleCSS,
+		Version:   "v9.9.9-test",
 		Harnesses: DefaultHarnesses(),
 	}
 }
@@ -134,10 +136,10 @@ func TestRenderFillsEveryField(t *testing.T) {
 		// Base lands inside the install commands, whole: the default row's line is the one the
 		// page has always carried.
 		"curl -fsSL https://preview.example.org:8443/skills/sandbin-preview/install.sh | bash",
-		// The header closes and the static body resumes: the page has always carried the
-		// header's own trailing newline on top of the newline that ended its line, which is
-		// one blank line between the two.
-		"</header>\n\n<h1 id=\"this-is-a-sandbin-instance\">This is a Sandbin instance</h1>",
+		// The header closes, the <main> wrapper opens, and the static body resumes: the page
+		// carries the header's own trailing newline on top of the newline that ended its
+		// line, which is one blank line between the header and the wrapper.
+		"</header>\n\n<main>\n<h1 id=\"this-is-a-sandbin-instance\">This is a Sandbin instance</h1>",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("Render missing %q in:\n%s", want, body)
@@ -170,6 +172,35 @@ func TestRenderPlacesTheLogoInItsHeroWrapper(t *testing.T) {
 	}
 	if end := strings.Index(body, "</div>"); end < 0 || end > header {
 		t.Errorf("the logo wrapper's </div> (offset %d) is not inside the <header> block (ends at %d)", end, header)
+	}
+}
+
+// The page fills the viewport and ends in the powered-by footer: the content is wrapped in a
+// single <main> between the header and the footer, the footer names the Version the handler
+// supplied, and the scripts stay last before </body>.
+func TestRenderCarriesThePoweredByFooter(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Render(&buf, sampleData()); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	body := buf.String()
+
+	footer := "</main>\n<footer class=\"site-footer\">Powered by Sandbin | version: v9.9.9-test</footer>"
+	if n := strings.Count(body, footer); n != 1 {
+		t.Errorf("%d footers, want 1 in:\n%s", n, body)
+	}
+	if n := strings.Count(body, "<main>"); n != 1 {
+		t.Errorf("<main> opened %d times, want 1 in:\n%s", n, body)
+	}
+	// The page reads: header, main, footer, then the scripts, then the closer.
+	order := []string{"</header>", "<main>", "</main>", "Powered by Sandbin | version:", islandOpen, "</body>"}
+	at := -1
+	for _, want := range order {
+		i := strings.Index(body[at+1:], want)
+		if i < 0 {
+			t.Fatalf("the page does not carry %q after offset %d in:\n%s", want, at, body)
+		}
+		at += i + 1
 	}
 }
 

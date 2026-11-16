@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/yookoala/sandbin"
+	"github.com/yookoala/sandbin/internal/version"
 )
 
 // wantDocPages are the ten hosted pages, named after the embedded usage files.
@@ -169,6 +170,40 @@ func TestDocsPagesCarryTheWordmarkInline(t *testing.T) {
 		}
 		if strings.Contains(body, "<img") {
 			t.Errorf("GET %s references an <img> logo:\n%s", name, body)
+		}
+	}
+}
+
+// TestDocsPagesFillTheViewportAndEndInFooter checks the shell layout every docs page carries:
+// the body is a flex column at least as tall as the viewport, the rendered body sits inside a
+// <main> that grows, and the page ends in the powered-by footer naming this build's version
+// before </body>.
+func TestDocsPagesFillTheViewportAndEndInFooter(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	footer := "</main>\n<footer class=\"site-footer\">Powered by Sandbin | version: " +
+		version.String() + "</footer>\n</body>\n</html>\n"
+	for _, p := range append([]string{"/docs"}, docPageHrefs()...) {
+		body := get(t, h, p).Body.String()
+		for _, want := range []string{
+			// The shared layout rules: body as a flex column whose whole box is at least as
+			// tall as the viewport (box-sizing keeps the padding inside that 100vh so the
+			// footer's bottom edge stays on-screen), main taking the slack, the footer pushed
+			// to the bottom edge.
+			"display:flex;flex-direction:column;box-sizing:border-box;min-height:100vh",
+			"main{flex:1 0 auto}",
+			".site-footer{margin-top:auto;padding-top:1.2rem;border-top:1px solid #e3ddd3;color:#666;font-size:0.85rem}",
+			"</header>\n<main>\n",
+			footer,
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("GET %s misses %q in:\n%s", p, want, body)
+			}
+		}
+		if n := strings.Count(body, "<main>"); n != 1 {
+			t.Errorf("GET %s opens <main> %d times, want 1", p, n)
+		}
+		if n := strings.Count(body, "<footer class=\"site-footer\">"); n != 1 {
+			t.Errorf("GET %s carries the footer %d times, want 1", p, n)
 		}
 	}
 }
