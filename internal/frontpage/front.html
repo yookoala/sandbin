@@ -39,7 +39,6 @@ background:rgba(78,22,128,0.88);color:#fff;border-radius:4px;font-weight:600;let
 pointer-events:none;opacity:0}
 @keyframes sandbin-flash{0%{opacity:0.95}45%{opacity:0.95}100%{opacity:0}}
 .cmd-flash.show{animation:sandbin-flash 2.2s ease-out forwards}
-.cmd-target{margin:0.55em 0 0;color:#555;font-size:0.95rem}
 @keyframes sandbin-swap{0%{opacity:0;transform:translateY(-5px)}100%{opacity:1;transform:none}}
 .cmd-input.swap,.path-input.swap,.pick-face.swap{animation:sandbin-swap 0.28s ease-out}
 .path-input{padding-right:0.9em}
@@ -76,7 +75,7 @@ aria-label="Install command" value="{{.DefaultCmd}}">
 onclick="sandbinCopyInstall(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="13" height="13" x="9" y="9" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
 <span class="cmd-flash" id="cmd-flash" aria-hidden="true">Copied</span>
 </div>
-<p class="cmd-target">Skill Install Path:</p>
+<p>Skill Install Path:</p>
 <div class="cmd"><input class="cmd-input path-input" id="cmd-path" type="text" readonly spellcheck="false" autocomplete="off" aria-label="Skill install path" value="{{.DefaultPath}}"></div>
 </main>
 <footer class="site-footer">Powered by Sandbin | version: {{.Version}}</footer>

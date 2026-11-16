@@ -381,7 +381,7 @@ func TestRenderCarriesTheApprovedCopySet(t *testing.T) {
 		"<p>Tell me what harness you are using:</p>",
 		"<div class=\"pick-line\">I use <span class=\"pick\" id=\"pick\">",
 		"<p>Run this command in your terminal:</p>",
-		"<p class=\"cmd-target\">Skill Install Path:</p>",
+		"<p>Skill Install Path:</p>",
 		"<input class=\"cmd-input path-input\" id=\"cmd-path\"",
 		"aria-label=\"Which harness you use\"",
 		"aria-label=\"Install command\"",

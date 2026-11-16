@@ -267,7 +267,7 @@ func TestFrontPageAtRoot(t *testing.T) {
 		"class=\"cmd-copy\"",
 		"class=\"cmd-flash\"",
 		">Copied</span>",
-		"<p class=\"cmd-target\">Skill Install Path:</p>",
+		"<p>Skill Install Path:</p>",
 		"<input class=\"cmd-input path-input\" id=\"cmd-path\" type=\"text\" readonly spellcheck=\"false\" autocomplete=\"off\" aria-label=\"Skill install path\" value=\"$HOME/.agents/skills/sandbin-preview\">",
 		// The combobox markup and its picker.
 		"<nav class=\"icon-nav\">",
