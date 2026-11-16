@@ -144,6 +144,47 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+func TestRobotsTxt(t *testing.T) {
+	h := newTestServer(t, "test-key")
+
+	// No API key is sent: /robots.txt must answer anyway, since a crawler has none.
+	rec := get(t, h, "/robots.txt")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /robots.txt = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	const wantBody = "User-agent: *\nDisallow: /\n"
+	if got := rec.Body.String(); got != wantBody {
+		t.Errorf("GET /robots.txt body = %q, want %q", got, wantBody)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", ct)
+	}
+
+	req := httptest.NewRequest(http.MethodHead, "/robots.txt", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("HEAD /robots.txt = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/robots.txt", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /robots.txt = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+
+	// The branch must not shadow a real bin: a full round trip still works.
+	base := createTestBin(t, h, "test-key")
+	if rec := put(t, h, base+"page.html", "test-key", "<h1>Hello</h1>"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT after the robots.txt branch = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if rec := get(t, h, base+"page.html"); rec.Code != http.StatusOK || rec.Body.String() != "<h1>Hello</h1>" {
+		t.Errorf("GET after the robots.txt branch = %d, body %q", rec.Code, rec.Body.String())
+	}
+}
+
 func TestFrontPageAtRoot(t *testing.T) {
 	h := newTestServer(t, "test-key")
 

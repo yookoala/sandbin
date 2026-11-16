@@ -21,6 +21,7 @@ import (
 
 	"github.com/yookoala/sandbin"
 	"github.com/yookoala/sandbin/internal/frontpage"
+	"github.com/yookoala/sandbin/internal/robots"
 	"github.com/yookoala/sandbin/internal/version"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -76,6 +77,18 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		io.WriteString(w, "ok")
+		return
+	}
+
+	// "robots.txt" holds dots, so it can never name a hex bin hash, same reasoning as healthz.
+	// It asks crawlers to index nothing on this instance; it needs no key and charges nothing.
+	if r.URL.Path == "/robots.txt" {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		io.WriteString(w, robots.Text)
 		return
 	}
 

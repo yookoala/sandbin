@@ -12,7 +12,9 @@ check a key before saving it (see [Point sandbin-client at a server](sandbin-cli
 answers the agent skill rendered with the address the request arrived at as `200` `text/markdown`, and `GET /skills/sandbin-preview/install.sh`
 answers the one-line installer as `200` `text/plain` with its download address filled in to the
 one the request arrived at; both need no key and charge nothing, and every other method on those
-paths answers `405` (see [Give the skill to your agent](sandbin-client-skill.md)).
+paths answers `405` (see [Give the skill to your agent](sandbin-client-skill.md)). A `GET /robots.txt`
+answers a two-line file that asks search engines not to crawl anything on the instance; it needs
+no key, charges nothing, and every other method on that path answers `405`.
 
 Create a bin, then PUT files under it. `$BIN` already ends in `/`, so write `${BIN}name` and
 not `$BIN/name`, which asks for a `//` path the server rejects:
