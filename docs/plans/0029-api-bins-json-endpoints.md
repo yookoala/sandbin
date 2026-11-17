@@ -1,5 +1,21 @@
 # JSON bin API under /api/bins — Implementation Plan
 
+Status: implemented and closed 2026-11-17. Fifteen commits, `79cef4f` (store) through `4c8f91e`
+(final fix wave): Tasks 1–9 at `79cef4f`, `814d010`, `b2be8c0`+`1219bb3`, `dc0537b`,
+`7aa0ee3`+`54eacbe`, `8d678ab`, `b120bd0`, `9bdda52`, `6a8b1db`+`74db0fb`, with the plan-text
+correction `2b70152` and the verification record `b26f568`. Spec:
+`docs/decisions/0029-api-bins-json-endpoints.md`. Review outcome: every task passed an
+independent task-scoped review — Tasks 3 and 9 needed one fix round each (Task 3: strict JSON
+object bodies; Task 9: two stale blanket "GET is never charged" claims fixed), both re-reviewed
+clean. The whole-branch review (`1184046..b26f568`) found no Critical issues, one Important
+(trailing `]`/`}` accepted against the docs' malformed-JSON-is-400 rule) and one cursor-separator
+laxity; the single fix wave `4c8f91e` closed both, re-reviewed with all findings ADDRESSED and no
+new breakage. Controller rulings R1–R6 all honored; no test deleted (retired-shape tests
+re-pointed one-for-one); final gates green at `4c8f91e` with `cmd/sandbin` 242,
+`cmd/sandbin-client` 111, `internal/frontpage` 17, `internal/robots` 2, `internal/version` 6.
+Carried Minors accepted with rationale in the SDD ledger (bcrypt NUL symmetry, historical-plan
+phrasing out of scope, fake-vs-real fidelity gaps, style duplications).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace sandbin's header-driven write surface with a RESTful-compatibility JSON API under `/api/bins` (create, inspect, patch with password rotation, paged list, bin delete), move `verify-key`/`healthz` to `POST /api/key`/`GET /api/health`, answer JSON from file PUT, retire every `X-Bin-*` header and `X-Extract`, and carry the client, skill, deploy probes, and hosted docs in the same cut.
