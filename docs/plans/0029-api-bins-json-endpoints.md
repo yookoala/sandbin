@@ -31,6 +31,7 @@
 - **Cursor integrity**: a malformed cursor is 400; bins created between two pages must not shift or repeat entries mid-walk. Pinned in Task 5.
 - **Gate and charge parity**: every write (old and new) plus `GET /api/bins` charges the IP lockout on a wrong API key; protected-bin Basic misses 401 and charge nothing; blocked IPs still read files and `GET /api/health`. Pinned in Tasks 2–6.
 - **Surface-shape rules**: unknown `/api/...` spellings and trailing-slash variants answer the plain `404 unknown bin`; `HEAD` on `/api` routes is `405` except `/api/health` (GET/HEAD allowed); `POST /` and `PATCH /{hash}/` (the retired spellings) 405. Pinned in Tasks 2 and 4.
+- Controller ruling on `/api` wording (settled with the partner after Task 2 shipped): `/api` and unknown `/api` spellings stay plain `404 unknown bin` — industry practice for a sub-namespace root is 404 (Stripe-style majority); endpoint discovery is served by the hosted docs pages, not a root index. No change; the plan's pin stands.
 
 ---
 
