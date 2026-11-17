@@ -18,9 +18,9 @@ import (
 var wantDocPages = []string{
 	"sandbin.html",
 	"sandbin-serve.html",
+	"sandbin-podman.html",
 	"sandbin-api.html",
 	"sandbin-ip-blocking.html",
-	"sandbin-podman.html",
 	"sandbin-client.html",
 	"sandbin-client-init.html",
 	"sandbin-client-upload.html",
@@ -33,7 +33,7 @@ var wantDocTitles = map[string]string{
 	"sandbin-serve.html":         "Running the server",
 	"sandbin-api.html":           "The HTTP API",
 	"sandbin-ip-blocking.html":   "IP Address Blocking",
-	"sandbin-podman.html":        "Run it with podman",
+	"sandbin-podman.html":        "Running with podman",
 	"sandbin-client.html":        "sandbin-client — usage documentation",
 	"sandbin-client-init.html":   "Building and Config",
 	"sandbin-client-upload.html": "Upload previews with sandbin-client",
@@ -454,6 +454,40 @@ func TestDocsServePageCarriesTheCoreSettings(t *testing.T) {
 	}
 	if strings.Contains(body, "id=\"what---version-reports\"") {
 		t.Error("the serve page still carries the What `--version` reports section")
+	}
+}
+
+// TestDocsPodmanPagePutsPublishedImageFirst pins the restructured podman page: its new title,
+// exactly the two decided H2 sections in the decided order — the published ghcr image first, the
+// source build second — the four H3 subsections under the source build, and the health-status
+// inspect command rendered down from the markdown's doubled-brace escape to podman's own single
+// brace pair, with the sentence that explains that escape still naming it.
+func TestDocsPodmanPagePutsPublishedImageFirst(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	body := get(t, h, "/docs/sandbin-podman.html").Body.String()
+	for _, want := range []string{
+		"<title>Running with podman</title>",
+		"<h1 id=\"running-with-podman\">Running with podman</h1>",
+		"ghcr.io/yookoala/sandbin:latest",
+		// The inspect command as the template pass leaves it: one brace pair, not the escape.
+		"podman inspect --format '{{.State.Health.Status}}' sandbin",
+		"doubled braces",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the podman page misses %q in:\n%s", want, body[:min(len(body), 400)])
+		}
+	}
+	// exactly the two decided H2 sections, in the decided order.
+	if got, want := strings.Join(docHeadingIDs(body, "2"), " "), "running-the-published-image building--running-from-source"; got != want {
+		t.Errorf("the podman page's h2 sections read %q, want %q in:\n%s", got, want, body)
+	}
+	// the four decided H3 subsections, all under the source-build section, in order.
+	if got, want := strings.Join(docHeadingIDs(body, "3"), " "), "download-the-source running health-check running-as-systemd-service"; got != want {
+		t.Errorf("the podman page's h3 sections read %q, want %q in:\n%s", got, want, body)
+	}
+	// the doubled-brace escape itself never reaches the reader.
+	if strings.Contains(body, "{{`{{`}}") {
+		t.Errorf("the podman page serves the doubled-brace escape instead of rendering it:\n%s", body)
 	}
 }
 

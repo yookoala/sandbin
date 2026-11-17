@@ -349,7 +349,7 @@ The liveness route answers `GET` and `HEAD` and every other method `405`.
 ### `GET` and `HEAD` — the liveness answer
 
 Answers `200` `text/plain` with `ok`. Unauthenticated on purpose for container health
-checks (see [Run it with podman](sandbin-podman.md)); it says nothing about bins.
+checks (see [Running with podman](sandbin-podman.md)); it says nothing about bins.
 
 ```sh
 curl {{ .Instance.URL }}/healthz

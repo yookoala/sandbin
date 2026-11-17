@@ -46,7 +46,7 @@ var docSets = []docSet{
 	{
 		title:   "sandbin: the server",
 		summary: "sandbin.html",
-		pages:   []string{"sandbin-serve.html", "sandbin-api.html", "sandbin-ip-blocking.html", "sandbin-podman.html"},
+		pages:   []string{"sandbin-serve.html", "sandbin-podman.html", "sandbin-api.html", "sandbin-ip-blocking.html"},
 	},
 	{
 		title:   "sandbin-client: the client",

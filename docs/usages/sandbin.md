@@ -9,9 +9,9 @@ hub at `/docs/`, this summary at `/docs/sandbin.html`, and each page below at it
 | Page | What it covers |
 |---|---|
 | [Running the server](sandbin-serve.md) | downloading the source, building, the `serve` subcommand, its core settings and their environment variables, startup refusals |
+| [Running with podman](sandbin-podman.md) | pulling and running the published `ghcr.io/yookoala/sandbin` image, building the image from a source checkout, ad-hoc run with volume/env file/health probe, the quadlet systemd service |
 | [The HTTP API](sandbin-api.md) | bins and curl semantics, the 301 bin-base redirect, bin passwords, title/description metadata, `DELETE`, the `404.html` fallback, status codes, archive uploads |
 | [IP Address Blocking](sandbin-ip-blocking.md) | why and how bad API keys block an address, which address a request charges, [Trusted proxies](sandbin-ip-blocking.md#trusted-proxies), the control socket, the `ip list|show|unblock|clear` family, the socket's own HTTP shape |
-| [Run it with podman](sandbin-podman.md) | image build, ad-hoc run with volume/env file/health probe, the quadlet systemd service |
 
 ## Beyond the API
 
