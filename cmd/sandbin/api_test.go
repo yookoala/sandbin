@@ -148,8 +148,8 @@ func TestAPIHealth(t *testing.T) {
 
 // TestAPIUnknownShapes keeps the /api surface to what it answers: a spelling it does not own —
 // trailing-slash variants included — is the plain 404 unknown bin, and a known path on a wrong
-// method is the plain 405. /api/bins answers POST and GET today; its DELETE belongs to Task 6,
-// so it is 405 here.
+// method is the plain 405. The collection /api/bins answers POST and GET only: its DELETE is
+// the 405 pinned here, while DELETE with a hash belongs to the apiBinPathRE spelling.
 func TestAPIUnknownShapes(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	hash := strings.Trim(createTestBin(t, s, "test-key"), "/")
@@ -1001,9 +1001,9 @@ func TestAPIPatchShapes(t *testing.T) {
 		t.Errorf("body = %q, want the unrecognized field message", got)
 	}
 
-	// A known bin path on a method the dispatch does not name is the plain 405 —
-	// DELETE stays one until Task 6 gives it its answer.
-	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodHead} {
+	// A known bin path on a method the dispatch does not name is the plain 405. DELETE is
+	// no longer one of these: TestAPIDeleteBinShapes owns its answer now.
+	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodHead} {
 		req := httptest.NewRequest(m, "/api/bins/"+hash, nil)
 		req.RemoteAddr = addr
 		rec := httptest.NewRecorder()
@@ -1019,6 +1019,225 @@ func TestAPIPatchShapes(t *testing.T) {
 	}
 	if files, err := s.store.ListFiles(hash); err != nil || len(files) != 0 {
 		t.Errorf("files after the refusals = %d (err %v), want none", len(files), err)
+	}
+}
+
+// deleteBinFrom DELETEs a path from a fixed socket address: an empty apiKey omits the header,
+// and a non-empty basicUser sends Basic auth with basicPassword. A DELETE carries no body.
+func deleteBinFrom(t *testing.T, h http.Handler, remoteAddr, path, apiKey, basicUser, basicPassword string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, path, nil)
+	if remoteAddr != "" {
+		req.RemoteAddr = remoteAddr
+	}
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
+	if basicUser != "" {
+		req.SetBasicAuth(basicUser, basicPassword)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestAPIDeleteBin is DELETE /api/bins/{hash} on an open bin: the API key, no Basic, and the
+// bin is gone — 204 with an empty body. Afterwards every surface says so: the bin's HTML base,
+// a path below it, and its inspect route all answer 404 unknown bin, and the bin no longer
+// appears in the GET /api/bins listing. The orphaned-empty-bin case — a bin with no files —
+// deletes just the same.
+func TestAPIDeleteBin(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+	const addr = "198.51.100.84:1234"
+
+	seed := map[string]string{
+		"notes.md":      "body of notes.md",
+		"drafts/one.md": "body of drafts/one.md",
+	}
+	for name, body := range seed {
+		if rec := put(t, s, base+name, "test-key", body); rec.Code != http.StatusCreated {
+			t.Fatalf("PUT %s = %d, want %d; body %q", name, rec.Code, http.StatusCreated, rec.Body.String())
+		}
+	}
+
+	rec := listFrom(t, s, addr, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/bins before the delete = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	listed := false
+	for _, b := range readListAnswer(t, rec).Bins {
+		if b.Bin == hash {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Fatalf("GET /api/bins does not yet name bin %s: %s", hash, rec.Body.String())
+	}
+
+	rec = deleteBinFrom(t, s, addr, "/api/bins/"+hash, "test-key", "", "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /api/bins/%s = %d, want %d; body %q", hash, rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "" {
+		t.Errorf("204 body = %q, want it empty", got)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "" {
+		t.Errorf("204 Content-Type = %q, want it unset", ct)
+	}
+
+	// Every face of the bin now says it is gone.
+	for _, p := range []string{base, base + "notes.md", base + "drafts/one.md", "/api/bins/" + hash} {
+		rec = get(t, s, p)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("after the delete, GET %s = %d, want %d; body %q", p, rec.Code, http.StatusNotFound, rec.Body.String())
+			continue
+		}
+		if rec.Body.String() != "unknown bin\n" {
+			t.Errorf("after the delete, GET %s body = %q, want the unknown bin message", p, rec.Body.String())
+		}
+	}
+
+	// The listing no longer names the bin.
+	rec = listFrom(t, s, addr, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/bins after the delete = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	answer := readListAnswer(t, rec)
+	for _, b := range answer.Bins {
+		if b.Bin == hash {
+			t.Errorf("the listing still names the deleted bin %s: %+v", hash, answer.Bins)
+		}
+	}
+
+	// The orphaned-empty-bin case: a bin with no files deletes just the same.
+	emptyHash := strings.Trim(createTestBin(t, s, "test-key"), "/")
+	if rec = deleteBinFrom(t, s, addr, "/api/bins/"+emptyHash, "test-key", "", ""); rec.Code != http.StatusNoContent {
+		t.Errorf("DELETE the empty bin = %d, want %d; body %q", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if _, found, err := s.store.GetBin(emptyHash); err != nil || found {
+		t.Errorf("empty bin after its delete: found=%v err=%v, want it gone", found, err)
+	}
+}
+
+// TestAPIDeleteBinProtected is DELETE's bin-password gate: a protected bin goes only to a
+// request carrying its current password. No Basic and wrong Basic both answer 401 with the
+// challenge, the bin survives each one intact, and no 401 charges the address — the API-key
+// lockout is not this gate. The right Basic deletes it with 204 and an empty body.
+func TestAPIDeleteBinProtected(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBinWithPassword(t, s, "sesame")
+	hash := strings.Trim(base, "/")
+	const addr = "198.51.100.85:1234"
+
+	rec := deleteBinFrom(t, s, addr, "/api/bins/"+hash, "test-key", "", "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("DELETE a protected bin without Basic = %d, want %d; body %q", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "bin password required\n" {
+		t.Errorf("401 body = %q, want the bin password required message", got)
+	}
+	if www := rec.Header().Get("WWW-Authenticate"); !strings.HasPrefix(www, "Basic") {
+		t.Errorf("WWW-Authenticate = %q, want a Basic challenge", www)
+	}
+	if _, found, err := s.store.GetBin(hash); err != nil || !found {
+		t.Fatalf("the bin after the no-Basic 401: found=%v err=%v, want it intact", found, err)
+	}
+
+	rec = deleteBinFrom(t, s, addr, "/api/bins/"+hash, "test-key", hash, "wrong")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("DELETE with the wrong Basic = %d, want %d; body %q", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "bin password required\n" {
+		t.Errorf("wrong-Basic 401 body = %q, want the bin password required message", got)
+	}
+	if _, found, err := s.store.GetBin(hash); err != nil || !found {
+		t.Fatalf("the bin after the wrong-Basic 401: found=%v err=%v, want it intact", found, err)
+	}
+
+	// Neither 401 touched the stored state: the key was right, and a bin-password 401
+	// records no failure.
+	if failures, ok := ipBlockRow(t, s.store, "198.51.100.85"); ok || failures != 0 {
+		t.Errorf("the 401s charged the address = failures %d, row present=%v; want 0 failures, no row", failures, ok)
+	}
+
+	rec = deleteBinFrom(t, s, addr, "/api/bins/"+hash, "test-key", hash, "sesame")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE with the right Basic = %d, want %d; body %q", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "" {
+		t.Errorf("204 body = %q, want it empty", got)
+	}
+	if _, found, err := s.store.GetBin(hash); err != nil || found {
+		t.Errorf("the bin after its delete: found=%v err=%v, want it gone", found, err)
+	}
+	if failures, ok := ipBlockRow(t, s.store, "198.51.100.85"); ok || failures != 0 {
+		t.Errorf("the protected DELETEs charged the address = failures %d, row present=%v; want 0 failures, no row", failures, ok)
+	}
+}
+
+// TestAPIDeleteBinShapes keeps the delete surface to its pinned spellings: the trailing-slash
+// variant and a hash the store does not hold are the plain 404 the dispatch answers before any
+// key or bin work, HEAD on the known path stays the plain 405, and a missing or wrong API key
+// is the 403 requireKey charges — before any bin lookup happens. The known bin took none of it.
+func TestAPIDeleteBinShapes(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+	const addr = "198.51.100.86:1234"
+
+	for _, p := range []string{"/api/bins/" + hash + "/", "/api/bins/deadbeef", "/api/bins/notahash"} {
+		rec := deleteBinFrom(t, s, addr, p, "test-key", "", "")
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("DELETE %s = %d, want %d; body %q", p, rec.Code, http.StatusNotFound, rec.Body.String())
+			continue
+		}
+		if rec.Body.String() != "unknown bin\n" {
+			t.Errorf("DELETE %s body = %q, want the unknown bin message", p, rec.Body.String())
+		}
+	}
+
+	// HEAD on the known path stays the plain 405.
+	req := httptest.NewRequest(http.MethodHead, "/api/bins/"+hash, nil)
+	req.RemoteAddr = addr
+	req.Header.Set("X-API-Key", "test-key")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != "method not allowed\n" {
+		t.Errorf("HEAD /api/bins/%s = %d, body %q; want 405 method not allowed", hash, rec.Code, rec.Body.String())
+	}
+
+	// None of those keyed refusals touched the stored state.
+	if failures, ok := ipBlockRow(t, s.store, "198.51.100.86"); ok || failures != 0 {
+		t.Errorf("the keyed 404s and 405 charged the address = failures %d, row present=%v; want 0 failures, no row", failures, ok)
+	}
+
+	// No key at all is the 403 requireKey charges, whatever the hash.
+	rec = deleteBinFrom(t, s, "198.51.100.87:1234", "/api/bins/"+hash, "", "", "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("DELETE with no key = %d, want %d; body %q", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "invalid API key\n" {
+		t.Errorf("no-key body = %q, want the invalid API key message", got)
+	}
+	if failures, dur := storedBlock(t, s, "198.51.100.87"); failures != 1 || dur != blockStep {
+		t.Errorf("after a keyless DELETE = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
+	}
+
+	// A wrong key charges exactly the same, even on an unknown hash: the key guard runs
+	// before the lookup.
+	rec = deleteBinFrom(t, s, "198.51.100.88:1234", "/api/bins/deadbeef", "wrong", "", "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("DELETE with a wrong key = %d, want %d; body %q", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if failures, dur := storedBlock(t, s, "198.51.100.88"); failures != 1 || dur != blockStep {
+		t.Errorf("after a wrong-key DELETE = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
+	}
+
+	// The known bin took none of this.
+	if _, found, err := s.store.GetBin(hash); err != nil || !found {
+		t.Errorf("the bin after the refusals: found=%v err=%v, want it untouched", found, err)
 	}
 }
 

@@ -23,10 +23,10 @@ const maxJSONBodyBytes = 64 << 10
 // apiRoutes dispatches everything under /api. "api" is no eight-hex hash, so the prefix can
 // never name or shadow a bin, same reasoning as the static routes below it. It answers POST
 // /api/key, GET|HEAD /api/health, POST|GET /api/bins — the GET is the key-gated paged listing
-// — and, on the one spelling apiBinPathRE names, GET and PATCH /api/bins/{hash}. DELETE on
-// that path is the plain 405 until Task 6 gives it its answer. A spelling the dispatch does
-// not name — trailing-slash variants and non-hash segments under /api/bins/ included —
-// is the plain 404 unknown bin, and a known path on a wrong method is the plain 405.
+// — and, on the one spelling apiBinPathRE names, GET, PATCH and DELETE /api/bins/{hash}. A
+// spelling the dispatch does not name — trailing-slash variants and non-hash segments under
+// /api/bins/ included — is the plain 404 unknown bin, and a known path on a wrong method —
+// HEAD on the per-bin spelling, HEAD and DELETE on the collection — is the plain 405.
 func (s *server) apiRoutes(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/api/key":
@@ -48,7 +48,7 @@ func (s *server) apiRoutes(w http.ResponseWriter, r *http.Request) {
 		case http.MethodGet:
 			s.apiListBins(w, r)
 		default:
-			// HEAD, and DELETE until Task 6 gives it its answer.
+			// The collection answers POST and GET only: HEAD and DELETE are the plain 405.
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	default:
@@ -58,6 +58,8 @@ func (s *server) apiRoutes(w http.ResponseWriter, r *http.Request) {
 				s.apiInspectBin(w, r, m[1])
 			case http.MethodPatch:
 				s.apiPatchBin(w, r, m[1])
+			case http.MethodDelete:
+				s.apiDeleteBin(w, r, m[1])
 			default:
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			}
@@ -534,4 +536,42 @@ func (s *server) apiPatchBin(w http.ResponseWriter, r *http.Request, hash string
 		log.Printf("encode the answer of bin %q: %v", hash, err)
 		http.Error(w, "could not answer the bin", http.StatusInternalServerError)
 	}
+}
+
+// apiDeleteBin removes a bin and every file in it. The order is pinned: key, bin lookup, and
+// only then the bin's own password gate, so a protected bin goes only to a request carrying
+// its current password — and a 401 charges nothing while the bin survives. The body is not
+// read at all: a DELETE has nothing to say. The answer is 204 with an empty body, because
+// there is nothing left to report about a bin that is gone.
+func (s *server) apiDeleteBin(w http.ResponseWriter, r *http.Request, hash string) {
+	if !s.requireKey(w, r) {
+		return
+	}
+
+	bin, found, err := s.store.GetBin(hash)
+	if err != nil {
+		log.Printf("get bin %q: %v", hash, err)
+		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
+	}
+	if !found {
+		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
+	}
+	if !s.binAuthorized(w, r, bin) {
+		return
+	}
+
+	deleted, err := s.store.DeleteBin(hash)
+	if err != nil {
+		log.Printf("delete bin %q: %v", hash, err)
+		http.Error(w, "could not delete bin", http.StatusInternalServerError)
+		return
+	}
+	if !deleted {
+		// The bin went away between the read and the delete.
+		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
