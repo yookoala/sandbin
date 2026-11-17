@@ -9,3 +9,7 @@
 # local settings / database file generated in development
 .sandbin.yaml
 *.db
+
+# scratch of `make openapi`: apispec's raw output and jq's corrected output before the mv
+/openapi.raw.tmp.json
+/openapi.tmp.json
