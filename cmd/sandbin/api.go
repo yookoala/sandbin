@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"log"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -20,10 +22,10 @@ const maxJSONBodyBytes = 64 << 10
 
 // apiRoutes dispatches everything under /api. "api" is no eight-hex hash, so the prefix can
 // never name or shadow a bin, same reasoning as the static routes below it. It answers POST
-// /api/key, GET|HEAD /api/health, POST /api/bins and, on the one spelling apiBinPathRE names,
-// GET and PATCH /api/bins/{hash}. DELETE on that path is the plain 405 until Task 6 gives it
-// its answer, and GET on the /api/bins collection belongs to Task 5. A spelling the dispatch
-// does not name — trailing-slash variants and non-hash segments under /api/bins/ included —
+// /api/key, GET|HEAD /api/health, POST|GET /api/bins — the GET is the key-gated paged listing
+// — and, on the one spelling apiBinPathRE names, GET and PATCH /api/bins/{hash}. DELETE on
+// that path is the plain 405 until Task 6 gives it its answer. A spelling the dispatch does
+// not name — trailing-slash variants and non-hash segments under /api/bins/ included —
 // is the plain 404 unknown bin, and a known path on a wrong method is the plain 405.
 func (s *server) apiRoutes(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
@@ -40,11 +42,15 @@ func (s *server) apiRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 		s.apiHealth(w, r)
 	case "/api/bins":
-		if r.Method != http.MethodPost {
+		switch r.Method {
+		case http.MethodPost:
+			s.apiCreateBin(w, r)
+		case http.MethodGet:
+			s.apiListBins(w, r)
+		default:
+			// HEAD, and DELETE until Task 6 gives it its answer.
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
 		}
-		s.apiCreateBin(w, r)
 	default:
 		if m := apiBinPathRE.FindStringSubmatch(r.URL.Path); m != nil {
 			switch r.Method {
@@ -271,6 +277,100 @@ func (s *server) apiCreateBin(w http.ResponseWriter, r *http.Request) {
 	if err := writeJSON(w, http.StatusCreated, binToJSON(bin)); err != nil {
 		log.Printf("encode the answer of bin %q: %v", hash, err)
 		http.Error(w, "could not answer the bin", http.StatusInternalServerError)
+	}
+}
+
+// The paging limits GET /api/bins serves: a page nobody sizes holds 30 bins, and no request
+// gets more than 100, however big its limit is.
+const (
+	defaultListLimit = 30
+	maxListLimit     = 100
+)
+
+// binListJSON is the GET /api/bins answer: the page of bin objects and, only when the store's
+// probe found a further row, the cursor that resumes the walk after the page's last one.
+type binListJSON struct {
+	Bins       []binJSON `json:"bins"`
+	NextCursor string    `json:"next_cursor,omitempty"`
+}
+
+// cursorSeparator splits a cursor's created_at from its hash. It is the unit separator, a
+// character neither half can carry: created_at is RFC 3339 and a hash is eight hex.
+const cursorSeparator = "\x1f"
+
+// encodeCursor spells the keyset position after a page — the (created_at, hash) of its last
+// row — as unpadded URL-safe base64, so a cursor never needs URL escaping.
+func encodeCursor(createdAt, hash string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(createdAt + cursorSeparator + hash))
+}
+
+// decodeCursor reads a cursor back into the cutoff ListBins resumes from. What is not unpadded
+// URL-safe base64 holding a created_at, the separator, and a hash is no cursor this API made.
+func decodeCursor(raw string) (BinCursor, error) {
+	decoded, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return BinCursor{}, errors.New("cursor is not unpadded URL-safe base64")
+	}
+	createdAt, hash, found := strings.Cut(string(decoded), cursorSeparator)
+	if !found || createdAt == "" || hash == "" {
+		return BinCursor{}, errors.New("cursor names no created_at and hash")
+	}
+	return BinCursor{CreatedAt: createdAt, Hash: hash}, nil
+}
+
+// apiListBins answers GET /api/bins, the key-gated listing: its guard is requireKey, so a
+// wrong key through it charges exactly like a wrong key through a write. The paging rules are
+// pinned: limit default 30, a non-integer or a limit below 1 is the plain 400 invalid limit,
+// anything above 100 clamps to 100; cursor is the unpadded URL-safe base64 a previous page
+// answered, and a malformed one is the plain 400 invalid cursor. Bins list complete —
+// protected ones with their metadata and has_password in plain view, the owner's view.
+func (s *server) apiListBins(w http.ResponseWriter, r *http.Request) {
+	if !s.requireKey(w, r) {
+		return
+	}
+
+	limit := defaultListLimit
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			http.Error(w, "invalid limit", http.StatusBadRequest)
+			return
+		}
+		if n > maxListLimit {
+			n = maxListLimit
+		}
+		limit = n
+	}
+
+	var cutoff *BinCursor
+	if raw := r.URL.Query().Get("cursor"); raw != "" {
+		cursor, err := decodeCursor(raw)
+		if err != nil {
+			http.Error(w, "invalid cursor", http.StatusBadRequest)
+			return
+		}
+		cutoff = &cursor
+	}
+
+	bins, hasMore, err := s.store.ListBins(limit, cutoff)
+	if err != nil {
+		log.Printf("list bins: %v", err)
+		http.Error(w, "could not list bins", http.StatusInternalServerError)
+		return
+	}
+
+	// The store hands back a nil slice for an empty page; the answer promises an array.
+	answer := binListJSON{Bins: make([]binJSON, 0, len(bins))}
+	for _, b := range bins {
+		answer.Bins = append(answer.Bins, binToJSON(b))
+	}
+	if hasMore {
+		last := bins[len(bins)-1]
+		answer.NextCursor = encodeCursor(last.CreatedAt, last.Hash)
+	}
+	if err := writeJSON(w, http.StatusOK, answer); err != nil {
+		log.Printf("encode the bins listing: %v", err)
+		http.Error(w, "could not list bins", http.StatusInternalServerError)
 	}
 }
 

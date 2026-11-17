@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -146,8 +148,8 @@ func TestAPIHealth(t *testing.T) {
 
 // TestAPIUnknownShapes keeps the /api surface to what it answers: a spelling it does not own —
 // trailing-slash variants included — is the plain 404 unknown bin, and a known path on a wrong
-// method is the plain 405. /api/bins answers POST today; its GET and DELETE belong to Tasks 5
-// and 6, so they are 405 here.
+// method is the plain 405. /api/bins answers POST and GET today; its DELETE belongs to Task 6,
+// so it is 405 here.
 func TestAPIUnknownShapes(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	hash := strings.Trim(createTestBin(t, s, "test-key"), "/")
@@ -1017,6 +1019,404 @@ func TestAPIPatchShapes(t *testing.T) {
 	}
 	if files, err := s.store.ListFiles(hash); err != nil || len(files) != 0 {
 		t.Errorf("files after the refusals = %d (err %v), want none", len(files), err)
+	}
+}
+
+// listAnswer is the test's own reading of the GET /api/bins answer: the page of bin objects,
+// and the next_cursor only a further page earns.
+type listAnswer struct {
+	Bins       []binAnswer `json:"bins"`
+	NextCursor string      `json:"next_cursor"`
+}
+
+// readListAnswer decodes a GET /api/bins answer into its page and cursor.
+func readListAnswer(t *testing.T, rec *httptest.ResponseRecorder) listAnswer {
+	t.Helper()
+	var l listAnswer
+	if err := json.Unmarshal(rec.Body.Bytes(), &l); err != nil {
+		t.Fatalf("list answer %q is not a bins object: %v", rec.Body.String(), err)
+	}
+	return l
+}
+
+// assertKeysetOrder pins the newest-first spelling, created_at DESC then hash DESC, across a
+// walk's rows: each row sits strictly ahead of the next, pages joined or not.
+func assertKeysetOrder(t *testing.T, bins []binAnswer) {
+	t.Helper()
+	for i := 1; i < len(bins); i++ {
+		prev, cur := bins[i-1], bins[i]
+		if prev.CreatedAt < cur.CreatedAt || (prev.CreatedAt == cur.CreatedAt && prev.Bin <= cur.Bin) {
+			t.Errorf("bins[%d] (%s %s) is not strictly ahead of bins[%d] (%s %s) on created_at DESC, hash DESC",
+				i-1, prev.CreatedAt, prev.Bin, i, cur.CreatedAt, cur.Bin)
+		}
+	}
+}
+
+// checkListedBin holds one listed object against the bin object its create answered: the
+// listing shows the row complete, the owner's view, with nothing redacted.
+func checkListedBin(t *testing.T, want, got binAnswer) {
+	t.Helper()
+	if got.Bin != want.Bin || got.URL != want.URL || got.Title != want.Title ||
+		got.Description != want.Description || got.HasPassword != want.HasPassword ||
+		got.CreatedAt != want.CreatedAt {
+		t.Errorf("listed %+v, want the created bin %+v", got, want)
+	}
+}
+
+// listFrom GETs a /api/bins listing from a fixed socket address with the API key.
+func listFrom(t *testing.T, h http.Handler, remoteAddr, query string) *httptest.ResponseRecorder {
+	t.Helper()
+	return getFrom(t, h, remoteAddr, "/api/bins"+query, "test-key")
+}
+
+// TestAPIListBins is GET /api/bins: the listing is key-gated — a wrong key charges exactly
+// like a wrong key on a write, and a blocked address is refused with its wait — and it answers
+// the store's newest-first pages: the default page is 30 rows, its next_cursor is the pinned
+// encoding of the page's last row, following it returns the rest, and the last page names no
+// cursor. A protected bin lists complete. An empty instance answers an array, not null.
+func TestAPIListBins(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	const addr = "198.51.100.90:1234"
+
+	// An instance with no bins answers the array, not null, and no cursor.
+	rec := listFrom(t, s, addr, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/bins on the empty instance = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "{\"bins\":[]}\n" {
+		t.Errorf("empty instance body = %q, want {\"bins\":[]} with its trailing newline", got)
+	}
+
+	// Seed 31 bins so the default page has a further page to name, plus a guarded one that
+	// must list complete.
+	want := make(map[string]binAnswer, 32)
+	for i := range 31 {
+		title := fmt.Sprintf("listed bin %02d", i)
+		rec = postAPIBins(t, s, "198.51.100.95:1234", "test-key",
+			`{"title":"`+title+`","description":"seed `+title+`"}`)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("POST seed bin %02d = %d, want %d; body %q", i, rec.Code, http.StatusCreated, rec.Body.String())
+		}
+		bin := createdBin(t, rec)
+		want[bin.Bin] = bin
+	}
+	rec = postAPIBins(t, s, "198.51.100.95:1234", "test-key", `{"title":"guarded","password":"sesame"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST the guarded bin = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	guarded := createdBin(t, rec)
+	if !guarded.HasPassword {
+		t.Fatalf("the guarded bin answers has_password false, want true")
+	}
+	want[guarded.Bin] = guarded
+
+	// Page 1 at the default size: 30 newest-first complete objects and a next_cursor.
+	rec = listFrom(t, s, addr, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/bins = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	page1 := readListAnswer(t, rec)
+	if len(page1.Bins) != 30 {
+		t.Fatalf("page 1 = %d bins, want the default 30; body %q", len(page1.Bins), rec.Body.String())
+	}
+	assertKeysetOrder(t, page1.Bins)
+	if page1.NextCursor == "" {
+		t.Fatalf("page 1 with a further page names no next_cursor; body %q", rec.Body.String())
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(page1.NextCursor)
+	if err != nil {
+		t.Fatalf("next_cursor %q is not unpadded URL-safe base64: %v", page1.NextCursor, err)
+	}
+	last := page1.Bins[29]
+	if string(decoded) != last.CreatedAt+"\x1f"+last.Bin {
+		t.Errorf("next_cursor decodes to %q, want created_at + unit separator + hash of the last row (%s \x1f %s)",
+			decoded, last.CreatedAt, last.Bin)
+	}
+	seen := make(map[string]bool, len(want))
+	for _, b := range page1.Bins {
+		checkListedBin(t, want[b.Bin], b)
+		seen[b.Bin] = true
+	}
+
+	// Following the cursor returns the rest, and the last page omits next_cursor.
+	rec = listFrom(t, s, addr, "?cursor="+page1.NextCursor)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/bins with the cursor = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	page2 := readListAnswer(t, rec)
+	if len(page2.Bins) != 2 {
+		t.Fatalf("page 2 = %d bins, want the remaining 2; body %q", len(page2.Bins), rec.Body.String())
+	}
+	if page2.NextCursor != "" || strings.Contains(rec.Body.String(), "next_cursor") {
+		t.Errorf("last page body %q carries a next_cursor, want it omitted", rec.Body.String())
+	}
+	// The pages join without a gap: page 2's first row sits strictly after page 1's last.
+	if first := page2.Bins[0]; !(last.CreatedAt > first.CreatedAt || (last.CreatedAt == first.CreatedAt && last.Bin > first.Bin)) {
+		t.Errorf("page 2 starts at (%s %s), want strictly after page 1's last row (%s %s)",
+			first.CreatedAt, first.Bin, last.CreatedAt, last.Bin)
+	}
+	for _, b := range page2.Bins {
+		if seen[b.Bin] {
+			t.Errorf("bin %s appears on both pages, want no repeats", b.Bin)
+			continue
+		}
+		checkListedBin(t, want[b.Bin], b)
+		seen[b.Bin] = true
+	}
+	if len(seen) != len(want) {
+		t.Errorf("the walk covered %d bins, want all %d seeded; body %q", len(seen), len(want), rec.Body.String())
+	}
+	// The guarded bin listed complete: has_password true and its title in plain view.
+	for _, b := range append(page1.Bins, page2.Bins...) {
+		if b.Bin == guarded.Bin && (!b.HasPassword || b.Title != "guarded") {
+			t.Errorf("the guarded bin listed has_password %v title %q, want the row shown complete", b.HasPassword, b.Title)
+		}
+	}
+
+	// A wrong key through the listing is the writes' refusal and the writes' charge.
+	rec = getFrom(t, s, "198.51.100.92:1234", "/api/bins", "wrong")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("GET /api/bins with a wrong key = %d, want %d; body %q", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "invalid API key\n" {
+		t.Errorf("403 body = %q, want the invalid API key message", got)
+	}
+	if failures, dur := storedBlock(t, s, "198.51.100.92"); failures != 1 || dur != blockStep {
+		t.Errorf("after a wrong key = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
+	}
+
+	// No key at all is the same refusal.
+	if rec := get(t, s, "/api/bins"); rec.Code != http.StatusForbidden || rec.Body.String() != "invalid API key\n" {
+		t.Errorf("GET /api/bins without the header = %d, body %q; want 403 invalid API key", rec.Code, rec.Body.String())
+	}
+
+	// The blocked address is refused with an honest wait, and the attempt charges again.
+	rec = listFrom(t, s, "198.51.100.92:1234", "")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("blocked GET /api/bins = %d, want %d; body %q", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "too many bad API keys") {
+		t.Errorf("429 body = %q, want the too many bad API keys message", rec.Body.String())
+	}
+	if ra := retryAfter(t, rec); ra <= 1800-30 || ra > 1800 {
+		t.Errorf("Retry-After = %d, want the first block's 1800 seconds less the elapsed time", ra)
+	}
+	if failures, dur := storedBlock(t, s, "198.51.100.92"); failures != 2 || dur != 2*blockStep {
+		t.Errorf("after a blocked attempt = failures %d, block %v; want 2 failures, %v", failures, dur, 2*blockStep)
+	}
+}
+
+// TestAPIListBinsLimits is the pinned limit rule: limit=2 pages a five-bin instance 2, 2, 1
+// with no repeats; limit=0, a negative, and a non-integer are the plain 400 invalid limit;
+// and a limit above the served maximum clamps to 100 — observable because the clamp half
+// seeds 101 bins, per ruling R3.
+func TestAPIListBinsLimits(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	const addr = "198.51.100.93:1234"
+
+	hashes := make(map[string]bool, 101)
+	for i := range 5 {
+		base := createTestBinWithMetadata(t, s, "test-key", fmt.Sprintf("limit bin %03d", i), "")
+		hashes[strings.Trim(base, "/")] = true
+	}
+
+	// limit=2 walks the five bins in pages of 2, 2, 1 — each exactly once.
+	seen := make(map[string]bool, 5)
+	cursor := ""
+	for page, wantCount := range []int{2, 2, 1} {
+		query := "?limit=2"
+		if cursor != "" {
+			query += "&cursor=" + cursor
+		}
+		rec := listFrom(t, s, addr, query)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/bins%s = %d, want %d; body %q", query, rec.Code, http.StatusOK, rec.Body.String())
+		}
+		answer := readListAnswer(t, rec)
+		if len(answer.Bins) != wantCount {
+			t.Fatalf("page %d = %d bins, want %d; body %q", page+1, len(answer.Bins), wantCount, rec.Body.String())
+		}
+		for _, b := range answer.Bins {
+			if !hashes[b.Bin] {
+				t.Errorf("page %d lists %s, want only the seeded bins", page+1, b.Bin)
+				continue
+			}
+			if seen[b.Bin] {
+				t.Errorf("bin %s repeated across pages, want each exactly once", b.Bin)
+			}
+			seen[b.Bin] = true
+		}
+		if page == 2 {
+			if answer.NextCursor != "" || strings.Contains(rec.Body.String(), "next_cursor") {
+				t.Errorf("last page body %q carries a next_cursor, want it omitted", rec.Body.String())
+			}
+			break
+		}
+		if answer.NextCursor == "" {
+			t.Fatalf("page %d with a further page names no next_cursor; body %q", page+1, rec.Body.String())
+		}
+		cursor = answer.NextCursor
+	}
+	if len(seen) != 5 {
+		t.Errorf("the walk covered %d bins, want all 5 seeded", len(seen))
+	}
+
+	// limit=0, a negative and a non-integer are refused, and the instance is untouched.
+	before := storedBinCount(t, s)
+	for _, q := range []string{"?limit=0", "?limit=-1", "?limit=abc"} {
+		rec := listFrom(t, s, addr, q)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("GET /api/bins%s = %d, want %d; body %q", q, rec.Code, http.StatusBadRequest, rec.Body.String())
+			continue
+		}
+		if got := rec.Body.String(); got != "invalid limit\n" {
+			t.Errorf("GET /api/bins%s body = %q, want the invalid limit message", q, got)
+		}
+	}
+	if after := storedBinCount(t, s); after != before {
+		t.Errorf("bins after the refusals = %d, want the same %d", after, before)
+	}
+
+	// Ruling R3: 101 bins are seeded, so limit=500 clamping to 100 is observable — page 1
+	// holds exactly the 100 the maximum serves with a cursor, and the cursor names the last one.
+	for i := 5; i < 101; i++ {
+		base := createTestBinWithMetadata(t, s, "test-key", fmt.Sprintf("limit bin %03d", i), "")
+		hashes[strings.Trim(base, "/")] = true
+	}
+	rec := listFrom(t, s, addr, "?limit=500")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/bins?limit=500 = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	clamped := readListAnswer(t, rec)
+	if len(clamped.Bins) != 100 {
+		t.Fatalf("limit=500 answered %d bins, want the clamped 100", len(clamped.Bins))
+	}
+	if clamped.NextCursor == "" {
+		t.Fatalf("the 100-row page of 101 bins names no next_cursor; body %q", rec.Body.String())
+	}
+	rec = listFrom(t, s, addr, "?limit=500&cursor="+clamped.NextCursor)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET the clamped cursor = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	tail := readListAnswer(t, rec)
+	if len(tail.Bins) != 1 || tail.NextCursor != "" {
+		t.Errorf("the clamped walk's last page = %d bins, next_cursor %q; want the 1 remaining and no cursor",
+			len(tail.Bins), tail.NextCursor)
+	}
+}
+
+// TestAPIListBinsCursorIntegrity is the cursor's two halves: a malformed cursor is the plain
+// 400 invalid cursor, and a good one walks the store with no repeats and no gaps even when a
+// newer bin lands between the pages — keyset stability. Bins the store holds at one identical
+// instant page out by hash desc.
+func TestAPIListBinsCursorIntegrity(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	const addr = "198.51.100.94:1234"
+
+	// A cursor this API never made is refused: nonsense decodes to bytes with no separator; a
+	// clean base64 word holds none either; padding is not this cursor's alphabet; an empty
+	// created_at half names no position.
+	for _, c := range []string{
+		"nonsense",
+		base64.RawURLEncoding.EncodeToString([]byte("no separator here")),
+		"YWJjZA==",
+		base64.RawURLEncoding.EncodeToString([]byte("\x1fdeadbeef")),
+	} {
+		rec := listFrom(t, s, addr, "?cursor="+c)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("cursor %q = %d, want %d; body %q", c, rec.Code, http.StatusBadRequest, rec.Body.String())
+			continue
+		}
+		if got := rec.Body.String(); got != "invalid cursor\n" {
+			t.Errorf("cursor %q body = %q, want the invalid cursor message", c, got)
+		}
+	}
+
+	// Two bins the store holds at one identical instant, older than everything the API seeds,
+	// so their paging can only come out by hash desc.
+	for _, h := range []string{"0a0a0a0a", "0b0b0b0b"} {
+		if _, err := s.store.db.Exec(
+			`INSERT INTO bins (hash, password_hash, created_at, title, description) VALUES (?, '', ?, 'twin', '')`,
+			h, "2020-01-01T00:00:00Z"); err != nil {
+			t.Fatalf("insert the twin bin %s: %v", h, err)
+		}
+	}
+
+	wanted := map[string]string{"0a0a0a0a": "twin", "0b0b0b0b": "twin"}
+	for _, title := range []string{"walk one", "walk two", "walk three", "walk four"} {
+		base := createTestBinWithMetadata(t, s, "test-key", title, "")
+		wanted[strings.Trim(base, "/")] = title
+	}
+
+	// Walk the whole instance two rows at a time. After page 1, a newer bin lands.
+	all := make([]binAnswer, 0, 7)
+	seen := make(map[string]int, 7)
+	cursor := ""
+	for {
+		query := "?limit=2"
+		if cursor != "" {
+			query += "&cursor=" + cursor
+		}
+		rec := listFrom(t, s, addr, query)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/bins%s = %d, want %d; body %q", query, rec.Code, http.StatusOK, rec.Body.String())
+		}
+		page := readListAnswer(t, rec)
+		if len(page.Bins) == 0 {
+			t.Fatalf("GET /api/bins%s answered no rows with a cursor in hand; body %q", query, rec.Body.String())
+		}
+		for _, b := range page.Bins {
+			seen[b.Bin]++
+		}
+		all = append(all, page.Bins...)
+		if page.NextCursor == "" {
+			break
+		}
+		if len(page.Bins) != 2 {
+			t.Fatalf("a page with a next_cursor holds %d rows, want the full 2; body %q", len(page.Bins), rec.Body.String())
+		}
+		cursor = page.NextCursor
+		if len(all) > 8 {
+			t.Fatalf("the walk did not end; last body %q", rec.Body.String())
+		}
+		if len(all) == 2 {
+			// A newer bin lands between the pages: keyset paging must not shift or repeat
+			// anything the walk already carried.
+			createTestBinWithMetadata(t, s, "test-key", "late arrival", "")
+		}
+	}
+
+	// No gaps and no repeats: every wanted bin was walked exactly once, the joined walk is in
+	// keyset order across the page joints, and only the late bin may show up among the extras —
+	// once, or not at all when its key sits ahead of a cutoff.
+	for _, b := range all {
+		if title, ok := wanted[b.Bin]; ok {
+			if b.Title != title {
+				t.Errorf("bin %s listed title %q, want %q", b.Bin, b.Title, title)
+			}
+			continue
+		}
+		if b.Title != "late arrival" {
+			t.Errorf("the walk names unknown bin %s (%q), want only the seeded rows and the late one", b.Bin, b.Title)
+		}
+	}
+	for h, title := range wanted {
+		if seen[h] != 1 {
+			t.Errorf("bin %s (%s) was walked %d times, want exactly once — no repeats, no gaps", h, title, seen[h])
+		}
+	}
+	assertKeysetOrder(t, all)
+
+	// The equal-created_at twins paged out last, in hash-desc order.
+	if len(all) < 2 || all[len(all)-2].Bin != "0b0b0b0b" || all[len(all)-1].Bin != "0a0a0a0a" {
+		got := ""
+		if len(all) >= 2 {
+			got = all[len(all)-2].Bin + ", " + all[len(all)-1].Bin
+		}
+		t.Errorf("the walk's last rows = %s, want 0b0b0b0b before 0a0a0a0a: equal created_at pages by hash DESC", got)
 	}
 }
 
