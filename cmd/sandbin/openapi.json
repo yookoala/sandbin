@@ -25,16 +25,14 @@
             "in": "query",
             "schema": {
               "type": "string"
-            },
-            "Extensions": null
+            }
           },
           {
             "name": "cursor",
             "in": "query",
             "schema": {
               "type": "string"
-            },
-            "Extensions": null
+            }
           }
         ],
         "responses": {
@@ -50,16 +48,6 @@
           },
           "400": {
             "description": "Bad Request",
-            "content": {
-              "text/plain; charset=utf-8": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized",
             "content": {
               "text/plain; charset=utf-8": {
                 "schema": {
@@ -117,7 +105,7 @@
               }
             }
           },
-          "required": true
+          "required": false
         },
         "responses": {
           "201": {
@@ -132,16 +120,6 @@
           },
           "400": {
             "description": "Bad Request",
-            "content": {
-              "text/plain; charset=utf-8": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized",
             "content": {
               "text/plain; charset=utf-8": {
                 "schema": {
@@ -200,8 +178,7 @@
             "required": true,
             "schema": {
               "type": "string"
-            },
-            "Extensions": null
+            }
           }
         ],
         "responses": {
@@ -245,7 +222,13 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {},
+          {
+            "binBasic": []
+          }
+        ]
       },
       "delete": {
         "summary": "apiDeleteBin removes a bin and every file in it.",
@@ -258,8 +241,7 @@
             "required": true,
             "schema": {
               "type": "string"
-            },
-            "Extensions": null
+            }
           }
         ],
         "responses": {
@@ -334,8 +316,7 @@
             "required": true,
             "schema": {
               "type": "string"
-            },
-            "Extensions": null
+            }
           }
         ],
         "requestBody": {
@@ -452,7 +433,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       },
       "head": {
         "summary": "apiHealth is the container probe's route: it says nothing about bins, needs no key and charges nothing, so it answers even while its address is blocked.",
@@ -478,7 +460,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/key": {
@@ -489,16 +472,6 @@
         "responses": {
           "204": {
             "description": "No Content"
-          },
-          "401": {
-            "description": "Unauthorized",
-            "content": {
-              "text/plain; charset=utf-8": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
           },
           "403": {
             "description": "Forbidden",
@@ -650,11 +623,5 @@
         "scheme": "basic"
       }
     }
-  },
-  "security": [
-    {},
-    {
-      "binBasic": []
-    }
-  ]
+  }
 }

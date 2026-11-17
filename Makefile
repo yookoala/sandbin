@@ -28,11 +28,16 @@ container:
 	podman build --network=host -t localhost/sandbin:latest --build-arg "SANDBIN_VERSION=$(VERSION)" -f Containerfile .
 
 # openapi regenerates cmd/sandbin/openapi.json from cmd/sandbin/apispec.yaml. The generator is a
-# dev-machine tool, never a module dependency:
-#   go install github.com/ehabterra/apispec/cmd/apispec@latest
+# dev-machine tool, never a module dependency, pinned to the version the config's patterns match:
+#   go install github.com/ehabterra/apispec/cmd/apispec@v0.5.11
+# apispec's generated JSON goes through cmd/sandbin/openapi-fix.jq (ruling R4): checked-in corrections the
+# generator verifiably cannot express itself — the header there explains each one. jq is a
+# dev-machine prerequisite of this target, like apispec.
 # docs/decisions/0030-api-servemux-openapi.md explains what the document pins.
 openapi:
-	apispec -dir cmd/sandbin -c cmd/sandbin/apispec.yaml -o cmd/sandbin/openapi.json -exclude-package sandbin-client
+	apispec -dir cmd/sandbin -c cmd/sandbin/apispec.yaml -o openapi.raw.tmp.json -exclude-package sandbin-client
+	jq -f cmd/sandbin/openapi-fix.jq openapi.raw.tmp.json > cmd/sandbin/openapi.json
+	@rm openapi.raw.tmp.json
 
 # make release TAG=v0.3.0 records the tag; it commits, tags and stops. Pushing stays human.
 release:

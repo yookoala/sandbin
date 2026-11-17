@@ -3,7 +3,10 @@
 # Regenerate the committed document with `make openapi`. apispec is a dev-machine
 # tool, never a module dependency:
 #
-#   go install github.com/ehabterra/apispec/cmd/apispec@latest
+#   go install github.com/ehabterra/apispec/cmd/apispec@v0.5.11
+#
+# The generated document is then corrected by cmd/sandbin/openapi-fix.jq (ruling R4) — seven
+# checked-in fixes the generator verifiably cannot express; its header explains each.
 #
 # Why the framework pattern lists are replaced instead of extended:
 #
