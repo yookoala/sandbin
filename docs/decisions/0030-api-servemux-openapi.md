@@ -91,3 +91,37 @@ as optional Basic (`security: [{}, {binBasic: []}]` with
 - Test counts grow, never shrink; the five gates stay green at every commit.
 - Charging semantics are untouched everywhere; charging rules documented in 0029
   docs stay true.
+
+## Addendum — executed corrections (recorded 2026-11-17, during plan 0030)
+
+What execution found out about the design above, kept here because the plan and
+reviews argued from it:
+
+- The key wrapper is named `s.withAPIKey`, not `s.apiKey`: the `server` struct already
+  holds an `apiKey []byte` field, and Go forbids a method with the field's name. The
+  shape (registered middleware wrapping the five key-checked handlers) is unchanged.
+- The hex gate must also guard the route table's *literal* lookup: without skipping
+  wildcard keys, a request whose path is the literal spelling `/api/bins/{hash}`
+  (raw braces or `%7Bhash%7D`) hits the table and reaches the charged handlers — a
+  wrong-key 403/401 where the dispatch must answer the plain uncharged 404. The table
+  lookup now takes a literal hit only when the key holds no `{`.
+- `apispec` v0.5.11's `overrides` cannot add per-operation `security` lines or new
+  response statuses, and on this repo they were verified to apply nothing silently. The
+  decided "checked-in config makes the document exact" is therefore executed as a
+  checked-in post-generation correction filter, `cmd/sandbin/openapi-fix.jq`, applied
+  by `make openapi`: it deletes the generator's document-level `security`, writes the
+  exact per-operation `security` lines, strips middleware-attribution 401s from
+  operations that cannot answer 401, pins create's body as optional, strips serializer
+  leaks, rewrites the nine operations' summaries/descriptions to client-facing contract
+  prose with clean `operationId`s, adds the pinned refusal strings as response
+  examples, documents the `Location` (201) and `Retry-After` (429) headers, and carries
+  the `additionalProperties: false` and `archiveAnswer` additions the generator cannot
+  express. `securityMappings` remains config.
+- The generator is pinned: the target installs `@v0.5.11` and fails unless the running
+  binary reports that version. The target never writes into the committed file
+  directly — jq output lands in a git-ignored temp and is `mv`'d into place only on
+  success, so a filter error cannot clobber the tracked document.
+- The document additionally carries component schemas for the single-file entry
+  (`fileJSON`) and archive-count (`archiveAnswer`) answers — schemas only, no new
+  paths — so the honesty-pin body tests validate against the committed document rather
+  than hand-written mirrors.

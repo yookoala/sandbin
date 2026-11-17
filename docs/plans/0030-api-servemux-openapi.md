@@ -1,11 +1,25 @@
 # /api on ServeMux + a generated OpenAPI 3.1 document — Implementation Plan
 
-Status: planned 2026-11-17. Spec: `docs/decisions/0030-api-servemux-openapi.md` — the binding
-design, including the Go 1.26.10 `ServeMux` empirics (GET patterns answer HEAD; the mux's own
-404/405 bodies differ from the pinned ones; `Handler(r)` reports the matched pattern; no 301 on
-trailing-slash spellings of known paths). Baseline HEAD `3574887` (`cmd/sandbin` 242 tests,
-`cmd/sandbin-client` 111, `internal/frontpage` 17, `internal/robots` 2, `internal/version` 6,
-all five gates green).
+Status: implemented and closed 2026-11-17. Nine commits, `e0035e6` (plan+decision) through
+`a369410` (docs polish): Tasks 1–5 at `0079c92`+`e33713f`, `da207bb`+`6ac4f36`, `9a5bb78`,
+`bf95bc8`, `a425620`, with the preflight plan correction `db01f7e` and the final fix wave
+`ffa4084`+`492407b`+`1ec5c9a`+`a369410`. Spec: `docs/decisions/0030-api-servemux-openapi.md`
+(including its execution addendum). Review outcome: every task passed an independent
+task-scoped review — Task 1 needed one fix round (literal wildcard-key charging flip, ruling
+R3) and Task 2 one (the jq post-generation filter, ruling R4), both re-reviewed clean; Tasks
+3 and 4 passed first time. The whole-branch review (`3574887..a425620`) found no Critical
+issues and six Important ones (the Makefile could clobber its tracked output; the published
+document omitted the `Location`/`Retry-After` headers, `required` lists,
+`additionalProperties: false`, and the pinned error sentences, and carried Go-internal prose);
+the single fix wave closed all eleven findings, its scoped re-review verdict was all ADDRESSED
+with no new breakage. Controller rulings R1–R5 all honored; no test deleted or re-pointed
+(the route-table pin gained exactly one entry per ruling R5, and the pairing pin per the
+final review); final gates green at `a425620`..`a369410` with `cmd/sandbin` 253,
+`cmd/sandbin-client` 111, `internal/frontpage` 17, `internal/robots` 2, `internal/version` 6.
+Carried Minors parked with rulings in the SDD ledger (comment overstates `-exclude-package`
+inertness on v0.5.11, jq corrections 11–13 auto-create intermediates, rewritten PATCH/key
+prose dropped the body-before-lookup order and the successful-check charges-nothing detail,
+docs cosmetics).
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
