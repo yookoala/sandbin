@@ -1706,10 +1706,14 @@ func TestBinPageNoMetadataHeaders(t *testing.T) {
 // TestAPIRouteTableIsPublishedSurface pins the authoritative route table to the
 // published /api surface exactly: the four paths, their allowed methods, and nothing
 // else. Dispatch, the charging gates and the generated OpenAPI document all read this
-// table, so a registration that adds, drops or re-spells a route fails here.
+// table, so a registration that adds, drops or re-spells a route fails here. The table
+// and the mux are built from one source, so the pin also pairs them: every table entry×
+// method must match a real pattern in the returned mux (Go 1.26 ServeMux.Handler names
+// the matched pattern), and a method the table does not list for a known path must match
+// nothing — the mux alone must never answer a route the table has not named.
 func TestAPIRouteTableIsPublishedSurface(t *testing.T) {
 	s := newTestServer(t, "test-key")
-	_, methods := s.newAPIRoutes()
+	mux, methods := s.newAPIRoutes()
 
 	want := map[string][]string{
 		"/api/key":         {http.MethodPost},
@@ -1737,6 +1741,14 @@ func TestAPIRouteTableIsPublishedSurface(t *testing.T) {
 				break
 			}
 		}
+		for _, method := range wantMethods {
+			if _, pattern := mux.Handler(httptest.NewRequest(method, path, nil)); pattern == "" {
+				t.Errorf("the table names %s %s but the mux holds no pattern matching it", method, path)
+			}
+		}
+	}
+	if _, pattern := mux.Handler(httptest.NewRequest(http.MethodPut, "/api/bins", nil)); pattern != "" {
+		t.Errorf("PUT /api/bins matches mux pattern %q; want an empty pattern: the table names PUT nowhere, so the mux must hold no route for it", pattern)
 	}
 }
 
