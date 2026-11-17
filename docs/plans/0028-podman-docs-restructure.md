@@ -1,11 +1,11 @@
 # Plan: podman page restructure — published image first, source build second, serve-pair ordering
 
-Status: open — implemented at commit `618d472`, awaiting review. Spec:
+Status: implemented and closed. Commits `618d472` (content) and `36066d6` (counts). Spec:
 `docs/decisions/0028-podman-docs-restructure.md` — its seven items settle
 the retitle and its propagation, the serve→podman→api→ip-blocking order, the new
 "Running the Published Image" section with its `ghcr.io/yookoala/sandbin` facts, the
 "Building & Running from Source" section with its four h3 subsections, the one-option-per-line
-command style, the refreshed summary-table row, and the test re-pins. Baseline HEAD is `4c8e5ab`
+command style, the refreshed summary-table row, and the test re-pins. Baseline HEAD was `4c8e5ab`
 (`cmd/sandbin` 213 tests, `cmd/sandbin-client` 107, `internal/frontpage` 17, `internal/robots` 2,
 `internal/version` 6, all gates green). The implementation commit `618d472` carries
 `docs/usages/sandbin-podman.md` and `docs/usages/sandbin.md` byte-for-byte from the two preserved
@@ -14,7 +14,20 @@ mockups, the api page's one pointer-line retitle, the `docSets` server-set swap,
 `TestDocsPodmanPagePutsPublishedImageFirst`; its counts are `cmd/sandbin` 214,
 `cmd/sandbin-client` 107, `internal/frontpage` 17, `internal/robots` 2, `internal/version` 6, with
 `gofmt -l .` empty and `go vet ./...`, `go build ./...`, `go test -count=1 ./...` and
-`go test -race -count=1 ./...` all green.
+`go test -race -count=1 ./...` all green. Review verdict: accept, no FAILs and no WARNs. The
+full fact-survival audit against the superseded page located every old fact in the new page
+(with file:line), the ghcr claims matched `.github/workflows/release.yml` and `Containerfile`
+(including that the workflow passes no `SANDBIN_VERSION` build-arg, so published images carry the
+embedded `release.txt` stamp — a claim the new page correctly makes nowhere), the command-style
+audit held on all seven fenced blocks, and the reviewer's own scratch render reproduced the hub
+order, the single rendered `{{.State.Health.Status}}` brace pair, and the retitled pointers. The
+five judgment calls all accepted: the extra test pins (slug'd `h1`, the registry literal, a
+negative pin against the raw escape reaching the served page), running the scratch server via
+`SANDBIN_API_KEY` env, the confirmed `pre.textContent` copy semantics behind the `&quot;`
+rendering of the `--health-cmd` quotes, scratch-dir hygiene, and the repo-wide verification that
+no test outside `docs_test.go` ever pinned podman wording. Two non-blocking observations: "the
+probes below" singularized to "the probe below" (one podman-native probe now) and the single-line
+`mkdir`/`sed` script steps, both faithful to the approved mockup.
 
 Design source of truth: the approved mockups, preserved at `docs/plans/0028-podman-docs-restructure/`
 — `podman-restructured.md` and `server-overview-restructured.md` are the exact final texts of
