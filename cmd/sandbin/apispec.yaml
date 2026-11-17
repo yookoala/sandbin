@@ -1,0 +1,156 @@
+# apispec configuration for the sandbin JSON API (plan 0030).
+#
+# Regenerate the committed document with `make openapi`. apispec is a dev-machine
+# tool, never a module dependency:
+#
+#   go install github.com/ehabterra/apispec/cmd/apispec@latest
+#
+# Why the framework pattern lists are replaced instead of extended:
+#
+# - routePatterns: the built-in Handle/HandleFunc matchers also see the /ip mux
+#   in newControlRoutes. The callerRecvTypePatterns filter keeps only routes
+#   registered on *server, i.e. the API mux.
+# - responsePatterns: the built-in matchers infer statuses from every
+#   HTTP-looking call site in the analyzed files, including the bin content
+#   handlers (image serving, 301 redirects, 405/413). The replacement sees only
+#   the API surface: JSON successes through writeJSON, plain-text refusals
+#   through http.Error, and the two explicit WriteHeader calls (204).
+# - paramPatterns: the built-in header matchers also fire inside clientIP and
+#   baseURL, which would attach X-Forwarded-* parameters to every operation.
+#   The re-declared built-ins gate header reads to the API handlers.
+
+info:
+  title: sandbin HTTP API
+  description: "The sandbin JSON API: keys, bins and bin metadata under /api. Errors
+    answer plain text with a fixed sentence; successes answer JSON."
+  version: 1.0.0
+  contact:
+    name: sandbin
+    url: https://github.com/yookoala/sandbin
+  license:
+    name: MIT License
+    url: https://opensource.org/licenses/MIT
+
+naming:
+  operationId: receiver-method
+  schemaNames: short
+
+security:
+  - {}
+  - binBasic: []
+
+securitySchemes:
+  apiKey:
+    type: apiKey
+    in: header
+    name: X-API-Key
+  binBasic:
+    type: http
+    scheme: basic
+
+securityMappings:
+  - functionNameRegex: ^withAPIKey$
+    pkgRegex: github\.com/yookoala/sandbin/cmd/sandbin$
+    schemes:
+      - apiKey: []
+
+externalTypes:
+  - name: encoding/json.RawMessage
+    description: "A bin write: any mix of title, description and password; a field
+      given as null clears it, an absent one changes nothing, and a name this API
+      does not have fails the request."
+    openapiType:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        password:
+          type: string
+
+framework:
+  replaceDefaults:
+    - routePatterns
+    - responsePatterns
+    - paramPatterns
+  routePatterns:
+    - callRegex: ^HandleFunc$
+      pathFromArg: true
+      handlerFromArg: true
+      methodFromPath: true
+      pathArgIndex: 0
+      methodArgIndex: -1
+      handlerArgIndex: 1
+      recvTypeRegex: ^net/http(\.\*ServeMux)?$
+      callerRecvTypePatterns:
+        - github\.com/yookoala/sandbin/cmd/sandbin\.\*server
+    - callRegex: ^Handle$
+      pathFromArg: true
+      handlerFromArg: true
+      methodFromPath: true
+      pathArgIndex: 0
+      methodArgIndex: -1
+      handlerArgIndex: 1
+      recvTypeRegex: ^net/http(\.\*ServeMux)?$
+      callerRecvTypePatterns:
+        - github\.com/yookoala/sandbin/cmd/sandbin\.\*server
+  responsePatterns:
+    - callRegex: ^writeJSON$
+      statusFromArg: true
+      statusArgIndex: 1
+      typeFromArg: true
+      typeArgIndex: 2
+      deref: true
+      callerPkgPatterns:
+        - github\.com/yookoala/sandbin/cmd/sandbin$
+      functionNameRegex: ^(apiHealth|apiCreateBin|apiListBins|apiInspectBin|apiPatchBin|apiDeleteBin)$
+    - callRegex: ^WriteHeader$
+      recvTypeRegex: ^net/http\.ResponseWriter$
+      statusFromArg: true
+      typeArgIndex: -1
+      functionNameRegex: ^(apiKeyCheck|apiDeleteBin)$
+    - callRegex: ^Error$
+      recvTypeRegex: ^net/http$
+      statusFromArg: true
+      statusArgIndex: 2
+      typeFromArg: true
+      typeArgIndex: 1
+      defaultContentType: text/plain; charset=utf-8
+      functionNameRegex: ^(apiRoutes|apiHealth|apiCreateBin|apiListBins|apiInspectBin|apiPatchBin|apiDeleteBin|apiKeyCheck|requireKey|binAuthorized|decodeBinRequest)$
+  paramPatterns:
+    - callRegex: ^FormValue$
+      recvType: net/http.*Request
+      paramIn: form
+    - callRegex: ^Get$
+      recvType: net/http.Header
+      paramIn: header
+      excludeRecvOriginRegex: ^\*?(net/http\.\*?(ResponseWriter|Response))$
+      requireRequestOrigin: true
+      functionNameRegex: ^(apiRoutes|apiHealth|apiCreateBin|apiListBins|apiInspectBin|apiPatchBin|apiDeleteBin|apiKeyCheck|requireKey|binAuthorized|decodeBinRequest)$
+    - callRegex: ^Values$
+      recvType: net/http.Header
+      paramIn: header
+      multi: true
+      excludeRecvOriginRegex: ^\*?(net/http\.\*?(ResponseWriter|Response))$
+      requireRequestOrigin: true
+    - callRegex: ^Get$
+      recvType: net/url.Values
+      paramIn: query
+      requireRequestOrigin: true
+    - callRegex: ^Cookie$
+      recvType: net/http.*Request
+      paramIn: cookie
+    - callRegex: ^PathValue$
+      recvType: net/http.*Request
+      paramIn: path
+    - callRegex: ^FormFile$
+      recvType: net/http.*Request
+      paramIn: formFile
+    - callRegex: ^(ParseMultipartForm|MultipartReader)$
+      recvType: net/http.*Request
+      paramIn: multipart
+
+exclude:
+  packages:
+    - sandbin-client

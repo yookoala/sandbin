@@ -1,0 +1,660 @@
+{
+  "openapi": "3.1.1",
+  "info": {
+    "title": "sandbin HTTP API",
+    "description": "The sandbin JSON API: keys, bins and bin metadata under /api. Errors answer plain text with a fixed sentence; successes answer JSON.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "sandbin",
+      "url": "https://github.com/yookoala/sandbin"
+    },
+    "license": {
+      "name": "MIT License",
+      "url": "https://opensource.org/licenses/MIT"
+    }
+  },
+  "paths": {
+    "/api/bins": {
+      "get": {
+        "summary": "apiListBins answers GET /api/bins, the key-gated listing: its guard is the withAPIKey wrapper around it — requireKey unchanged — so a wrong key through it charges exactly like a wrong key through a write.",
+        "description": "The paging rules are pinned: limit default 30, a non-integer or a\nlimit below 1 is the plain 400 invalid limit, anything above 100 clamps to 100; cursor is the\nunpadded URL-safe base64 a previous page answered, and a malformed one is the plain 400\ninvalid cursor. Bins list complete — protected ones with their metadata and has_password in\nplain view, the owner's view.",
+        "operationId": "server.apiListBins",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "Extensions": null
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "Extensions": null
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/binListJSON"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "apiCreateBin makes a bin from the JSON body and answers 201 with the bin object and its Location.",
+        "description": "Its guard is the withAPIKey wrapper around it — requireKey unchanged — so a wrong\nkey through it charges exactly as the retired POST / did. An absent field and one given as\nempty both make an empty value, which is what a bin with nothing to say holds; a password\nlonger than bcrypt can hold is refused before anything is written.",
+        "operationId": "server.apiCreateBin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RawMessage"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/binJSON"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/api/bins/{hash}": {
+      "get": {
+        "summary": "apiInspectBin answers GET /api/bins/{hash}: no API key, the bin's row and its file list sorted by path.",
+        "description": "The hash it reads from the path is an eight-hex spelling because the table\nonly names the {hash} route through the apiBinPathRE hex gate. A password-protected bin\nanswers 401 until Basic opens it, and that 401 records no failure — the API-key lockout is\nnot the bin's password gate.",
+        "operationId": "server.apiInspectBin",
+        "parameters": [
+          {
+            "name": "hash",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "Extensions": null
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/binDetailJSON"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "apiDeleteBin removes a bin and every file in it.",
+        "description": "The order is pinned: the wrapper's key, bin\nlookup, and only then the bin's own password gate, so a protected bin goes only to a request\ncarrying its current password — and a 401 charges nothing while the bin survives. The body is\nnot read at all: a DELETE has nothing to say. The answer is 204 with an empty body, because\nthere is nothing left to report about a bin that is gone.",
+        "operationId": "server.apiDeleteBin",
+        "parameters": [
+          {
+            "name": "hash",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "Extensions": null
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      },
+      "patch": {
+        "summary": "apiPatchBin merges a JSON body into a bin's row: a given field is set — null and \"\" clear theirs, a password is stored as a bcrypt hash — and an absent one leaves what the bin holds, which is what UpdateBinMeta's COALESCE reads from a NULL argument.",
+        "description": "The order is pinned: the\nwrapper's key, body validation, bin lookup, and only then the bin's own password gate, so a\nprotected bin is changed only by a request that carries its current password, and a refused\nrequest changes nothing. {} is a no-op answering the current row; no body at all is refused\nas unreadable, unlike create's pinned empty request.",
+        "operationId": "server.apiPatchBin",
+        "parameters": [
+          {
+            "name": "hash",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "Extensions": null
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RawMessage"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/binJSON"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/api/health": {
+      "get": {
+        "summary": "apiHealth is the container probe's route: it says nothing about bins, needs no key and charges nothing, so it answers even while its address is blocked.",
+        "operationId": "server.apiHealth",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/healthBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "summary": "apiHealth is the container probe's route: it says nothing about bins, needs no key and charges nothing, so it answers even while its address is blocked.",
+        "operationId": "headApiHealth",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/healthBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/key": {
+      "post": {
+        "summary": "apiKeyCheck answers the key check.",
+        "description": "It registers through the withAPIKey wrapper, whose\nguard is requireKey's verbatim, so a wrong key through it charges exactly like a wrong key\nthrough a write, and a match creates nothing, charges nothing and answers 204 with an\nempty body.",
+        "operationId": "server.apiKeyCheck",
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "RawMessage": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "binDetailJSON": {
+        "type": "object",
+        "description": "binDetailJSON is the inspect answer: the bin object plus every file the bin holds. The bin's\nown HTML page hides that list whenever an index.html covers the base; the API never does.",
+        "properties": {
+          "bin": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/fileJSON"
+            }
+          },
+          "has_password": {
+            "type": "boolean"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "binJSON": {
+        "type": "object",
+        "description": "binJSON is the bin object every JSON answer about a bin carries: its hash, the path it lives\nunder, its metadata, whether a password guards it, and when the store made it. Neither the\npassword nor its hash is ever in it.",
+        "properties": {
+          "bin": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "has_password": {
+            "type": "boolean"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "binListJSON": {
+        "type": "object",
+        "description": "binListJSON is the GET /api/bins answer: the page of bin objects and, only when the store's\nprobe found a further row, the cursor that resumes the walk after the page's last one.",
+        "properties": {
+          "bins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/binJSON"
+            }
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        }
+      },
+      "fileJSON": {
+        "type": "object",
+        "description": "fileJSON spells one file row for the JSON answers that name a bin's contents.",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "healthBody": {
+        "type": "object",
+        "description": "healthBody is the /api/health answer.",
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "apiKey": {
+        "type": "apiKey",
+        "name": "X-API-Key",
+        "in": "header"
+      },
+      "binBasic": {
+        "type": "http",
+        "scheme": "basic"
+      }
+    }
+  },
+  "security": [
+    {},
+    {
+      "binBasic": []
+    }
+  ]
+}

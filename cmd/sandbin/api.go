@@ -54,24 +54,52 @@ func (s *server) apiRoutes(w http.ResponseWriter, r *http.Request) {
 // its GET and HEAD spellings separately so the table derives HEAD from registration, not
 // from the mux quirk that a GET method pattern also matches HEAD. Each path's method list
 // is sorted, which makes the table deterministic whatever the registration order.
+//
+// The registrations are literal calls carrying their pattern constants — one const per
+// published pattern, which the mux and the table read as one source. Static route readers
+// like the OpenAPI generator (docs/decisions/0030-api-servemux-openapi.md) read the method,
+// path and security wrapper off these call sites; a registration helper that passed the
+// pattern as a parameter hides the wrapper from that analysis.
 func (s *server) newAPIRoutes() (*http.ServeMux, map[string][]string) {
 	mux := http.NewServeMux()
 	methods := map[string][]string{}
 
-	apiRegister(mux, methods, "POST /api/key", s.withAPIKey(http.HandlerFunc(s.apiKeyCheck)))
-	apiRegister(mux, methods, "GET /api/health", http.HandlerFunc(s.apiHealth))
-	apiRegister(mux, methods, "HEAD /api/health", http.HandlerFunc(s.apiHealth))
-	apiRegister(mux, methods, "POST /api/bins", s.withAPIKey(http.HandlerFunc(s.apiCreateBin)))
-	apiRegister(mux, methods, "GET /api/bins", s.withAPIKey(http.HandlerFunc(s.apiListBins)))
-	apiRegister(mux, methods, "GET /api/bins/{hash}", http.HandlerFunc(s.apiInspectBin))
-	apiRegister(mux, methods, "PATCH /api/bins/{hash}", s.withAPIKey(http.HandlerFunc(s.apiPatchBin)))
-	apiRegister(mux, methods, "DELETE /api/bins/{hash}", s.withAPIKey(http.HandlerFunc(s.apiDeleteBin)))
+	mux.Handle(apiPatternKey, s.withAPIKey(http.HandlerFunc(s.apiKeyCheck)))
+	mux.Handle(apiPatternHealthGet, http.HandlerFunc(s.apiHealth))
+	mux.Handle(apiPatternHealthHead, http.HandlerFunc(s.apiHealth))
+	mux.Handle(apiPatternBinsPost, s.withAPIKey(http.HandlerFunc(s.apiCreateBin)))
+	mux.Handle(apiPatternBinsGet, s.withAPIKey(http.HandlerFunc(s.apiListBins)))
+	mux.Handle(apiPatternBinGet, http.HandlerFunc(s.apiInspectBin))
+	mux.Handle(apiPatternBinPatch, s.withAPIKey(http.HandlerFunc(s.apiPatchBin)))
+	mux.Handle(apiPatternBinDelete, s.withAPIKey(http.HandlerFunc(s.apiDeleteBin)))
+
+	for _, pattern := range []string{
+		apiPatternKey, apiPatternHealthGet, apiPatternHealthHead,
+		apiPatternBinsPost, apiPatternBinsGet,
+		apiPatternBinGet, apiPatternBinPatch, apiPatternBinDelete,
+	} {
+		apiRecordMethod(methods, pattern)
+	}
 
 	for _, allowed := range methods {
 		sortAPIMethods(allowed)
 	}
 	return mux, methods
 }
+
+// The eight published /api patterns, each spelled once. The mux gets these exact strings
+// and the table records method and path cut from the same const, so the two share one
+// source and can never drift.
+const (
+	apiPatternKey        = "POST /api/key"
+	apiPatternHealthGet  = "GET /api/health"
+	apiPatternHealthHead = "HEAD /api/health"
+	apiPatternBinsPost   = "POST /api/bins"
+	apiPatternBinsGet    = "GET /api/bins"
+	apiPatternBinGet     = "GET /api/bins/{hash}"
+	apiPatternBinPatch   = "PATCH /api/bins/{hash}"
+	apiPatternBinDelete  = "DELETE /api/bins/{hash}"
+)
 
 // apiMethodOrder is the canonical order a path's allowed methods are recorded in: the order
 // the HTTP surface is published in — GET, HEAD, POST, PUT, PATCH, DELETE — and any other
@@ -96,11 +124,11 @@ func apiMethodRank(method string) int {
 	return len(apiMethodOrder)
 }
 
-// apiRegister is where a route is born: the mux gets the method pattern and the table
-// records the same method under the pattern's path, so the table is always exactly what the
-// mux was given and the two can never drift.
-func apiRegister(mux *http.ServeMux, methods map[string][]string, pattern string, h http.Handler) {
-	mux.Handle(pattern, h)
+// apiRecordMethod is the table half of a route's birth: it records the pattern's method
+// under the pattern's path. The mux half is newAPIRoutes' literal Handle call; both read
+// the same pattern const, so the table is always exactly what the mux was given and the
+// two can never drift.
+func apiRecordMethod(methods map[string][]string, pattern string) {
 	method, path, _ := strings.Cut(pattern, " ")
 	methods[path] = append(methods[path], method)
 }
@@ -345,7 +373,8 @@ func (s *server) apiCreateBin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Location", "/api/bins/"+hash)
-	if err := writeJSON(w, http.StatusCreated, binToJSON(bin)); err != nil {
+	created := binToJSON(bin)
+	if err := writeJSON(w, http.StatusCreated, created); err != nil {
 		log.Printf("encode the answer of bin %q: %v", hash, err)
 		http.Error(w, "could not answer the bin", http.StatusInternalServerError)
 	}
@@ -601,7 +630,8 @@ func (s *server) apiPatchBin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown bin", http.StatusNotFound)
 		return
 	}
-	if err := writeJSON(w, http.StatusOK, binToJSON(bin)); err != nil {
+	patched := binToJSON(bin)
+	if err := writeJSON(w, http.StatusOK, patched); err != nil {
 		log.Printf("encode the answer of bin %q: %v", hash, err)
 		http.Error(w, "could not answer the bin", http.StatusInternalServerError)
 	}

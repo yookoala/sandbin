@@ -9,7 +9,7 @@ VERSION ?= $(shell scripts/version.sh)
 # containing spaces and parentheses in one piece.
 LDFLAGS = '-s -w -X "github.com/yookoala/sandbin/internal/version.Value=$(VERSION)"'
 
-.PHONY: build test container release version
+.PHONY: build test container openapi release version
 
 build:
 	mkdir -p dist
@@ -26,6 +26,13 @@ test:
 
 container:
 	podman build --network=host -t localhost/sandbin:latest --build-arg "SANDBIN_VERSION=$(VERSION)" -f Containerfile .
+
+# openapi regenerates cmd/sandbin/openapi.json from cmd/sandbin/apispec.yaml. The generator is a
+# dev-machine tool, never a module dependency:
+#   go install github.com/ehabterra/apispec/cmd/apispec@latest
+# docs/decisions/0030-api-servemux-openapi.md explains what the document pins.
+openapi:
+	apispec -dir cmd/sandbin -c cmd/sandbin/apispec.yaml -o cmd/sandbin/openapi.json -exclude-package sandbin-client
 
 # make release TAG=v0.3.0 records the tag; it commits, tags and stops. Pushing stays human.
 release:
