@@ -23,7 +23,10 @@ These are the partner's decisions:
 2. **Updating title, description, and password is `PATCH /api/bins/{hash}` with partial JSON**:
    a field present sets it, a field explicitly `null` clears it, a field absent leaves it
    unchanged. This deliberately adds password rotation and clearing, which today's
-   header-PATCH cannot do at all.
+   header-PATCH cannot do at all. Settled after the builder check: for `password`, `null` and
+   the empty string `""` mean the same thing — clear the password (at create: leave the bin
+   open, matching the old empty-`X-Bin-Password` behavior). No bin can ever be protected by an
+   empty password.
 3. **`GET /api/bins/{hash}` inspects a bin as JSON**: its metadata plus its file listing
    (path, size, updated_at), built from data the store already keeps.
 4. **`GET /api/bins` lists the instance's bins as JSON, requires `X-API-Key`, and is paged.**
@@ -50,10 +53,15 @@ These are design calls, mine unless the partner objects:
   require `X-API-Key` and run the existing guard verbatim — including charging the IP's failure
   counter and honoring active blocks, exactly like today's key-gated routes (a wrong key on
   `GET /api/bins` charges, just like `POST /verify-key`). `GET /api/bins/{hash}` is public for
-  open bins — reading a bin's listing is already public through its HTML page — and
-  Basic-gated for protected bins via the existing `binAuthorized`, whose failures keep charging
-  nothing, as they do today. `PATCH` keeps requiring API key **and** current bin password for a
-  protected bin: rotating or clearing a password requires presenting the current one.
+  open bins and Basic-gated for protected bins via the existing `binAuthorized`, whose failures
+  keep charging nothing, as they do today. Settled after the builder check: the inspect
+  endpoint lists files for **every** open bin, including bins whose root stores an
+  `index.html` cover — today that cover hides the HTML directory listing, but the design
+  treats the paths as not-secret for open bins. And `GET /api/bins` is the **owner's full
+  view**: the API key holder sees complete metadata for every bin on the instance, protected
+  ones included, with no filtering or field suppression — the key holder is the instance owner.
+  `PATCH` keeps requiring API key **and** current bin password for a protected bin: rotating or
+  clearing a password requires presenting the current one.
 - **Errors stay plain text.** Every error the API answers — including the new endpoints — stays
   the established short plain-text body (`invalid API key`, `unknown bin`, `bin password
   required`, …). JSON bodies are for success responses; the existing plain-404 test conventions
@@ -80,12 +88,14 @@ These are design calls, mine unless the partner objects:
 
 ## Consequences that must ship in the same cut
 
-- `sandbin-client`: `describe` re-pointed at the inspect endpoint; new `list` verb (its output
-  is human-readable text lines, matching the CLI's current style, not raw JSON — flag if
-  wrong); client creation switched from the three headers to the JSON body; the
-  `SANDBIN_BIN_PASSWORD` env var keeps its exact current role (it feeds Basic auth for
-  protected bins, and the create-time password as well today — where the create password comes
-  from now is the builder's to settle so the UX stays: same env var is the safe answer).
+- `sandbin-client`: `describe` re-pointed at the inspect endpoint and settled to print the
+  **full inspection** — title, description, hash, created time, whether the bin has a password,
+  and the file listing — as human-readable text lines; the new `list` verb pages through the
+  instance's bins, also as human-readable text lines (not raw JSON); client creation switched
+  from the three headers to the JSON body; the `SANDBIN_BIN_PASSWORD` env var keeps its exact
+  current role (it feeds Basic auth for protected bins, and the create-time password as well
+  today — where the create password comes from now is the builder's to settle so the UX stays:
+  same env var is the safe answer).
 - The embedded `SKILL.md` and installer templates: anything telling an agent to create bins or
   set metadata must show the new JSON endpoints.
 - Hosted usage docs: `sandbin-api.md` (swagger-style) rewritten for the new surface; the client
@@ -102,6 +112,17 @@ These are design calls, mine unless the partner objects:
   returning file contents through the inspect endpoint; OAuth or bearer tokens.
 - Anti-goals: any compatibility shim, deprecated-but-working header path, or dual route; a
   listing that leaks file contents or passwords; a paged listing whose results shuffle mid-walk.
+
+## Minor calls adopted from the builder check
+
+The builder check proposed these and the design adopts them; veto any that read wrong:
+`POST /api/bins` answers `201` with the full bin JSON object (which is why the bin object names
+its base path — the client reads the hash from it); an empty or missing JSON body on create
+means a plain bin with no metadata, mirroring today's header-less `POST /`; `/api/bins/` and
+`/api/bins/{hash}/` with a trailing slash answer the unknown-path plain 404; `HEAD` on `/api`
+routes is 405; `PATCH` with `{}` answers 200 with the unchanged bin; and the HTML bin listing
+page keeps rendering title and description, read from the database rather than the retired
+response headers.
 
 ## Versioning
 
