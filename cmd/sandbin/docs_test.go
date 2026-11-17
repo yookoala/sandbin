@@ -426,6 +426,7 @@ func TestDocsAPIPageIsSwaggerStyle(t *testing.T) {
 		"id=\"" + githubSlugForTest("DELETE — remove the bin") + "\"",
 		"id=\"" + githubSlugForTest("/api/key — check the API key") + "\"",
 		"id=\"" + githubSlugForTest("/api/health — the liveness probe") + "\"",
+		"id=\"" + githubSlugForTest("/openapi.json — the machine-readable API document") + "\"",
 		"id=\"" + githubSlugForTest("/ — the instance root") + "\"",
 		"id=\"" + githubSlugForTest("/{hash}/ — the bin base") + "\"",
 		"id=\"" + githubSlugForTest("/{hash}/{path} — a file in a bin") + "\"",
@@ -447,6 +448,7 @@ func TestDocsAPIPageIsSwaggerStyle(t *testing.T) {
 		"/api/bins/{hash} — inspect, update, delete",
 		"/api/key — check the API key",
 		"/api/health — the liveness probe",
+		"/openapi.json — the machine-readable API document",
 		"/{hash}/ — the bin base",
 		"/{hash}/{path} — a file in a bin",
 		"/{hash}/{folder}/ — a folder in a bin",
@@ -460,6 +462,25 @@ func TestDocsAPIPageIsSwaggerStyle(t *testing.T) {
 	}
 	if strings.Contains(body, "http://localhost:8080") {
 		t.Error("the API page still carries a localhost placeholder address")
+	}
+}
+
+// TestDocsOpenAPIDocSection pins the /openapi.json section's content points on the API page:
+// the new h2 itself (its placement is pinned by the swagger-style h2 order), the sentence that
+// this route needs no key and charges nothing, the make openapi name a self-builder regenerates
+// with, and the sentence that keeps bin-content paths out of the document.
+func TestDocsOpenAPIDocSection(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	body := get(t, h, "/docs/sandbin-api.html").Body.String()
+	for _, want := range []string{
+		"id=\"" + githubSlugForTest("/openapi.json — the machine-readable API document") + "\"",
+		"It needs no API key and charges nothing",
+		"<code>make openapi</code>",
+		"are not in the document",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the API page's /openapi.json section misses %q in:\n%s", want, body[:min(len(body), 400)])
+		}
 	}
 }
 

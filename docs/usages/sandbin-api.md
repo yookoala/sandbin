@@ -293,6 +293,44 @@ curl {{ .Instance.URL }}/api/health
 
 It answers `{"status":"ok"}`.
 
+## `/openapi.json` — the machine-readable API document
+
+The contract route answers `GET` alone; `HEAD` and every other method — `POST` included —
+are the plain `405`, and the trailing-slash spelling `/openapi.json/` is the plain `404`.
+
+Answers `200` `application/json` with the OpenAPI 3.1 document: the machine-readable
+description of the `/api` JSON surface — `/api/bins`, `/api/bins/{hash}`, `/api/key`,
+`/api/health`, and this route itself. It needs no API key and charges nothing, so it
+answers even while its address is blocked. The document is generated from the server's own
+route table and committed with the source; a self-builder regenerates it with `make openapi`.
+
+Bin-content paths — every path under `/{hash}/` — are not in the document: a path of
+arbitrary depth cannot be described in conformant OpenAPI, so the sections below document
+that surface by hand.
+
+```sh
+curl -s {{ .Instance.URL }}/openapi.json
+```
+
+It answers the whole document — here its opening and the paths it names, the rest elided:
+
+```text
+{
+  "openapi": "3.1.1",
+  "info": {
+    "title": "sandbin HTTP API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/bins": { … },
+    "/api/bins/{hash}": { … },
+    "/api/key": { … },
+    "/api/health": { … },
+    "/openapi.json": { … }
+  }
+}
+```
+
 ## `/{hash}/` — the bin base
 
 The bin base answers `GET`. An unknown hash is `404`; every other method against the base
