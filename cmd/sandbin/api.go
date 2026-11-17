@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -118,19 +119,33 @@ func fieldIsJSONText(raw json.RawMessage) bool {
 }
 
 // decodeBinRequest reads the capped JSON body of a bin write. No body is the same request as
-// {}, which is how the decoder reports it too: an empty stream is EOF. A field name this API
-// does not have is the loud refusal, and so is anything that is not a JSON object, or a field
-// that is not null or a string. ok says whether the handler may go on; when it is false the
-// refusal is already written.
+// {}, which is how the decoder reports it too: an empty stream is EOF. The body is read whole
+// first, because a decoder aimed straight at the struct takes null — which is no object — as an
+// empty request, and takes a second value after the object as noise it may ignore. A field name
+// this API does not have is the loud refusal, and so is anything that is not one JSON object,
+// or a field that is not null or a string. ok says whether the handler may go on; when it is
+// false the refusal is already written.
 func decodeBinRequest(w http.ResponseWriter, r *http.Request) (binRequest, bool) {
 	var req binRequest
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+
 	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	var body json.RawMessage
+	if err := dec.Decode(&body); err != nil {
 		if errors.Is(err, io.EOF) {
 			return binRequest{}, true
 		}
+		http.Error(w, "could not read the request", http.StatusBadRequest)
+		return binRequest{}, false
+	}
+	if len(body) == 0 || body[0] != '{' || dec.More() {
+		http.Error(w, "could not read the request", http.StatusBadRequest)
+		return binRequest{}, false
+	}
+
+	fields := json.NewDecoder(bytes.NewReader(body))
+	fields.DisallowUnknownFields()
+	if err := fields.Decode(&req); err != nil {
 		if strings.Contains(err.Error(), "unknown field") {
 			http.Error(w, "unrecognized field in the request", http.StatusBadRequest)
 			return binRequest{}, false

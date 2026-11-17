@@ -323,9 +323,9 @@ func TestFrontPageAtRoot(t *testing.T) {
 		}
 	}
 
-	// The front page branch must not shadow creation or the old refusals.
+	// The front page branch must not shadow the create route or the old refusals.
 	if base := createTestBin(t, h, "test-key"); base == "" {
-		t.Fatal("POST / stopped creating a bin")
+		t.Fatal("POST /api/bins stopped creating a bin")
 	}
 	for _, method := range []string{http.MethodPut, http.MethodDelete, http.MethodPatch, http.MethodHead, http.MethodOptions} {
 		req := httptest.NewRequest(method, "/", nil)
@@ -835,8 +835,8 @@ func TestRootPostIsGone(t *testing.T) {
 	if got := rec.Body.String(); got != "method not allowed\n" {
 		t.Errorf("POST / body = %q, want the method not allowed message", got)
 	}
-	if _, blocked := s.store.IsBlocked("198.51.100.24", time.Now()); blocked {
-		t.Errorf("POST / charged 198.51.100.24, want a 405 that never reaches the key")
+	if failures, haveRow := ipBlockRow(t, s.store, "198.51.100.24"); haveRow || failures != 0 {
+		t.Errorf("POST / charged 198.51.100.24 with %d failures, want a 405 that never reaches the key", failures)
 	}
 	if after := storedBinCount(t, s); after != before {
 		t.Errorf("bins after POST / = %d, want the same %d as before", after, before)
@@ -1621,13 +1621,13 @@ func TestPostBinMetadata(t *testing.T) {
 
 	base := createTestBinWithMetadata(t, s, "test-key", "Test report", "findings of the audit")
 	if title, description := storedMeta(t, s, base); title != "Test report" || description != "findings of the audit" {
-		t.Errorf("stored metadata = %q / %q, want the headers the POST carried", title, description)
+		t.Errorf("stored metadata = %q / %q, want the fields the POST body carried", title, description)
 	}
 
-	// A bin made without the headers is the same bin as ever: empty metadata.
+	// A bin whose body names neither field is the same bin as ever: empty metadata.
 	plain := createTestBin(t, s, "test-key")
 	if title, description := storedMeta(t, s, plain); title != "" || description != "" {
-		t.Errorf("metadata of a header-less bin = %q / %q, want both empty", title, description)
+		t.Errorf("metadata of a bin with no fields = %q / %q, want both empty", title, description)
 	}
 }
 

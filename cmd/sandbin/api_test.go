@@ -455,3 +455,57 @@ func TestAPICreateBinRefusals(t *testing.T) {
 		t.Errorf("bins after the refusals = %d, want the same %d as before", after, before)
 	}
 }
+
+// TestAPICreateBinBodyShapes is the "the top-level value must be a JSON object" rule against the
+// shapes a decode aimed straight at a struct lets through: null is not an object and makes no
+// bin, and nothing may trail the one object a body is allowed to hold.
+func TestAPICreateBinBodyShapes(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	const addr = "198.51.100.76:1234"
+	before := storedBinCount(t, s)
+
+	for _, body := range []string{
+		"null",
+		"{}{}",
+		`{"title":"a"}{"title":"b"}`,
+		`{"title":"a"} junk`,
+	} {
+		rec := postAPIBins(t, s, addr, "test-key", body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("POST /api/bins body %s = %d, want %d; body %q", body, rec.Code, http.StatusBadRequest, rec.Body.String())
+			continue
+		}
+		if got := rec.Body.String(); got != "could not read the request\n" {
+			t.Errorf("POST /api/bins body %s = %q, want the could not read the request message", body, got)
+		}
+	}
+
+	if after := storedBinCount(t, s); after != before {
+		t.Errorf("bins after the shape refusals = %d, want the same %d as before", after, before)
+	}
+}
+
+// TestFieldValueStates is the tri-state table every bin write reads its fields through: an
+// absent field is not given, null and "" are given as empty, a JSON string is its value, and a
+// raw value that is none of those — which decodeBinRequest refuses before a handler sees it —
+// reads as given-empty.
+func TestFieldValueStates(t *testing.T) {
+	for _, c := range []struct {
+		raw       json.RawMessage
+		wantValue string
+		wantGiven bool
+		why       string
+	}{
+		{nil, "", false, "an absent field is not given"},
+		{json.RawMessage("null"), "", true, "an explicit null is given as empty"},
+		{json.RawMessage(`""`), "", true, "an explicit empty string is given as empty"},
+		{json.RawMessage(`"x"`), "x", true, "a JSON string is its value"},
+		{json.RawMessage(`"a\nb"`), "a\nb", true, "the escapes a JSON string carries are read out of it"},
+		{json.RawMessage("5"), "", true, "a raw number reads as given-empty, never as a value"},
+	} {
+		value, given := fieldValue(c.raw)
+		if value != c.wantValue || given != c.wantGiven {
+			t.Errorf("fieldValue(%s) = (%q, %v), want (%q, %v): %s", c.raw, value, given, c.wantValue, c.wantGiven, c.why)
+		}
+	}
+}
