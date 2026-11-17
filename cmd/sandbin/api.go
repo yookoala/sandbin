@@ -166,7 +166,16 @@ func decodeBinRequest(w http.ResponseWriter, r *http.Request, bodyOptional bool)
 		http.Error(w, "could not read the request", http.StatusBadRequest)
 		return binRequest{}, false
 	}
-	if len(body) == 0 || body[0] != '{' || dec.More() {
+	if len(body) == 0 || body[0] != '{' {
+		http.Error(w, "could not read the request", http.StatusBadRequest)
+		return binRequest{}, false
+	}
+	// The strict end of the stream: a second decode must run into io.EOF, so whitespace
+	// (even a trailing newline) passes while any further value is refused. dec.More()
+	// alone is not enough — it reports false on a stray ']' or '}' as if they closed an
+	// enclosing container this body never had.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
 		http.Error(w, "could not read the request", http.StatusBadRequest)
 		return binRequest{}, false
 	}
@@ -313,8 +322,10 @@ func decodeCursor(raw string) (BinCursor, error) {
 	if err != nil {
 		return BinCursor{}, errors.New("cursor is not unpadded URL-safe base64")
 	}
+	// strings.Cut splits at the first separator, so the hash half is where a second one
+	// could hide — and neither half may carry one.
 	createdAt, hash, found := strings.Cut(string(decoded), cursorSeparator)
-	if !found || createdAt == "" || hash == "" {
+	if !found || createdAt == "" || hash == "" || strings.Contains(hash, cursorSeparator) {
 		return BinCursor{}, errors.New("cursor names no created_at and hash")
 	}
 	return BinCursor{CreatedAt: createdAt, Hash: hash}, nil

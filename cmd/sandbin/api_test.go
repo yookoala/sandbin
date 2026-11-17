@@ -471,6 +471,10 @@ func TestAPICreateBinBodyShapes(t *testing.T) {
 		"{}{}",
 		`{"title":"a"}{"title":"b"}`,
 		`{"title":"a"} junk`,
+		// A stray closing bracket is a second value all the same: it is not a marker
+		// this top-level body may end with.
+		`{"title":"a"}]`,
+		`{"title":"a"}}`,
 	} {
 		rec := postAPIBins(t, s, addr, "test-key", body)
 		if rec.Code != http.StatusBadRequest {
@@ -482,8 +486,15 @@ func TestAPICreateBinBodyShapes(t *testing.T) {
 		}
 	}
 
-	if after := storedBinCount(t, s); after != before {
-		t.Errorf("bins after the shape refusals = %d, want the same %d as before", after, before)
+	// Whitespace after the one object is not a second value: a body ending in a
+	// newline is the same JSON object and stays accepted.
+	rec := postAPIBins(t, s, addr, "test-key", "{\"title\":\"trailing newline\"}\n")
+	if rec.Code != http.StatusCreated {
+		t.Errorf("POST /api/bins with a trailing newline = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	if after := storedBinCount(t, s); after != before+1 {
+		t.Errorf("bins after the shape refusals = %d, want the same %d as before plus the one accepted body", after, before)
 	}
 }
 
@@ -775,6 +786,9 @@ func TestAPIPatchJSON(t *testing.T) {
 		{`{"title":5}`, "could not read the request\n"},
 		{`null`, "could not read the request\n"},
 		{`{"title":"a"}{"title":"b"}`, "could not read the request\n"},
+		// A stray closing bracket trails the object just like a second one, and is
+		// refused the same way.
+		{`{"title":"a"}]`, "could not read the request\n"},
 		{`{"title":"` + strings.Repeat("t", maxTitleBytes+1) + `"}`, "title over 200 bytes\n"},
 		{`{"title":"a\nb"}`, "title may not contain control characters\n"},
 	} {
@@ -1537,12 +1551,14 @@ func TestAPIListBinsCursorIntegrity(t *testing.T) {
 
 	// A cursor this API never made is refused: nonsense decodes to bytes with no separator; a
 	// clean base64 word holds none either; padding is not this cursor's alphabet; an empty
-	// created_at half names no position.
+	// created_at half names no position; and a second separator hides inside the hash half,
+	// which no created_at or hash can carry.
 	for _, c := range []string{
 		"nonsense",
 		base64.RawURLEncoding.EncodeToString([]byte("no separator here")),
 		"YWJjZA==",
 		base64.RawURLEncoding.EncodeToString([]byte("\x1fdeadbeef")),
+		base64.RawURLEncoding.EncodeToString([]byte("2020-01-01T00:00:00Z\x1fdeadbeef\x1fextra")),
 	} {
 		rec := listFrom(t, s, addr, "?cursor="+c)
 		if rec.Code != http.StatusBadRequest {
