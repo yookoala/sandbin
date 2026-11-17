@@ -88,7 +88,7 @@ prompt shows the built-in default `http://localhost:8080` in brackets — right 
 server you mean is listening there — so this example types the instance's own address at the
 prompt, and the prompt echoes what you type, key included, the way any terminal prompt does;
 no client output ever prints the key on its own. The check before writing anything is a
-`POST /verify-key` with the candidate key: a wrong key answers `server rejected this API key`
+`POST /api/key` with the candidate key: a wrong key answers `server rejected this API key`
 and a locked-out address answers `server is blocking this address: too many bad API keys`, and
 either way init writes nothing — a project never holds a setup that cannot upload.
 

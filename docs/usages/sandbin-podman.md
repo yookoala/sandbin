@@ -21,7 +21,7 @@ podman run -d \
   -p 127.0.0.1:8080:8080 \
   -v sandbin-data:/data \
   --env-file ~/.config/sandbin/sandbin.env \
-  --health-cmd "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1" \
+  --health-cmd "wget -q -O /dev/null http://127.0.0.1:8080/api/health || exit 1" \
   --health-interval=30s --health-start-period=5s --health-retries=3 \
   ghcr.io/yookoala/sandbin:latest
 ```
@@ -81,7 +81,7 @@ podman run -d \
   -p 127.0.0.1:8080:8080 \
   -v sandbin-data:/data \
   --env-file ~/.config/sandbin/sandbin.env \
-  --health-cmd "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1" \
+  --health-cmd "wget -q -O /dev/null http://127.0.0.1:8080/api/health || exit 1" \
   --health-interval=30s --health-start-period=5s --health-retries=3 \
   localhost/sandbin:latest
 ```

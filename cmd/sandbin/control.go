@@ -11,7 +11,7 @@ import (
 )
 
 // controlMux is the json API the control socket speaks: the block table as four requests,
-// and nothing else. It is its own mux on its own listener, so no bin, file or healthz
+// and nothing else. It is its own mux on its own listener, so no bin, file or /api/health
 // route is reachable through it, and the only authority it needs is the right to connect.
 func controlMux(store *Store) *http.ServeMux {
 	mux := http.NewServeMux()

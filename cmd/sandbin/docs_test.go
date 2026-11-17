@@ -392,7 +392,8 @@ func TestDocsIPBlockingPageMergesBothMachineries(t *testing.T) {
 	for _, want := range []string{
 		"<title>IP Address Blocking</title>",
 		"id=\"trusted-proxies\"",
-		"<code>PATCH /{hash}/</code>",
+		"<code>PATCH /api/bins/{hash}</code>",
+		"<code>POST /api/key</code>",
 		"30 minutes",
 		"<code>Retry-After</code>",
 		"<code>--trusted-proxy</code>",
@@ -406,26 +407,74 @@ func TestDocsIPBlockingPageMergesBothMachineries(t *testing.T) {
 	}
 }
 
-// TestDocsAPIPageIsSwaggerStyle pins the swagger shape of the new API page: the Conventions
-// opener with the one-time $API_KEY export, path and method sections by their slug ids, the
-// usage split under PUT, and none of the old localhost placeholders.
+// TestDocsAPIPageIsSwaggerStyle pins the swagger shape of the JSON-API page: the Conventions
+// opener with the one-time $API_KEY export, the decided h2 route sections in the decided
+// order, the method h3 subsections under them, the JSON-body and ?raw=1 spellings, and none
+// of the old localhost placeholders.
 func TestDocsAPIPageIsSwaggerStyle(t *testing.T) {
 	h := newTestServer(t, "test-key")
 	body := get(t, h, "/docs/sandbin-api.html").Body.String()
 	for _, want := range []string{
 		"<h2 id=\"conventions\">Conventions</h2>",
 		"<code>export API_KEY=your-key</code>",
-		"id=\"" + githubSlugForTest("/ — the instance root") + "\"",
+		"id=\"" + githubSlugForTest("/api/bins — create and list bins") + "\"",
 		"id=\"" + githubSlugForTest("POST — create a bin") + "\"",
+		"id=\"" + githubSlugForTest("GET — list bins") + "\"",
+		"id=\"" + githubSlugForTest("/api/bins/{hash} — inspect, update, delete") + "\"",
+		"id=\"" + githubSlugForTest("GET — inspect the bin") + "\"",
+		"id=\"" + githubSlugForTest("PATCH — edit title, description, and password") + "\"",
+		"id=\"" + githubSlugForTest("DELETE — remove the bin") + "\"",
+		"id=\"" + githubSlugForTest("/api/key — check the API key") + "\"",
+		"id=\"" + githubSlugForTest("/api/health — the liveness probe") + "\"",
+		"id=\"" + githubSlugForTest("/ — the instance root") + "\"",
+		"id=\"" + githubSlugForTest("/{hash}/ — the bin base") + "\"",
+		"id=\"" + githubSlugForTest("/{hash}/{path} — a file in a bin") + "\"",
 		"id=\"" + githubSlugForTest("Archive uploads unpack themselves") + "\"",
+		"id=\"" + githubSlugForTest("/{hash}/{folder}/ — a folder in a bin") + "\"",
 		"X-API-Key: $API_KEY",
+		"JSON body naming any or all of <code>title</code>, <code>description</code> and <code>password</code>",
+		"<code>?raw=1</code>",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the API page misses %q in:\n%s", want, body[:min(len(body), 400)])
 		}
 	}
+	// exactly the decided h2 sections, in the decided order.
+	h2texts := []string{
+		"Conventions",
+		"/ — the instance root",
+		"/api/bins — create and list bins",
+		"/api/bins/{hash} — inspect, update, delete",
+		"/api/key — check the API key",
+		"/api/health — the liveness probe",
+		"/{hash}/ — the bin base",
+		"/{hash}/{path} — a file in a bin",
+		"/{hash}/{folder}/ — a folder in a bin",
+	}
+	h2ids := make([]string, 0, len(h2texts))
+	for _, text := range h2texts {
+		h2ids = append(h2ids, githubSlugForTest(text))
+	}
+	if got, want := strings.Join(docHeadingIDs(body, "2"), " "), strings.Join(h2ids, " "); got != want {
+		t.Errorf("the API page's h2 sections read %q, want %q in:\n%s", got, want, body)
+	}
 	if strings.Contains(body, "http://localhost:8080") {
 		t.Error("the API page still carries a localhost placeholder address")
+	}
+}
+
+// TestDocsNoRetiredSpellings pins the no-shim rule on the hosted pages: the retired
+// header-driven surface appears on no page — no X-Bin-* or X-Extract header, no /verify-key
+// or /healthz route, and no `POST /`-creates-a-bin text.
+func TestDocsNoRetiredSpellings(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	for _, name := range wantDocPages {
+		body := get(t, h, "/docs/"+name).Body.String()
+		for _, gone := range []string{"X-Bin-", "X-Extract", "/verify-key", "/healthz", "<code>POST /</code>"} {
+			if strings.Contains(body, gone) {
+				t.Errorf("%s still carries the retired spelling %q in:\n%s", name, gone, body[:min(len(body), 400)])
+			}
+		}
 	}
 }
 
@@ -444,6 +493,8 @@ func TestDocsServePageCarriesTheCoreSettings(t *testing.T) {
 		"<code>git checkout v0.4.3</code>",
 		"<code>make release TAG=v0.4.3</code>",
 		"The flag wins over the variable, and with neither set the server refuses to start.",
+		"curl http://127.0.0.1:8080/api/health",
+		"<code>GET /api/health</code>",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the serve page misses %q in:\n%s", want, body[:min(len(body), 400)])
@@ -469,6 +520,9 @@ func TestDocsPodmanPagePutsPublishedImageFirst(t *testing.T) {
 		"<title>Running with podman</title>",
 		"<h1 id=\"running-with-podman\">Running with podman</h1>",
 		"ghcr.io/yookoala/sandbin:latest",
+		// The probe targets the JSON health route on the built-in default address; the
+		// renderer quotes the shell quotes.
+		"--health-cmd &quot;wget -q -O /dev/null http://127.0.0.1:8080/api/health || exit 1&quot;",
 		// The inspect command as the template pass leaves it: one brace pair, not the escape.
 		"podman inspect --format '{{.State.Health.Status}}' sandbin",
 		"doubled braces",
@@ -533,6 +587,8 @@ func TestDocsClientInitPageCarriesTheMergedSetup(t *testing.T) {
 		"go install github.com/yookoala/sandbin/cmd/sandbin-client@v0.4.3",
 		"href=\"sandbin-client-upload.html\"",
 		"href=\"sandbin-client-skill.html\"",
+		// the key check init runs is the JSON API's key route.
+		"<code>POST /api/key</code>",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the Building and Config page misses %q in:\n%s", want, body[:min(len(body), 400)])
@@ -553,7 +609,14 @@ func TestDocsClientUploadPageGroupsByVerb(t *testing.T) {
 		"<h2 id=\"upload\">upload</h2>",
 		"<h2 id=\"delete\">delete</h2>",
 		"<h2 id=\"describe\">describe</h2>",
+		"<h2 id=\"list\">list</h2>",
 		"<h2 id=\"rules-that-hold-for-every-run\">Rules that hold for every run</h2>",
+		// The JSON-era inspection describe prints, and the list verb's lines.
+		"bin: abc1234",
+		"password: no",
+		"files: none",
+		"sandbin-client list",
+		"no bins",
 		"<h3 id=\"finding-or-creating-the-bin\">Finding or creating the bin</h3>",
 		"<h3 id=\"upload-files\">Upload files</h3>",
 		"<h3 id=\"pipe-stdin\">Pipe stdin</h3>",
@@ -570,7 +633,7 @@ func TestDocsClientUploadPageGroupsByVerb(t *testing.T) {
 			t.Errorf("the upload page misses %q in:\n%s", want, body[:min(len(body), 400)])
 		}
 	}
-	if got, want := strings.Join(docHeadingIDs(body, "2"), " "), "upload delete describe rules-that-hold-for-every-run"; got != want {
+	if got, want := strings.Join(docHeadingIDs(body, "2"), " "), "upload delete describe list rules-that-hold-for-every-run"; got != want {
 		t.Errorf("the upload page's h2 sections read %q, want %q in:\n%s", got, want, body)
 	}
 }

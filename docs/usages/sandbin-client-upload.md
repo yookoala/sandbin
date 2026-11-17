@@ -4,8 +4,9 @@
 one `created` or `updated` line per file on stdout (or one `extracted <n> files into <url>`
 line when the server unpacked an upload), and the bin base URL last for the human to open.
 Every invocation names its verb: `upload` sends files or piped stdin, `delete` takes paths back
-out of a bin, and `describe` prints what a bin already says about itself; `init` settles the
-directory's connection settings and is covered on [Building and Config](sandbin-client-init.md).
+out of a bin, `describe` prints the full inspection of one bin, and `list` prints every bin
+the server holds; `init` settles the directory's connection settings and is covered on
+[Building and Config](sandbin-client-init.md).
 A bare `sandbin-client`, `--help` and `help` print this verb list on stdout and exit 0;
 `help <verb>` and `<verb> --help` do the same for one verb's flags; a mistyped verb answers
 `No help topic for 'x'` on stderr and exits 1 without making any request. The binary itself is
@@ -20,7 +21,8 @@ the full precedence). A key missing from flag, environment and file alike is a s
 that makes no request at all, and its message names `--api-key`, `SANDBIN_API_KEY` and
 `sandbin-client init` — `describe` is the one verb that asks for no key. `SANDBIN_BIN_PASSWORD`
 has no flag on purpose, so a bin password never lands on a command line: when it is set it goes
-out as `X-Bin-Password` on the create and as Basic Auth (user name = bin hash) on every upload.
+out as the `password` of the create body and as Basic Auth (user name = bin hash) on every
+upload.
 Names follow the same rules wherever a verb takes one: a name that starts with `-` goes after
 `--` (`sandbin-client upload -- -draft.html`), and every name is checked locally before
 anything is sent — an absolute path, a `..` segment or a file over 1 MiB fails locally instead
@@ -31,8 +33,8 @@ of costing a request. A misused verb reports its misuse followed by its own usag
 `upload` takes file arguments, piped stdin, or both in one run. `--bin <hash>` uploads into a
 bin you already have and `--new` forces a fresh one; `--name <path>` names piped-in stdin, and
 with nothing piped in that is an error, not an empty upload; `--archive <folder>` uploads a
-whole folder as one server-unpacked archive (below); and `--no-extract` sends the `X-Extract`
-opt-out header with every upload of the run.
+whole folder as one server-unpacked archive (below); and `--no-extract` uploads every file of
+the run with `?raw=1`, so archive-shaped bodies are stored raw.
 
 ### Finding or creating the bin
 
@@ -140,11 +142,10 @@ out, the whole archive refused and the bin left exactly as it was.
 
 ### Give the bin a title and description
 
-`--title <text>` and `--description <text>` say what the bin holds. They go out as
-`X-Bin-Title` and `X-Bin-Description`: on the `POST` when the run creates the bin, and on a
-`PATCH /abc1234/` when it already exists. A run with metadata flags and no files or stdin is a
-run of its own — it describes the bin and uploads nothing — so notes can follow the uploads or
-come before them:
+`--title <text>` and `--description <text>` say what the bin holds. They go out in the JSON
+body: on the `POST /api/bins` when the run creates the bin, and on a `PATCH /api/bins/abc1234`
+when it already exists. A run with metadata flags and no files or stdin is a run of its own —
+it describes the bin and uploads nothing — so notes can follow the uploads or come before them:
 
 ```sh
 sandbin-client upload --title 'Button grid' --description 'A grid of pressable buttons'
@@ -158,10 +159,10 @@ updated /abc1234/
 Giving a flag an empty value clears that field instead of leaving it alone. A title is at most
 200 bytes and a description at most 2000, neither may span lines or carry control characters,
 and `sandbin-client` refuses one that is too long locally rather than spending a request on it.
-The two fields show up wherever the bin is read: as `X-Bin-Title` and `X-Bin-Description` on
-any `GET` of the bin base, and as a line above the file list on the directory listing the bin
-base serves when the bin has no `index.html`. A bin with no metadata listed is listed exactly
-as it was before metadata existed.
+The two fields show up wherever the bin is read: in the JSON answers of the `/api/bins` routes,
+and as a line above the file list on the directory listing the bin base serves when the bin has
+no `index.html`. A bin with no metadata listed is listed exactly as it was before metadata
+existed.
 
 ## delete
 
@@ -196,21 +197,49 @@ bin itself is found the way [upload finds it](#finding-or-creating-the-bin).
 
 ## describe
 
-`describe` uploads nothing at all and prints what the bin already says about itself, read from
-the bin base. It needs no API key, because a public bin's metadata is public, and a protected
-bin is read with `SANDBIN_BIN_PASSWORD` as the bin password:
+`describe` uploads nothing at all and prints the full inspection of the bin this directory
+points at, read from the inspect endpoint. It needs no API key, because a public bin's
+inspection is public, and a protected bin is read with `SANDBIN_BIN_PASSWORD` as the bin
+password:
 
 ```sh
 sandbin-client describe
 ```
 
 ```text
+bin: abc1234
 title: Button grid
 description: A grid of pressable buttons
+password: no
+created: 2026-11-17T09:14:02Z
+files:
+  index.html  13 bytes  2026-11-17T09:15:00Z
+  notes.md  7 bytes  2026-11-17T09:15:01Z
 ```
 
-`describe` takes no arguments at all — file arguments are refused, and `--name` and `--archive`
-are not its flags — so it can only ever read.
+The lines are the hash, the title, the description, whether a password guards the bin, the
+created time, and one indented line per stored file — a bin with nothing stored answers
+`files: none`. `describe` takes no arguments at all — file arguments are refused, and `--name`
+and `--archive` are not its flags — so it can only ever read.
+
+## list
+
+`list` prints every bin the instance holds, newest first. The server gates the listing behind
+the API key, so this run needs the key like any write and refuses before making a request
+without one:
+
+```sh
+sandbin-client list
+```
+
+```text
+  abc1234  2026-11-17T09:14:02Z  Button grid
+  9c0ffee0  2026-11-16T18:41:30Z
+```
+
+One line per bin: hash, created time, and title — a bin with no title prints without the title
+column — and an instance with nothing to list answers `no bins`. The run walks the server's
+pages on its own; no page size or cursor is ever named on the command line.
 
 ## Rules that hold for every run
 
@@ -218,11 +247,11 @@ are not its flags — so it can only ever read.
 
 **Do not retry a failing `sandbin-client` from a script.** It makes exactly one request per
 operation and never retries, because a wrong or missing API key blocks the client's address
-from `POST`, `PUT` and `DELETE` for 30 minutes, every further failure adds 30 minutes (to a 24
+from every key-checked request for 30 minutes, every further failure adds 30 minutes (to a 24
 hour cap per block), and an attempt while already blocked counts as another failure too. A loop
 that reruns the client after a `403` only digs that wait deeper; read the `429` and its
-`Retry-After`, fix the key, and wait out the stated seconds. `GET` is never charged or blocked,
-so a blocked address can still open what it already published (see [IP Address
+`Retry-After`, fix the key, and wait out the stated seconds. Bin `GET`s are never charged or
+blocked, so a blocked address can still open what it already published (see [IP Address
 Blocking](sandbin-ip-blocking.md)).
 
 ### A prototype needs index.html at the bin root

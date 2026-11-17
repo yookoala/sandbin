@@ -1,85 +1,303 @@
 # The HTTP API
 
-Sandbin's HTTP surface is one server and a handful of routes. This page documents the API,
-grouped by path first — each path is a section — and by method under each path, each with its
-purpose, the headers and bodies it reads, what it answers, and an example; where one method
-serves several usages, those split into subheadings. The examples are rendered for **this
-instance**: every address below is this server's own address, so the requests can be copied
-and run as they stand. The non-API routes — the landing page `GET /`, the hosted docs under
-`/docs`, and the `robots.txt` file — are answered by the same server and belong to running
-it: see [the serve page](sandbin-serve.md).
+Sandbin's HTTP surface is one server and a handful of routes. Bins are created, inspected,
+edited, listed and removed through the JSON API under `/api/`, and their pages and file bytes
+live under paths built from the bin's hash. This page documents the API, grouped by path first
+— each path is a section — and by method under each path, each with its purpose, the headers
+and bodies it reads, what it answers, and an example; where one method serves several usages,
+those split into subheadings. The examples are rendered for **this instance**: every address
+below is this server's own address, so the requests can be copied and run as they stand. The
+non-API routes — the hosted docs under `/docs` and the `robots.txt` file — are answered by the
+same server and belong to running it: see [the serve page](sandbin-serve.md).
 
 ## Conventions
 
-**Key-checked writes.** `POST /`, `PUT`, `PATCH` and `DELETE` take the API key in
-`X-API-Key`. A wrong key answers `403 invalid API key` and charges a lockout failure for the
-address (see [IP Address Blocking](sandbin-ip-blocking.md)). `GET` never needs a key and never
-charges. In the examples the key is always written `$API_KEY`: export it once before running
-them, with the key this instance was configured with — `export API_KEY=your-key`.
+**Key-checked requests.** `POST /api/bins`, `GET /api/bins`, `PATCH /api/bins/{hash}`,
+`DELETE /api/bins/{hash}`, `POST /api/key`, and file `PUT` and `DELETE` take the API key in
+`X-API-Key` — the API's only custom header. A wrong key answers `403 invalid API key` and
+charges a lockout failure for the address (see [IP Address Blocking](sandbin-ip-blocking.md)).
+`GET` never needs a key and never charges — except the listing `GET /api/bins`, which is a
+key-checked read. In the examples the key is always written `$API_KEY`: export it once before
+running them, with the key this instance was configured with — `export API_KEY=your-key`.
 
-**Protected bins.** A bin created with `X-Bin-Password` requires that password as Basic
-Auth — user name the bin's hash, e.g. `curl -u "abc1234:sesame"` — on every `GET`, `PUT` and
-`DELETE` under it. A missing or wrong password is a `401` that charges nothing.
+**JSON in, JSON out.** Every `/api/` request that carries data carries it as one JSON object,
+and every success under `/api/` answers a JSON object with snake_case fields; refusals stay
+short plain text (`invalid API key`, `unknown bin`, `bin password required`). A JSON body is
+capped at 64 KiB, and malformed JSON is a `400`. The bin object names the bin's `bin` hash,
+its base path `url`, its `title` and `description`, whether it `has_password`, and its
+`created_at` (RFC 3339); a bin password is never in any answer.
 
-**Bin paths.** The create answer already ends in `/`, so append the file name directly to
-it (`{{ .Instance.URL }}/abc1234/notes.md`) and never double the slash: a `//` path is a
-`400`.
+**Protected bins.** A bin created with a `password` in its create body requires that password
+as Basic Auth — user name the bin's hash, e.g. `curl -u "abc1234:sesame"` — on every `GET`,
+`PUT` and `DELETE` under it and on the `GET`, `PATCH` and `DELETE` of its `/api/bins/{hash}`
+route. A missing or wrong password is a `401` that charges nothing. No bin is ever protected
+by an empty password: an empty `password`, given or not, leaves the bin open.
+
+**Bin paths.** The create answer's `url` field already ends in `/`, so append the file name
+directly to it (`{{ .Instance.URL }}/abc1234/notes.md`) and never double the slash: a `//`
+path is a `400`.
 
 **Status codes.** `200` and `201` answer success (`201` when something new was created);
-`301` is the bin-base redirect; `400` a rejected path or metadata value; `401` a missing or
-wrong bin password; `403` a bad API key; `404` an unknown bin or path; `405` a method the
-route does not answer; `413` an oversized body; `429` an address blocked for bad API keys.
-`HEAD` is a `405` everywhere except `/healthz` and `/robots.txt`; to read a `GET`'s headers
-instead, use `curl -s -D - -o /dev/null <url>`.
+`204` answers a success with nothing to report; `301` is the bin-base redirect; `400` a
+rejected path or metadata value; `401` a missing or wrong bin password; `403` a bad API key;
+`404` an unknown bin or path; `405` a method the route does not answer; `413` an oversized
+body; `429` an address blocked for bad API keys. `HEAD` is a `405` everywhere except
+`/api/health` and `/robots.txt`; to read a `GET`'s headers instead, use `curl -s -D - -o
+/dev/null <url>`.
 
-The examples below chain: first create a public bin `/abc1234/` and a protected bin
-`/def5678/`, then each later example works against those.
+The examples below chain: first create a public bin — its hash comes out as `abc1234` — and a
+protected one — `def5678`; every later example works against those, apart from the bin
+`DELETE`, which makes its own throwaway bin.
 
 ## `/` — the instance root
 
-The root route is where bins are born. `POST /` creates one; `GET /` answers the branded
-landing page, which is not part of this API ([the serve page](sandbin-serve.md) covers it);
-every other method answers `405`.
+The root answers `GET` alone: the branded landing page, which is not part of this API
+([the serve page](sandbin-serve.md) covers it). Creating a bin lives at `POST /api/bins`
+below, and every method the root does not answer — `POST` included — is a `405`.
+
+## `/api/bins` — create and list bins
+
+The collection answers `POST` and `GET`, both key-checked; every other method against it —
+`HEAD` and `DELETE` included — answers `405`, and the trailing-slash spelling `/api/bins/` is
+the plain `404`.
 
 ### `POST` — create a bin
 
-Creates a new bin and answers `201` with its path as `text/plain`. Key-checked.
+Creates a new bin from a JSON body naming any or all of `title`, `description` and `password`,
+and answers `201` with the new bin's JSON object plus a `Location` naming it. Key-checked: a
+wrong key is `403` and a lockout failure.
 
-| Header | Purpose |
+| Field | Purpose |
 | --- | --- |
-| `X-API-Key` | required; a wrong key is `403` and a lockout failure |
-| `X-Bin-Password` | optional; protects the bin — every read and write under it then needs this password as Basic Auth |
-| `X-Bin-Title` | optional one-line title stored with the bin (at most 200 bytes, no tab, newline or control character) |
-| `X-Bin-Description` | optional description (at most 2000 bytes, same character rule) |
+| `title` | optional one-line title stored with the bin (at most 200 bytes, no tab, newline or control character) |
+| `description` | optional description (at most 2000 bytes, same character rule) |
+| `password` | optional; protects the bin — every read and write under it then needs this password as Basic Auth (at most 72 bytes) |
+
+An absent field, a `null` and an `""` all make the empty value, so a request with no body at
+all is a plain bin with nothing to say.
 
 ```sh
 curl -s \
   -X POST \
   -H "X-API-Key: $API_KEY" \
-  {{ .Instance.URL }}/
+  {{ .Instance.URL }}/api/bins
 ```
 
-It answers `201` with the new bin's path, e.g. `/abc1234/`, as `text/plain`.
+It answers `201` with the new bin's object — here hash `abc1234` — and `Location:
+/api/bins/abc1234`:
+
+```text
+{"bin":"abc1234","url":"/abc1234/","title":"","description":"","has_password":false,"created_at":"2026-11-17T09:14:02Z"}
+```
 
 ```sh
 curl -s \
   -X POST \
   -H "X-API-Key: $API_KEY" \
-  -H "X-Bin-Password: sesame" \
-  -H "X-Bin-Title: Button grid" \
-  -H "X-Bin-Description: A grid of pressable buttons" \
-  {{ .Instance.URL }}/
+  -H "Content-Type: application/json" \
+  -d '{"title":"Button grid","description":"A grid of pressable buttons","password":"sesame"}' \
+  {{ .Instance.URL }}/api/bins
 ```
 
-This one answers `201` with `/def5678/`: a protected bin with its metadata stored.
+This one answers `201` with the object of a protected bin — here hash `def5678`:
 
-An over-long or control-character-bearing title or description is a `400` and creates
-nothing.
+```text
+{"bin":"def5678","url":"/def5678/","title":"Button grid","description":"A grid of pressable buttons","has_password":true,"created_at":"2026-11-17T09:14:03Z"}
+```
+
+An over-long or control-character-bearing title or description, or a password over 72 bytes,
+is a `400` and creates nothing.
+
+### `GET` — list bins
+
+Lists the instance's bins newest-first as JSON. Key-checked — a wrong key charges exactly like
+a write — because the listing is the owner's view: every bin on the instance, protected ones
+included, is listed with its full metadata in plain view.
+
+| Parameter | Purpose |
+| --- | --- |
+| `limit` | page size: default 30, capped at 100; a non-integer or a limit below `1` is `400 invalid limit` |
+| `cursor` | the `next_cursor` a previous page answered; a malformed one is `400 invalid cursor` |
+
+```sh
+curl -s \
+  -H "X-API-Key: $API_KEY" \
+  "{{ .Instance.URL }}/api/bins?limit=1"
+```
+
+It answers `200` with the page of bin objects and, because an older bin follows, the
+`next_cursor` naming the walk's position after the page's last one:
+
+```text
+{"bins":[{"bin":"def5678","url":"/def5678/","title":"Button grid","description":"A grid of pressable buttons","has_password":true,"created_at":"2026-11-17T09:14:03Z"}],"next_cursor":"MjAyNi0xMS0xN1QwOToxNDowM1ofZGVmNTY3OA"}
+```
+
+Pass that value back as `?cursor=` to read the next page:
+
+```sh
+curl -s \
+  -H "X-API-Key: $API_KEY" \
+  "{{ .Instance.URL }}/api/bins?limit=1&cursor=MjAyNi0xMS0xN1QwOToxNDowM1ofZGVmNTY3OA"
+```
+
+```text
+{"bins":[{"bin":"abc1234","url":"/abc1234/","title":"","description":"","has_password":false,"created_at":"2026-11-17T09:14:02Z"}]}
+```
+
+An answer with no `next_cursor` is the end of the walk. A cursor is the unpadded URL-safe
+base64 of the last row's `created_at` and hash, so pages stay stable while bins are created
+mid-walk.
+
+## `/api/bins/{hash}` — inspect, update, delete
+
+The per-bin route answers `GET`, `PATCH` and `DELETE`. An unknown hash is the plain `404`, the
+trailing-slash spelling `/api/bins/abc1234/` is the plain `404` whatever the method, and `HEAD`
+is a `405`.
+
+### `GET` — inspect the bin
+
+Answers the bin's object plus its full file listing — each file's `path`, `size` and
+`updated_at`, sorted by path — as JSON. Needs no key on a public bin, because an open bin's
+words and paths are public; a protected bin needs its Basic Auth, and that `401` charges
+nothing. The listing covers every open bin, even one whose base is covered by a stored
+`index.html`: the HTML listing hides the file list, the inspect answer never does.
+
+```sh
+curl {{ .Instance.URL }}/api/bins/abc1234
+```
+
+It answers `200` with the bin object and its `files` array — empty for the freshly created
+bin; run it again after the uploads below and it names each landed file:
+
+```text
+{"bin":"abc1234","url":"/abc1234/","title":"","description":"","has_password":false,"created_at":"2026-11-17T09:14:02Z","files":[]}
+```
+
+```sh
+curl -u "def5678:sesame" {{ .Instance.URL }}/api/bins/def5678
+```
+
+It answers `200` for the protected bin with its password given; without it the answer is
+`401 bin password required`.
+
+### `PATCH` — edit title, description, and password
+
+Edits the stored metadata and the bin's password, and answers `200` with the bin object as it
+now reads. Key-checked: a wrong API key costs a lockout failure; on a protected bin a wrong
+bin password is a `401` that charges nothing.
+
+`PATCH` merges. A field present in the body replaces that field — a field given as `null` or
+`""` clears it — and a field absent from the body leaves it as it was, so one request can set,
+keep or drop any of the three. `{}` answers `200` with the unchanged bin. The same length and
+character rules as at create apply; a rejected value is a `400` and leaves the bin exactly as
+it was. A protected bin carries its current password as Basic Auth on every change — rotating
+or clearing its password requires presenting the current one.
+
+```sh
+curl -s \
+  -X PATCH \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -u "def5678:sesame" \
+  -d '{"description":"A grid, keyboard, and pointer"}' \
+  {{ .Instance.URL }}/api/bins/def5678
+```
+
+It answers `200` with the bin object as it now reads:
+
+```text
+{"bin":"def5678","url":"/def5678/","title":"Button grid","description":"A grid, keyboard, and pointer","has_password":true,"created_at":"2026-11-17T09:14:03Z"}
+```
+
+Rotating the password is the same route with a `password` field — the current one in Basic
+Auth, the new one in the body:
+
+```sh
+curl -s \
+  -X PATCH \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -u "def5678:sesame" \
+  -d '{"password":"mustard"}' \
+  {{ .Instance.URL }}/api/bins/def5678
+```
+
+It answers `200` with the same object — still `has_password: true`, opened by `mustard` from
+then on. Clearing the password is `"password":null` (or `""`), and the answered object reads
+`has_password: false`.
+
+### `DELETE` — remove the bin
+
+Removes a bin and every file in it. Key-checked — plus the current bin password as Basic Auth
+on a protected bin — carries no body, and answers `204` with an empty body. An unknown hash is
+`404`. The example makes its own throwaway bin so the ones above stay readable:
+
+```sh
+curl -s \
+  -X POST \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Throwaway"}' \
+  {{ .Instance.URL }}/api/bins
+```
+
+It answers `201` with a new bin — here hash `9c0ffee0`:
+
+```text
+{"bin":"9c0ffee0","url":"/9c0ffee0/","title":"Throwaway","description":"","has_password":false,"created_at":"2026-11-17T09:14:40Z"}
+```
+
+```sh
+curl -X DELETE \
+  -H "X-API-Key: $API_KEY" \
+  {{ .Instance.URL }}/api/bins/9c0ffee0
+```
+
+It answers `204`: the bin and its files are gone, and every path under
+`{{ .Instance.URL }}/9c0ffee0/` is a `404` from then on. A protected bin takes the same
+`DELETE` with its current password — for `def5678`, add `-u "def5678:sesame"`. Removing files
+one by one stays on the file route below.
+
+## `/api/key` — check the API key
+
+The key-check route answers `POST` alone and every other method `405`. Key-checked: a working
+key answers `204` with an empty body; a wrong one answers `403 invalid API key` and is charged
+exactly like a failed `POST /api/bins` — same lockout accounting — and nothing is created. The
+check stays a `POST` because `GET` never charges: a key check on `GET` would let anyone probe
+keys for free. `sandbin-client init` uses it to check a key before saving it (see [Building
+and Config](sandbin-client-init.md)).
+
+```sh
+curl -s \
+  -X POST \
+  -o /dev/null \
+  -w "%{http_code}\n" \
+  -H "X-API-Key: $API_KEY" \
+  {{ .Instance.URL }}/api/key
+```
+
+It prints `204` for a key that works; a wrong key prints `403` and costs one lockout failure.
+
+## `/api/health` — the liveness probe
+
+The liveness route answers `GET` and `HEAD` and every other method `405`.
+
+Answers `200` `application/json` with `{"status":"ok"}`. Unauthenticated on purpose for
+container health checks (see [Running with podman](sandbin-podman.md)); it charges nothing and
+answers even while its address is blocked, because `GET` is never charged. It says nothing
+about bins.
+
+```sh
+curl {{ .Instance.URL }}/api/health
+```
+
+It answers `{"status":"ok"}`.
 
 ## `/{hash}/` — the bin base
 
-The bin base answers `GET` and `PATCH`. An unknown hash is `404`; every other method against
-the base without a path — `PUT`, `DELETE` included — answers `405`.
+The bin base answers `GET`. An unknown hash is `404`; every other method against the base
+without a path — `PUT`, `DELETE` and `PATCH` included — answers `405`; the bin's metadata is
+edited at `PATCH /api/bins/{hash}` above.
 
 ### `GET` — the cover page or listing
 
@@ -93,11 +311,10 @@ curl {{ .Instance.URL }}/abc1234/
 
 It answers `200` with the public bin's `index.html` or, lacking one, its directory listing.
 
-Every `GET` on the bin base also carries the stored metadata as `X-Bin-Title` and
-`X-Bin-Description` response headers. Metadata travels on headers only: a raw `index.html`
-cover is untouched by it, and only a directory listing shows it, as a `<p class="bin-meta">`
-line above the file list. A public bin's metadata is public: anyone who can read the bin can
-read what it says it holds.
+The bin's stored title and description show on that listing — a `<p class="bin-meta">` line
+above the file list — and in the JSON inspect answer above. Metadata reaches a reader through
+the listing body and the JSON only: a raw `index.html` cover is untouched by it. A public
+bin's metadata is public: anyone who can read the bin can read what it says it holds.
 
 A `GET` of the bin base without its trailing slash is a `301` redirect to the slashed path,
 so relative links inside the bin resolve:
@@ -118,39 +335,6 @@ curl -u "def5678:sesame" {{ .Instance.URL }}/def5678/
 ```
 
 It answers `200` with the protected bin's cover or listing.
-
-### `PATCH` — edit the title and description
-
-Edits the stored metadata and answers `200` `application/json` with the row as it now reads.
-Key-checked: a wrong API key costs a lockout failure; on a protected bin a wrong bin
-password is a `401` that charges nothing.
-
-`PATCH` merges. A header that is present replaces that field; a header that is absent leaves
-it as it was; a header present with an empty value clears it — so one request can set, keep
-or drop either field. In curl the empty header is written `-H "X-Bin-Title;"`: `-H
-"X-Bin-Title:"` strips the header from the request instead of sending it empty. The same
-length and character rules as at create apply; a rejected value is a `400` and leaves the bin
-exactly as it was.
-
-```sh
-curl -s \
-  -X PATCH \
-  -H "X-API-Key: $API_KEY" \
-  -H "X-Bin-Description: A grid, keyboard, and pointer" \
-  {{ .Instance.URL }}/def5678/
-```
-
-It answers `200` with the row as it now reads:
-`{"title":"Button grid","description":"A grid, keyboard, and pointer"}`.
-
-The metadata rides on every bin-base answer as response headers:
-
-```sh
-curl -s -D - -o /dev/null {{ .Instance.URL }}/def5678/
-```
-
-It prints the answer's headers, which carry the metadata: `200`, `X-Bin-Title: Button grid`
-and `X-Bin-Description: A grid, keyboard, and pointer`.
 
 ## `/{hash}/{path}` — a file in a bin
 
@@ -184,12 +368,13 @@ bin without one answers the plain `404 unknown path`.
 Key-checked; a protected bin also needs its Basic Auth. Every `PUT` body is capped at 1 MiB —
 over it is `413`. A rejected path (an escaping or malformed name) is `400`. An upload lands
 as a plain file, except one named as an archive, which unpacks instead: two usages, split
-below.
+below. Both answer JSON.
 
 #### Plain uploads
 
 Stores the body under the path and answers `201` (`200` when the path already existed) with
-the landed path as `text/plain`.
+the file's JSON object — its `path`, `size` and `updated_at` — plus a `Location` naming the
+path when the file was new.
 
 ```sh
 curl -X PUT \
@@ -198,8 +383,13 @@ curl -X PUT \
   {{ .Instance.URL }}/abc1234/index.html
 ```
 
-It answers `201` with the landed path, `/abc1234/index.html`. From then on the bin base
-serves that file as its cover page.
+It answers `201` with `Location: /abc1234/index.html` and the file's object:
+
+```text
+{"path":"index.html","size":13,"updated_at":"2026-11-17T09:15:00Z"}
+```
+
+From then on the bin base serves that file as its cover page.
 
 ```sh
 curl -X PUT \
@@ -208,8 +398,8 @@ curl -X PUT \
   {{ .Instance.URL }}/abc1234/notes.md
 ```
 
-It answers `201` with `/abc1234/notes.md`. Repeating the same upload answers `200` with the
-same path.
+It answers `201` with the object of `/abc1234/notes.md`. Repeating the same upload answers
+`200` with the object of the replaced file and no `Location`.
 
 ```sh
 curl -X PUT \
@@ -218,7 +408,7 @@ curl -X PUT \
   {{ .Instance.URL }}/abc1234/build.ansi
 ```
 
-It answers `201` with `/abc1234/build.ansi`.
+It answers `201` with the file's object.
 
 #### Archive uploads unpack themselves
 
@@ -227,10 +417,9 @@ whose body starts with the matching archive magic is unpacked into the bin inste
 as one file. The format is taken from the body's magic rather than the extension, so a `.tgz`
 holding a zip is unzipped, while an archive-looking name holding no archive magic is a
 `400 not a zip, tar or tar.gz archive`. An archive body under an ordinary name stays just a
-file. To keep an archive-named body raw regardless, send an `X-Extract` header on the `PUT` —
-any value, even empty; presence is what the server reads — and the bytes are stored and
-served unchanged. In curl the empty header is written `-H "X-Extract;"`; `-H "X-Extract:"`
-strips the header from the request instead of sending it empty, so the server extracts.
+file. To keep an archive-named body raw regardless, append `?raw=1` to the upload URL — the
+parameter's presence is what the server reads, so a bare `?raw`, an empty `?raw=` or any
+value opts out the same way — and the bytes are stored and served unchanged.
 
 The entries land under the upload name's parent directory: `PUT {{ .Instance.URL }}/abc1234/site/bundle.tar.gz`
 with entries `index.html` and `css/app.css` creates `site/index.html` and `site/css/app.css`,
@@ -274,9 +463,9 @@ extracted file over 1 MiB`, `archive has over 1000 files` or `archive unpacks ov
 and nothing is stored.
 
 A successful extraction stores all entries or none, replaces the paths it names and never
-deletes anything the archive did not mention. It answers `201` when at least one path was
-new and `200` when every path was a replacement, with an `X-Extracted-Count: <n>` header and
-one `/<hash>/<path>` line per extracted file as its body.
+deletes anything the archive did not mention. It answers `201` when at least one path was new
+and `200` when every path was a replacement, with a JSON object naming the counts; the
+archive name itself was never stored, so there is no `Location`.
 
 ```sh
 tar czf /tmp/bundle.tgz index.html css/app.css
@@ -289,8 +478,13 @@ curl -X PUT \
   {{ .Instance.URL }}/abc1234/site/bundle.tgz
 ```
 
-It answers `201` with `X-Extracted-Count: 2` and the body
-`/abc1234/site/index.html` and `/abc1234/site/css/app.css`, one line per extracted file.
+It answers `201` with the counts of the two landed files:
+
+```text
+{"created":2,"replaced":0}
+```
+
+Re-running the same upload answers `200` with `{"created":0,"replaced":2}`.
 
 ### `DELETE` — remove a file
 
@@ -321,38 +515,3 @@ curl -X DELETE \
 ```
 
 It answers `200` with `{"deleted":["drafts/one.md","drafts/two.md"]}`.
-
-## `/verify-key`
-
-The key-check route; it answers `POST` alone and every other method `405`.
-
-### `POST` — check a key without creating anything
-
-Answers `key ok` for an API key that works, or `403 invalid API key` for one that does not.
-A failure is charged exactly like `POST /` does — same lockout accounting — and nothing is
-created. `sandbin-client init` uses it to check a key before saving it (see [Building and Config](sandbin-client-init.md)).
-
-```sh
-curl -s \
-  -X POST \
-  -H "X-API-Key: $API_KEY" \
-  {{ .Instance.URL }}/verify-key
-```
-
-It answers `key ok` as `text/plain` for a key that works; a wrong key is `403 invalid API
-key` and one lockout failure.
-
-## `/healthz`
-
-The liveness route answers `GET` and `HEAD` and every other method `405`.
-
-### `GET` and `HEAD` — the liveness answer
-
-Answers `200` `text/plain` with `ok`. Unauthenticated on purpose for container health
-checks (see [Running with podman](sandbin-podman.md)); it says nothing about bins.
-
-```sh
-curl {{ .Instance.URL }}/healthz
-```
-
-It answers `ok`.

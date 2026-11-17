@@ -6,8 +6,7 @@ description: Upload files or whole folders to the sandbin server at {{.Base}} so
 # Sandbin preview
 
 `"$SKILL/sandbin-client"` always names its verb — `upload` sends files and folders to the sandbin
-server at {{.Base}}, `delete` takes them back out again, `describe` reads the bin's metadata and
-`init` settles this directory's settings — and prints preview URLs. `$SKILL` is this skill's directory — the folder holding this SKILL.md, which OpenCode names when it loads the skill; start every shell command for this skill by setting `SKILL=<that directory>`. Replace `your-key` with the real API key; `/<bin>/` is a created bin.
+server at {{.Base}}, `delete` takes them back out again, `describe` prints the full inspection of one bin, `list` prints every bin on the server, and `init` settles this directory's settings — and prints preview URLs. `$SKILL` is this skill's directory — the folder holding this SKILL.md, which OpenCode names when it loads the skill; start every shell command for this skill by setting `SKILL=<that directory>`. Replace `your-key` with the real API key; `/<bin>/` is a created bin.
 A bin holding a `404.html` answers every unmatched path under the bin with that file, so a
 one-page app can serve its own routes.
 
@@ -83,11 +82,20 @@ File arguments name files and a repeatable `--folder` names a folder and takes e
 # updated /<bin>/
 # {{.Base}}/<bin>/
 "$SKILL/sandbin-client" describe
+# bin: <bin>
 # title: Button grid
 # description: A grid of pressable buttons
+# password: no
+# created: 2026-11-17T09:14:02Z
+# files:
+#   page.html  13 bytes  2026-11-17T09:15:00Z
+"$SKILL/sandbin-client" list
+#   <bin>  2026-11-17T09:14:02Z  Button grid
 ```
 
-An `upload` with only the metadata flags uploads nothing. `describe` only reads and needs no API key.
+An `upload` with only the metadata flags uploads nothing. `describe` only reads and needs no API
+key; `list` prints every bin on the instance, newest first — hash, created time and title per
+line, `no bins` when there are none — and needs the API key.
 
 ## Caps and what a refusal looks like
 

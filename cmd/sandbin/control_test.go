@@ -267,7 +267,7 @@ func TestControlWrongMethod(t *testing.T) {
 	}
 
 	// HEAD reads, so Go's mux answers it the way it answers GET, which is how the bin
-	// server's own healthz route treats HEAD too.
+	// server's own /api/health route treats HEAD too.
 	code, body := controlProbe(t, client, http.MethodHead, "/ip")
 	if code != http.StatusOK {
 		t.Errorf("HEAD /ip = %d (body %q), want 200: a read is not a wrong method", code, body)
@@ -278,7 +278,7 @@ func TestControlWrongMethod(t *testing.T) {
 }
 
 // TestControlHasNoBinRoutes is the authority claim: the control mux shares nothing with the
-// bin server, so no bin, file or healthz route is reachable through the socket.
+// bin server, so no bin, file or /api/health route is reachable through the socket.
 func TestControlHasNoBinRoutes(t *testing.T) {
 	socketPath, store, client := newControlTestServer(t)
 	binPath := "/1a50eb32/"
@@ -286,10 +286,10 @@ func TestControlHasNoBinRoutes(t *testing.T) {
 		t.Fatalf("CreateBin: %v", err)
 	}
 
-	for _, path := range []string{"/", "/healthz", binPath, binPath + "index.html", "/ip/203.0.113.7/extra", "/ip/"} {
+	for _, path := range []string{"/", "/api/health", binPath, binPath + "index.html", "/ip/203.0.113.7/extra", "/ip/"} {
 		code, body := controlProbe(t, client, http.MethodGet, path)
 		if code != http.StatusNotFound {
-			t.Errorf("GET %s over %s = %d (body %q), want 404: the control mux has no bin, file or healthz route",
+			t.Errorf("GET %s over %s = %d (body %q), want 404: the control mux has no bin, file or /api/health route",
 				path, socketPath, code, body)
 		}
 	}

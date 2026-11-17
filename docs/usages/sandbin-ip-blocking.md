@@ -7,19 +7,19 @@ commands that manage the block table.
 
 ## How the block works
 
-`POST /`, `PUT /{hash}/{path}`, `PATCH /{hash}/`, `DELETE /{hash}/{path}` and
-`POST /verify-key` are the key-checked requests. A wrong or missing `X-API-Key` blocks that
-address from all of them for 30 minutes; every further failure adds 30 minutes, capped at 24
-hours per block, and the failure count survives a restart. While blocked, a key-checked
-request answers `429` with a `Retry-After` (the remaining wait in seconds) and counts as
-another failure, so hammering only lengthens the wait. `GET` is never charged and never
-blocked: a blocked address can still read public bins. Wrong bin passwords (`401`) are not
-failures here.
+`POST /api/bins`, `GET /api/bins`, `PATCH /api/bins/{hash}`, `DELETE /api/bins/{hash}`,
+`PUT /{hash}/{path}`, `DELETE /{hash}/{path}` and `POST /api/key` are the key-checked
+requests. A wrong or missing `X-API-Key` blocks that address from all of them for 30 minutes;
+every further failure adds 30 minutes, capped at 24 hours per block, and the failure count
+survives a restart. While blocked, a key-checked request answers `429` with a `Retry-After`
+(the remaining wait in seconds) and counts as another failure, so hammering only lengthens
+the wait. `GET` is never charged and never blocked: a blocked address can still read public
+bins. Wrong bin passwords (`401`) are not failures here.
 
-`POST /verify-key` is the pure key check `sandbin-client init` runs before saving a key: it
-answers `200 key ok` or `403 invalid API key`, charges every failure exactly like `POST /`
-does, creates nothing, and answers every method but `POST` with `405 method not allowed`, so
-no `GET` can probe a key for free.
+`POST /api/key` is the pure key check `sandbin-client init` runs before saving a key: it
+answers `204` for a working key or `403 invalid API key`, charges every failure exactly like
+a failed bin create does, creates nothing, and answers every method but `POST` with `405
+method not allowed`, so no `GET` can probe a key for free.
 
 ## Which address is charged
 
@@ -89,7 +89,7 @@ to `SANDBIN_SOCKET` the way it falls back for its other settings.
 already listening on sandbin.db.sock`), replaces the stale socket a killed server left behind,
 and refuses a path that holds a regular file or a symlink, leaving that file exactly where it
 is. The two listeners share no routes: `/ip` on the public port is an unknown bin, and the
-socket has no bin, file or healthz route.
+socket has no bin, file or `/api/health` route.
 
 ## The `ip` commands
 

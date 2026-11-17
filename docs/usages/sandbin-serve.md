@@ -63,9 +63,10 @@ export SANDBIN_API_KEY=your-key
 ```
 
 The flag wins over the variable, and with neither set the server refuses to start. This key is
-what every key-checked request — `POST /`, `PUT`, `PATCH`, `DELETE` and `POST /verify-key` —
-must present in `X-API-Key` (see [the API page](sandbin-api.md)); a wrong one answers `403`
-and charges the address to the [block table](sandbin-ip-blocking.md).
+what every key-checked request — the `POST` and `GET` on `/api/bins`, `PATCH` and `DELETE` on
+`/api/bins/{hash}`, `POST /api/key`, and file `PUT` and `DELETE` — must present in `X-API-Key`
+(see [the API page](sandbin-api.md)); a wrong one answers `403` and charges the address to the
+[block table](sandbin-ip-blocking.md).
 
 The rest of `serve`'s core settings are flags with environment fallbacks:
 
@@ -80,6 +81,18 @@ The rest of `serve`'s core settings are flags with environment fallbacks:
 
 Beyond a missing API key, the server exits when a trusted-proxy value cannot be read or when
 another serve already answers on its control socket.
+
+Every serve also answers `GET /api/health` with a JSON status object — the liveness probe
+containers use, needing no key and charging nothing (see [the API page](sandbin-api.md) and
+[Running with podman](sandbin-podman.md)). On the built-in default address:
+
+```sh
+curl http://127.0.0.1:8080/api/health
+```
+
+```text
+{"status":"ok"}
+```
 
 The CLI names its verb: `serve` runs the server and `help` prints the usage. A bare `sandbin`,
 `sandbin help` and `--help` print that usage on stdout and exit 0; an unknown verb answers
