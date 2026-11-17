@@ -99,6 +99,32 @@ func TestCreateBinStoresMetadata(t *testing.T) {
 	}
 }
 
+// TestStoreBinCreatedAtRoundTrip is the JSON API's read path: a bin made by CreateBin
+// reads back with the created_at it was stamped with, as a parseable RFC 3339 string.
+func TestStoreBinCreatedAtRoundTrip(t *testing.T) {
+	store := newTestStore(t)
+
+	before := time.Now().UTC().Add(-time.Minute)
+	hash, err := store.CreateBin("", "", "")
+	if err != nil {
+		t.Fatalf("CreateBin: %v", err)
+	}
+	bin, ok, err := store.GetBin(hash)
+	if err != nil || !ok {
+		t.Fatalf("GetBin(%q) = ok %v, err %v", hash, ok, err)
+	}
+	if bin.CreatedAt == "" {
+		t.Fatalf("GetBin did not carry a CreatedAt")
+	}
+	created, err := time.Parse(time.RFC3339, bin.CreatedAt)
+	if err != nil {
+		t.Fatalf("CreatedAt %q is not RFC 3339: %v", bin.CreatedAt, err)
+	}
+	if created.Before(before) || created.After(time.Now().UTC().Add(time.Minute)) {
+		t.Errorf("CreatedAt %q is not the moment CreateBin wrote it", bin.CreatedAt)
+	}
+}
+
 // TestUpdateBinMeta walks the keep / replace / clear cases one field at a time, which is
 // what COALESCE in one UPDATE is for, and reports a missing bin as false.
 func TestUpdateBinMeta(t *testing.T) {
@@ -124,7 +150,7 @@ func TestUpdateBinMeta(t *testing.T) {
 		{sql.NullString{}, sql.NullString{String: "", Valid: true}, "", ""},
 		{sql.NullString{String: "third title", Valid: true}, sql.NullString{String: "third description", Valid: true}, "third title", "third description"},
 	} {
-		found, err := store.UpdateBinMeta(hash, tc.title, tc.description)
+		found, err := store.UpdateBinMeta(hash, tc.title, tc.description, sql.NullString{})
 		if err != nil {
 			t.Fatalf("UpdateBinMeta #%d: %v", i+1, err)
 		}
@@ -142,7 +168,7 @@ func TestUpdateBinMeta(t *testing.T) {
 	}
 
 	// An unknown bin is reported as absent rather than a silent no-op, and no other row moves.
-	found, err := store.UpdateBinMeta("deadbeef", sql.NullString{String: "x", Valid: true}, sql.NullString{String: "y", Valid: true})
+	found, err := store.UpdateBinMeta("deadbeef", sql.NullString{String: "x", Valid: true}, sql.NullString{String: "y", Valid: true}, sql.NullString{})
 	if err != nil {
 		t.Fatalf("UpdateBinMeta(unknown): %v", err)
 	}
@@ -155,6 +181,59 @@ func TestUpdateBinMeta(t *testing.T) {
 	}
 	if bin.Title != "keep me" || bin.Description != "keep me too" {
 		t.Errorf("the other bin's metadata = %q / %q, want it untouched", bin.Title, bin.Description)
+	}
+}
+
+// TestStoreUpdateBinMetaPasswordStates walks the password column through the same
+// COALESCE keep / replace / clear cases title and description already have: a Valid
+// value sets it (the empty string meaning open), a NULL argument leaves it.
+func TestStoreUpdateBinMetaPasswordStates(t *testing.T) {
+	store := newTestStore(t)
+	hash, err := store.CreateBin("old-hash", "first title", "first description")
+	if err != nil {
+		t.Fatalf("CreateBin: %v", err)
+	}
+
+	for i, tc := range []struct {
+		title, description, passwordHash             sql.NullString
+		wantTitle, wantDescription, wantPasswordHash string
+	}{
+		// NULL everywhere leaves every field as it is.
+		{sql.NullString{}, sql.NullString{}, sql.NullString{}, "first title", "first description", "old-hash"},
+		// A Valid password replaces the stored hash; the metadata stays.
+		{sql.NullString{}, sql.NullString{}, sql.NullString{String: "new-hash", Valid: true}, "first title", "first description", "new-hash"},
+		// A Valid empty password clears the hash: the bin is open again.
+		{sql.NullString{}, sql.NullString{}, sql.NullString{String: "", Valid: true}, "first title", "first description", ""},
+		// A NULL password leaves the hash the previous case just cleared.
+		{sql.NullString{}, sql.NullString{}, sql.NullString{}, "first title", "first description", ""},
+		// Password and metadata update together in one call.
+		{sql.NullString{String: "second title", Valid: true}, sql.NullString{String: "", Valid: true}, sql.NullString{String: "third-hash", Valid: true}, "second title", "", "third-hash"},
+	} {
+		found, err := store.UpdateBinMeta(hash, tc.title, tc.description, tc.passwordHash)
+		if err != nil {
+			t.Fatalf("UpdateBinMeta #%d: %v", i+1, err)
+		}
+		if !found {
+			t.Fatalf("UpdateBinMeta #%d = false, want the bin found", i+1)
+		}
+		bin, ok, err := store.GetBin(hash)
+		if err != nil || !ok {
+			t.Fatalf("GetBin after update #%d: ok %v, err %v", i+1, ok, err)
+		}
+		if bin.Title != tc.wantTitle || bin.Description != tc.wantDescription || bin.PasswordHash != tc.wantPasswordHash {
+			t.Errorf("after update #%d: metadata = %q / %q, password %q; want %q / %q, password %q",
+				i+1, bin.Title, bin.Description, bin.PasswordHash,
+				tc.wantTitle, tc.wantDescription, tc.wantPasswordHash)
+		}
+	}
+
+	// An unknown bin is still reported as absent, whatever the password argument says.
+	found, err := store.UpdateBinMeta("deadbeef", sql.NullString{}, sql.NullString{}, sql.NullString{String: "x", Valid: true})
+	if err != nil {
+		t.Fatalf("UpdateBinMeta(unknown): %v", err)
+	}
+	if found {
+		t.Errorf("UpdateBinMeta(unknown) = true, want false")
 	}
 }
 
@@ -432,6 +511,56 @@ func TestDeleteFolder(t *testing.T) {
 	}
 }
 
+// TestStoreDeleteBinCascade removes the whole bin: its files go with its row, a second
+// delete reports the bin was not there, and another bin — even one holding a file of the
+// same name — stays untouched.
+func TestStoreDeleteBinCascade(t *testing.T) {
+	store := newTestStore(t)
+	hash, err := store.CreateBin("", "gone title", "gone description")
+	if err != nil {
+		t.Fatalf("CreateBin: %v", err)
+	}
+	other, err := store.CreateBin("", "kept title", "kept description")
+	if err != nil {
+		t.Fatalf("CreateBin: %v", err)
+	}
+	for _, seed := range []struct{ bin, path string }{
+		{hash, "a.txt"}, {hash, "sub/b.txt"},
+		{other, "a.txt"}, // the same name in another bin
+	} {
+		if _, err := store.PutFile(seed.bin, seed.path, []byte("body of "+seed.path)); err != nil {
+			t.Fatalf("PutFile(%q in %q): %v", seed.path, seed.bin, err)
+		}
+	}
+
+	gone, err := store.DeleteBin(hash)
+	if err != nil {
+		t.Fatalf("DeleteBin: %v", err)
+	}
+	if !gone {
+		t.Errorf("DeleteBin = false, want true")
+	}
+	if files, err := store.ListFiles(hash); err != nil || len(files) != 0 {
+		t.Errorf("ListFiles after the delete = %v, err %v; want empty, no error", files, err)
+	}
+	if _, ok, err := store.GetBin(hash); err != nil || ok {
+		t.Errorf("GetBin after the delete = ok %v, err %v; want not found, no error", ok, err)
+	}
+
+	// A second delete of the same hash says nothing was there.
+	if gone, err := store.DeleteBin(hash); err != nil || gone {
+		t.Errorf("second DeleteBin = gone %v, err %v; want false, no error", gone, err)
+	}
+
+	// Only the deleted bin went: the other bin and its file of the same name survive.
+	if bin, ok, err := store.GetBin(other); err != nil || !ok || bin.Title != "kept title" {
+		t.Errorf("the other bin after the delete = %+v, ok %v, err %v; want it untouched", bin, ok, err)
+	}
+	if _, ok, err := store.GetFile(other, "a.txt"); err != nil || !ok {
+		t.Errorf("the other bin's a.txt = ok %v, err %v; want it kept", ok, err)
+	}
+}
+
 func TestListFiles(t *testing.T) {
 	store := newTestStore(t)
 	hash, err := store.CreateBin("", "", "")
@@ -463,6 +592,89 @@ func TestListFiles(t *testing.T) {
 		if f.UpdatedAt == "" {
 			t.Errorf("files[%d].UpdatedAt is empty", i)
 		}
+	}
+}
+
+// seedBin writes one bins row with an exact hash and created_at, which is how the
+// keyset tests get an ordering CreateBin's time.Now cannot pin down.
+func seedBin(t *testing.T, store *Store, hash string, createdAt time.Time) {
+	t.Helper()
+	if _, err := store.db.Exec(`INSERT INTO bins (hash, password_hash, created_at) VALUES (?, '', ?)`,
+		hash, createdAt.UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("seed bin %q: %v", hash, err)
+	}
+}
+
+// TestStoreListBinsKeyset walks five seeded bins newest first: the first page is the
+// newest three with hasMore true, a cutoff at the last returned row continues without
+// repeating it, the last page ends with hasMore false, and rows sharing a created_at
+// order by hash desc with the cursor cut strictly after the cutoff row.
+func TestStoreListBinsKeyset(t *testing.T) {
+	store := newTestStore(t)
+	base := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	for i, hash := range []string{"aaaa0001", "aaaa0002", "aaaa0003", "aaaa0004", "aaaa0005"} {
+		seedBin(t, store, hash, base.Add(time.Duration(i)*time.Hour))
+	}
+
+	bins, hasMore, err := store.ListBins(3, nil)
+	if err != nil {
+		t.Fatalf("ListBins(3, nil): %v", err)
+	}
+	if !hasMore {
+		t.Errorf("ListBins(3, nil) hasMore = false, want true with 5 bins stored")
+	}
+	wantFirst := []string{"aaaa0005", "aaaa0004", "aaaa0003"}
+	if len(bins) != len(wantFirst) {
+		t.Fatalf("ListBins(3, nil) returned %d bins, want %d", len(bins), len(wantFirst))
+	}
+	for i, want := range wantFirst {
+		if bins[i].Hash != want {
+			t.Errorf("bins[%d].Hash = %q, want %q", i, bins[i].Hash, want)
+		}
+	}
+
+	// A cutoff at the last returned row's (CreatedAt, Hash) continues the walk
+	// without repeating the cutoff row itself.
+	cutoff := BinCursor{CreatedAt: bins[2].CreatedAt, Hash: bins[2].Hash}
+	bins, hasMore, err = store.ListBins(3, &cutoff)
+	if err != nil {
+		t.Fatalf("ListBins(3, cutoff): %v", err)
+	}
+	wantRest := []string{"aaaa0002", "aaaa0001"}
+	if len(bins) != len(wantRest) {
+		t.Fatalf("ListBins(3, cutoff) returned %d bins, want %d", len(bins), len(wantRest))
+	}
+	for i, want := range wantRest {
+		if bins[i].Hash != want {
+			t.Errorf("cutoff page bins[%d].Hash = %q, want %q", i, bins[i].Hash, want)
+		}
+	}
+	if hasMore {
+		t.Errorf("ListBins(3, cutoff) hasMore = true, want false at the end of the table")
+	}
+
+	// Rows sharing a created_at order by hash desc, and the cursor cut is strictly
+	// after the cutoff row: the same-created_at neighbour still pages out.
+	shared := base.Add(10 * time.Hour)
+	seedBin(t, store, "bbbb0001", shared)
+	seedBin(t, store, "bbbb0002", shared)
+
+	page, hasMore, err := store.ListBins(1, nil)
+	if err != nil || !hasMore || len(page) != 1 || page[0].Hash != "bbbb0002" {
+		t.Fatalf("ListBins(1, nil) over equal created_at rows = %+v, hasMore %v, err %v; want bbbb0002 first",
+			page, hasMore, err)
+	}
+	cutoff = BinCursor{CreatedAt: page[0].CreatedAt, Hash: page[0].Hash}
+	page, hasMore, err = store.ListBins(1, &cutoff)
+	if err != nil || !hasMore || len(page) != 1 || page[0].Hash != "bbbb0001" {
+		t.Fatalf("the page after the bbbb0002 cutoff = %+v, hasMore %v, err %v; want bbbb0001, which shares its created_at",
+			page, hasMore, err)
+	}
+	cutoff = BinCursor{CreatedAt: page[0].CreatedAt, Hash: page[0].Hash}
+	page, hasMore, err = store.ListBins(1, &cutoff)
+	if err != nil || !hasMore || len(page) != 1 || page[0].Hash != "aaaa0005" {
+		t.Fatalf("the page after the bbbb0001 cutoff = %+v, hasMore %v, err %v; want the older aaaa0005",
+			page, hasMore, err)
 	}
 }
 
@@ -818,7 +1030,7 @@ func TestOpenStoreMigratesAnOldDb(t *testing.T) {
 	}
 
 	// The migration is what an open does once: a second open adds nothing and loses nothing.
-	if _, err := store.UpdateBinMeta(hash, sql.NullString{String: "added later", Valid: true}, sql.NullString{}); err != nil {
+	if _, err := store.UpdateBinMeta(hash, sql.NullString{String: "added later", Valid: true}, sql.NullString{}, sql.NullString{}); err != nil {
 		t.Fatalf("UpdateBinMeta on the migrated row: %v", err)
 	}
 	if err := store.Close(); err != nil {

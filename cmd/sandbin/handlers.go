@@ -661,6 +661,7 @@ func (s *server) patchBin(w http.ResponseWriter, r *http.Request, hash, sub stri
 	}
 
 	// A NULL argument is the "leave it" case the COALESCE in UpdateBinMeta reads.
+	// This header-based patch never touches the password, so its argument is NULL too.
 	var title, description sql.NullString
 	if titleGiven {
 		title = sql.NullString{String: titleRaw, Valid: true}
@@ -668,7 +669,7 @@ func (s *server) patchBin(w http.ResponseWriter, r *http.Request, hash, sub stri
 	if descriptionGiven {
 		description = sql.NullString{String: descriptionRaw, Valid: true}
 	}
-	updated, err := s.store.UpdateBinMeta(hash, title, description)
+	updated, err := s.store.UpdateBinMeta(hash, title, description, sql.NullString{})
 	if err != nil {
 		log.Printf("update metadata of bin %q: %v", hash, err)
 		http.Error(w, "could not update bin", http.StatusInternalServerError)

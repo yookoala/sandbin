@@ -44,6 +44,7 @@ type Bin struct {
 	PasswordHash string
 	Title        string
 	Description  string
+	CreatedAt    string
 }
 
 type FileEntry struct {
@@ -145,8 +146,8 @@ func newBinHash() (string, error) {
 
 func (s *Store) GetBin(hash string) (Bin, bool, error) {
 	var b Bin
-	err := s.db.QueryRow(`SELECT hash, password_hash, title, description FROM bins WHERE hash=?`, hash).
-		Scan(&b.Hash, &b.PasswordHash, &b.Title, &b.Description)
+	err := s.db.QueryRow(`SELECT hash, password_hash, title, description, created_at FROM bins WHERE hash=?`, hash).
+		Scan(&b.Hash, &b.PasswordHash, &b.Title, &b.Description, &b.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Bin{}, false, nil
 	}
@@ -156,17 +157,45 @@ func (s *Store) GetBin(hash string) (Bin, bool, error) {
 	return b, true, nil
 }
 
-// UpdateBinMeta writes the bin's title and description in one UPDATE: a NULL argument
-// leaves that field as it is, so a partial update cannot race with itself. It reports
-// whether the bin exists at all.
-func (s *Store) UpdateBinMeta(hash string, title, description sql.NullString) (bool, error) {
-	res, err := s.db.Exec(`UPDATE bins SET title=COALESCE(?,title), description=COALESCE(?,description) WHERE hash=?`,
-		title, description, hash)
+// UpdateBinMeta writes the bin's title, description and password hash in one UPDATE:
+// a NULL argument leaves that field as it is, so a partial update cannot race with
+// itself. A Valid passwordHash sets it — the empty string opens the bin — and a NULL
+// one leaves the stored hash alone. It reports whether the bin exists at all.
+func (s *Store) UpdateBinMeta(hash string, title, description, passwordHash sql.NullString) (bool, error) {
+	res, err := s.db.Exec(`UPDATE bins SET title=COALESCE(?,title), description=COALESCE(?,description), password_hash=COALESCE(?,password_hash) WHERE hash=?`,
+		title, description, passwordHash, hash)
 	if err != nil {
 		return false, err
 	}
 	affected, err := res.RowsAffected()
 	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
+// DeleteBin removes a bin and every file in it in one transaction: the files rows go
+// first, then the bins row, so no file is left without its bin. It reports whether
+// the bin existed.
+func (s *Store) DeleteBin(hash string) (bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM files WHERE bin_hash=?`, hash); err != nil {
+		return false, err
+	}
+	res, err := tx.Exec(`DELETE FROM bins WHERE hash=?`, hash)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
 		return false, err
 	}
 	return affected > 0, nil
@@ -237,6 +266,21 @@ func (s *Store) GetFile(binHash, path string) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	return content, true, nil
+}
+
+// GetFileMeta reads one file's listing row — path, size, updated_at — without loading
+// its content. It reports whether the file is in that bin.
+func (s *Store) GetFileMeta(binHash, path string) (FileEntry, bool, error) {
+	var f FileEntry
+	err := s.db.QueryRow(`SELECT path, size, updated_at FROM files WHERE bin_hash=? AND path=?`, binHash, path).
+		Scan(&f.Path, &f.Size, &f.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return FileEntry{}, false, nil
+	}
+	if err != nil {
+		return FileEntry{}, false, err
+	}
+	return f, true, nil
 }
 
 // DeleteFile removes one file from its bin and reports whether it removed anything.
@@ -317,6 +361,47 @@ func (s *Store) ListFiles(binHash string) ([]FileEntry, error) {
 		files = append(files, f)
 	}
 	return files, rows.Err()
+}
+
+// BinCursor is the keyset position ListBins resumes from: the (created_at, hash) of
+// the last bin the previous page returned.
+type BinCursor struct {
+	CreatedAt string
+	Hash      string
+}
+
+// ListBins returns up to limit bins, newest first (created_at DESC, hash DESC). A nil
+// cutoff starts at the newest; a cutoff page strictly after that row, so equal
+// created_at values page out by hash desc. hasMore reports that the limit+1 probe
+// found a further row: the next cutoff is the last bin of this page.
+func (s *Store) ListBins(limit int, cutoff *BinCursor) (bins []Bin, hasMore bool, err error) {
+	args := []any{nil, nil, nil, nil, limit + 1}
+	if cutoff != nil {
+		args = []any{cutoff.CreatedAt, cutoff.CreatedAt, cutoff.CreatedAt, cutoff.Hash, limit + 1}
+	}
+	rows, err := s.db.Query(`
+SELECT hash, password_hash, title, description, created_at FROM bins
+WHERE (? IS NULL OR created_at < ? OR (created_at = ? AND hash < ?))
+ORDER BY created_at DESC, hash DESC LIMIT ?`, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var b Bin
+		if err := rows.Scan(&b.Hash, &b.PasswordHash, &b.Title, &b.Description, &b.CreatedAt); err != nil {
+			return nil, false, err
+		}
+		bins = append(bins, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(bins) > limit {
+		return bins[:limit], true, nil
+	}
+	return bins, false, nil
 }
 
 // IsBlocked reports whether ip is kept away from key-checked writes right now,
