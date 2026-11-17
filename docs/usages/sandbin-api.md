@@ -295,7 +295,7 @@ It answers `{"status":"ok"}`.
 
 ## `/openapi.json` — the machine-readable API document
 
-The contract route answers `GET` alone; `HEAD` and every other method — `POST` included —
+The document route answers `GET` alone; `HEAD` and every other method — `POST` included —
 are the plain `405`, and the trailing-slash spelling `/openapi.json/` is the plain `404`.
 
 Answers `200` `application/json` with the OpenAPI 3.1 document: the machine-readable
@@ -312,20 +312,22 @@ that surface by hand.
 curl -s {{ .Instance.URL }}/openapi.json
 ```
 
-It answers the whole document — here its opening and the paths it names, the rest elided:
+It answers the whole document — here its opening and the paths it names, in the document's
+own order, the elided parts marked with `…`:
 
 ```text
 {
   "openapi": "3.1.1",
   "info": {
     "title": "sandbin HTTP API",
-    "version": "1.0.0"
+    "version": "1.0.0",
+    …
   },
   "paths": {
     "/api/bins": { … },
     "/api/bins/{hash}": { … },
-    "/api/key": { … },
     "/api/health": { … },
+    "/api/key": { … },
     "/openapi.json": { … }
   }
 }
