@@ -511,8 +511,9 @@ func TestFieldValueStates(t *testing.T) {
 }
 
 // patchBinsJSON PATCHes a path from a fixed socket address: an empty apiKey omits the header,
-// an empty body sends no body at all, which is the empty request, and a non-empty basicUser
-// sends Basic auth with basicPassword, which is how a protected bin is opened.
+// an empty body sends no body at all — which PATCH refuses as unreadable, pinned in
+// TestAPIPatchJSON — and a non-empty basicUser sends Basic auth with basicPassword, which is
+// how a protected bin is opened.
 func patchBinsJSON(t *testing.T, h http.Handler, remoteAddr, path, apiKey, body, basicUser, basicPassword string) *httptest.ResponseRecorder {
 	t.Helper()
 	var rdr io.Reader
@@ -764,6 +765,9 @@ func TestAPIPatchJSON(t *testing.T) {
 
 	// A malformed body is refused, and the row keeps what it held.
 	for _, c := range []struct{ body, want string }{
+		// R6 pin: no body at all is not a JSON object — PATCH refuses it, unlike POST,
+		// whose pinned "no body is {}" the create tests hold.
+		{"", "could not read the request\n"},
 		{`{"titel":"x"}`, "unrecognized field in the request\n"},
 		{`not json`, "could not read the request\n"},
 		{`{"title":5}`, "could not read the request\n"},
@@ -900,6 +904,37 @@ func TestAPIPatchPassword(t *testing.T) {
 	if rec := put(t, s, second+"open.txt", "test-key", "open"); rec.Code != http.StatusCreated {
 		t.Errorf("PUT into the cleared bin without Basic = %d, want %d", rec.Code, http.StatusCreated)
 	}
+
+	// R6 pin: an OPEN bin is protected by a PATCH that gives a password, with no Basic
+	// asked for — there is no current password to carry — and from then on the bin gates
+	// its writes on the new password.
+	open := createTestBin(t, s, "test-key")
+	openHash := strings.Trim(open, "/")
+	rec = patchBinsJSON(t, s, addr, "/api/bins/"+openHash, "test-key", `{"password":"new"}`, "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH a password onto an open bin = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if patched = readBinAnswer(t, rec); !patched.HasPassword {
+		t.Errorf("has_password = false, want true after protecting the open bin")
+	}
+	stored, ok, err = s.store.GetBin(openHash)
+	if err != nil || !ok {
+		t.Fatalf("GetBin(%q) = ok %v, err %v", openHash, ok, err)
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(stored.PasswordHash), []byte("new")); err != nil {
+		t.Errorf("the stored hash does not match the given password: %v", err)
+	}
+	if rec := put(t, s, open+"after.txt", "test-key", "after"); rec.Code != http.StatusUnauthorized {
+		t.Errorf("PUT into the newly protected bin without Basic = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	req := httptest.NewRequest(http.MethodPut, open+"after.txt", strings.NewReader("after"))
+	req.Header.Set("X-API-Key", "test-key")
+	req.SetBasicAuth(openHash, "new")
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Errorf("PUT with the new password = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
 }
 
 // TestAPIPatchShapes keeps the per-bin surface to its pinned spellings: the old header PATCH
@@ -946,8 +981,17 @@ func TestAPIPatchShapes(t *testing.T) {
 		}
 	}
 
+	// R6 pin: the 400 lands before the 404 — a body this API cannot read is refused
+	// even where the bin is unknown, and the refusal names the field problem.
+	rec := patchBinsJSON(t, s, addr, "/api/bins/deadbeef", "test-key", `{"titel":"x"}`, "", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("PATCH an unknown bin with a bad body = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+	} else if got := rec.Body.String(); got != "unrecognized field in the request\n" {
+		t.Errorf("unknown bin with a bad body = %q, want the unrecognized field message", got)
+	}
+
 	// A field this API does not have fails loudly.
-	rec := patchBinsJSON(t, s, addr, "/api/bins/"+hash, "test-key", `{"titel":"x"}`, "", "")
+	rec = patchBinsJSON(t, s, addr, "/api/bins/"+hash, "test-key", `{"titel":"x"}`, "", "")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("PATCH with an unknown field = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}

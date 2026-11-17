@@ -137,21 +137,22 @@ func fieldIsJSONText(raw json.RawMessage) bool {
 	return json.Unmarshal(raw, &s) == nil
 }
 
-// decodeBinRequest reads the capped JSON body of a bin write. No body is the same request as
-// {}, which is how the decoder reports it too: an empty stream is EOF. The body is read whole
-// first, because a decoder aimed straight at the struct takes null — which is no object — as an
-// empty request, and takes a second value after the object as noise it may ignore. A field name
-// this API does not have is the loud refusal, and so is anything that is not one JSON object,
-// or a field that is not null or a string. ok says whether the handler may go on; when it is
-// false the refusal is already written.
-func decodeBinRequest(w http.ResponseWriter, r *http.Request) (binRequest, bool) {
+// decodeBinRequest reads the capped JSON body of a bin write. bodyOptional says what an empty
+// body means: create takes no body as the same request as {} — which is how the decoder
+// reports it too, an empty stream is EOF — while a patch requires a body and refuses an empty
+// one as unreadable. The body is read whole first, because a decoder aimed straight at the
+// struct takes null — which is no object — as an empty request, and takes a second value after
+// the object as noise it may ignore. A field name this API does not have is the loud refusal,
+// and so is anything that is not one JSON object, or a field that is not null or a string.
+// ok says whether the handler may go on; when it is false the refusal is already written.
+func decodeBinRequest(w http.ResponseWriter, r *http.Request, bodyOptional bool) (binRequest, bool) {
 	var req binRequest
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 
 	dec := json.NewDecoder(r.Body)
 	var body json.RawMessage
 	if err := dec.Decode(&body); err != nil {
-		if errors.Is(err, io.EOF) {
+		if errors.Is(err, io.EOF) && bodyOptional {
 			return binRequest{}, true
 		}
 		http.Error(w, "could not read the request", http.StatusBadRequest)
@@ -215,7 +216,7 @@ func (s *server) apiCreateBin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, ok := decodeBinRequest(w, r)
+	req, ok := decodeBinRequest(w, r, true)
 	if !ok {
 		return
 	}
@@ -330,13 +331,14 @@ func (s *server) apiInspectBin(w http.ResponseWriter, r *http.Request, hash stri
 // which is what UpdateBinMeta's COALESCE reads from a NULL argument. The order is pinned:
 // key, body validation, bin lookup, and only then the bin's own password gate, so a protected
 // bin is changed only by a request that carries its current password, and a refused request
-// changes nothing. {} is a no-op answering the current row.
+// changes nothing. {} is a no-op answering the current row; no body at all is refused as
+// unreadable, unlike create's pinned empty request.
 func (s *server) apiPatchBin(w http.ResponseWriter, r *http.Request, hash string) {
 	if !s.requireKey(w, r) {
 		return
 	}
 
-	req, ok := decodeBinRequest(w, r)
+	req, ok := decodeBinRequest(w, r, false)
 	if !ok {
 		return
 	}
@@ -417,8 +419,14 @@ func (s *server) apiPatchBin(w http.ResponseWriter, r *http.Request, hash string
 	// The answer carries the row as it now stands, so the caller never has to guess what a
 	// leave-and-replace mix left behind.
 	bin, found, err = s.store.GetBin(hash)
-	if err != nil || !found {
-		log.Printf("get bin %q: %v", hash, err)
+	if err != nil {
+		log.Printf("re-read bin %q after the update: %v", hash, err)
+		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
+	}
+	if !found {
+		// The bin went away between the update and the re-read.
+		log.Printf("re-read bin %q after the update: the bin is gone", hash)
 		http.Error(w, "unknown bin", http.StatusNotFound)
 		return
 	}
