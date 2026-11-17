@@ -1738,3 +1738,39 @@ func TestAPIRouteTableIsPublishedSurface(t *testing.T) {
 		}
 	}
 }
+
+// TestAPILiteralBraceSpellingIsPlainFourOhFour is ruling R3's parity pin: the table's
+// wildcard key /api/bins/{hash} names only hex spellings through the apiBinPathRE gate, so
+// the literal spelling itself — raw braces, or percent-encoded, both parsing to URL.Path
+// "/api/bins/{hash}" — is the plain 404 unknown bin on every method, and a wrong key
+// through it charges nothing, exactly like the retired switch never named it.
+func TestAPILiteralBraceSpellingIsPlainFourOhFour(t *testing.T) {
+	s := newTestServer(t, "test-key")
+
+	for _, spelling := range []string{"/api/bins/{hash}", "/api/bins/%7Bhash%7D"} {
+		rec := get(t, s, spelling)
+		if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown bin\n" {
+			t.Errorf("GET %s = %d, body %q; want 404 unknown bin", spelling, rec.Code, rec.Body.String())
+		}
+
+		req := httptest.NewRequest(http.MethodHead, spelling, nil)
+		rec = httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown bin\n" {
+			t.Errorf("HEAD %s = %d, body %q; want 404 unknown bin, not a 405", spelling, rec.Code, rec.Body.String())
+		}
+
+		const addr = "198.51.100.97:1234"
+		rec = patchBinsJSON(t, s, addr, spelling, "wrong-key", "{}", "", "")
+		if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown bin\n" {
+			t.Errorf("PATCH %s with a wrong key = %d, body %q; want 404 unknown bin", spelling, rec.Code, rec.Body.String())
+		}
+		rec = deleteBinFrom(t, s, addr, spelling, "wrong-key", "", "")
+		if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown bin\n" {
+			t.Errorf("DELETE %s with a wrong key = %d, body %q; want 404 unknown bin", spelling, rec.Code, rec.Body.String())
+		}
+		if failures, ok := ipBlockRow(t, s.store, "198.51.100.97"); ok || failures != 0 {
+			t.Errorf("the wrong-key literal-brace attempts charged 198.51.100.97 = failures %d, row present=%v; want 0 failures, no row", failures, ok)
+		}
+	}
+}

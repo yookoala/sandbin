@@ -105,12 +105,15 @@ func apiRegister(mux *http.ServeMux, methods map[string][]string, pattern string
 	methods[path] = append(methods[path], method)
 }
 
-// apiLookupMethodSet finds the table entry that names a concrete path: a literal hit, else
-// the per-bin entry registered as /api/bins/{hash} when apiBinPathRE matches. That hex gate
-// is what keeps {hash} from broadening the matching: /api/bins/xyz and /api/bins/deadbeef/
-// name no entry and stay the plain 404, uncharged whatever the key.
+// apiLookupMethodSet finds the table entry that names a concrete path: a literal hit, but
+// only for table keys that name a concrete spelling — a key holding a {wildcard} is reached
+// only through the hex gate, so the literal brace spelling /api/bins/{hash}, raw or
+// percent-encoded, names no entry either. Else the per-bin entry registered as
+// /api/bins/{hash} when apiBinPathRE matches. That hex gate is what keeps {hash} from
+// broadening the matching: /api/bins/xyz and /api/bins/deadbeef/ name no entry and stay the
+// plain 404, uncharged whatever the key.
 func apiLookupMethodSet(methods map[string][]string, path string) []string {
-	if allowed, ok := methods[path]; ok {
+	if allowed, ok := methods[path]; ok && !strings.Contains(path, "{") {
 		return allowed
 	}
 	if apiBinPathRE.MatchString(path) {
