@@ -5,8 +5,8 @@
 #
 #   go install github.com/ehabterra/apispec/cmd/apispec@v0.5.11
 #
-# The generated document is then corrected by cmd/sandbin/openapi-fix.jq (ruling R4) — nine
-# checked-in fixes the generator verifiably cannot express; its header explains each one.
+# The generated document is then corrected by cmd/sandbin/openapi-fix.jq (ruling R4) — checked-in
+# fixes the generator verifiably cannot express; its header lists and explains each one.
 #
 # Why the framework pattern lists are replaced instead of extended:
 #
@@ -57,11 +57,23 @@ securityMappings:
     schemes:
       - apiKey: []
 
+# requiredFromJSONTags marks every struct field whose json tag lacks omitempty/omitzero as
+# required, because encoding/json writes such a field on every encode: binJSON, binDetailJSON
+# and fileJSON always answer all their fields, binListJSON's next_cursor alone does not — the
+# lists the published document must therefore state. It reads the server's side only; the
+# request body this API decodes is the external RawMessage type below, which tags cannot speak
+# for. nullableWhenNil stays off: this API never answers null for a field it declares.
+schema:
+  requiredFromJSONTags: true
+
 externalTypes:
   - name: encoding/json.RawMessage
     description: "A bin write: any mix of title, description and password; a field
       given as null clears it, an absent one changes nothing, and a name this API
       does not have fails the request."
+    # No additionalProperties here: apispec v0.5.11's config Schema type cannot carry the
+    # boolean false (it fails the yaml load), so openapi-fix.jq writes that flag — the
+    # document half of decodeBinRequest's DisallowUnknownFields — into the generated schema.
     openapiType:
       type: object
       properties:
@@ -154,6 +166,6 @@ framework:
       recvType: net/http.*Request
       paramIn: multipart
 
-exclude:
-  packages:
-    - sandbin-client
+# No exclude: block on purpose: apispec v0.5.11 ignores this config's exclude: packages
+# entry. The exclusion that works is the -exclude-package sandbin-client CLI flag on the
+# make openapi line.

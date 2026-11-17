@@ -16,9 +16,9 @@
   "paths": {
     "/api/bins": {
       "get": {
-        "summary": "apiListBins answers GET /api/bins, the key-gated listing: its guard is the withAPIKey wrapper around it — requireKey unchanged — so a wrong key through it charges exactly like a wrong key through a write.",
-        "description": "The paging rules are pinned: limit default 30, a non-integer or a\nlimit below 1 is the plain 400 invalid limit, anything above 100 clamps to 100; cursor is the\nunpadded URL-safe base64 a previous page answered, and a malformed one is the plain 400\ninvalid cursor. Bins list complete — protected ones with their metadata and has_password in\nplain view, the owner's view.",
-        "operationId": "server.apiListBins",
+        "summary": "List this instance's bins, newest first.",
+        "description": "Answers 200 with a page of bin objects and, only when a further page exists, the next_cursor that resumes the walk after the page's last one. limit defaults to 30 and clamps to 100; a non-integer or a limit below 1 answers 400 invalid limit. cursor is the opaque unpadded URL-safe base64 a previous page answered; a malformed one answers 400 invalid cursor. Protected bins list with their full metadata in plain view. Key-checked: a wrong API key answers 403 and costs the requesting address a lockout step.",
+        "operationId": "listBins",
         "parameters": [
           {
             "name": "limit",
@@ -52,6 +52,14 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
+                },
+                "examples": {
+                  "invalid-limit": {
+                    "value": "invalid limit"
+                  },
+                  "invalid-cursor": {
+                    "value": "invalid cursor"
+                  }
                 }
               }
             }
@@ -62,7 +70,8 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
-                }
+                },
+                "example": "invalid API key"
               }
             }
           },
@@ -72,6 +81,15 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
+                },
+                "example": "too many bad API keys"
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds until the requesting address's API-key lockout expires.",
+                "schema": {
+                  "type": "integer"
                 }
               }
             }
@@ -94,9 +112,9 @@
         ]
       },
       "post": {
-        "summary": "apiCreateBin makes a bin from the JSON body and answers 201 with the bin object and its Location.",
-        "description": "Its guard is the withAPIKey wrapper around it — requireKey unchanged — so a wrong\nkey through it charges exactly as the retired POST / did. An absent field and one given as\nempty both make an empty value, which is what a bin with nothing to say holds; a password\nlonger than bcrypt can hold is refused before anything is written.",
-        "operationId": "server.apiCreateBin",
+        "summary": "Create a bin from a JSON body.",
+        "description": "Answers 201 with the new bin's object and a Location naming /api/bins/{hash} for it. The body may name any mix of title, description and password: an absent field and one given as null or \"\" both make the empty value. A title over 200 bytes or carrying control characters, a description over 2000 bytes or carrying control characters, or a password over the 72 bytes bcrypt can hash is refused with 400 and creates nothing. Key-checked: a wrong API key answers 403 and costs the requesting address a lockout step.",
+        "operationId": "createBin",
         "requestBody": {
           "content": {
             "application/json": {
@@ -116,6 +134,15 @@
                   "$ref": "#/components/schemas/binJSON"
                 }
               }
+            },
+            "headers": {
+              "Location": {
+                "description": "The new bin's API path: /api/bins/{hash}.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
             }
           },
           "400": {
@@ -124,6 +151,29 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
+                },
+                "examples": {
+                  "unreadable-request": {
+                    "value": "could not read the request"
+                  },
+                  "unrecognized-field": {
+                    "value": "unrecognized field in the request"
+                  },
+                  "title-over-limit": {
+                    "value": "title over 200 bytes"
+                  },
+                  "title-control-characters": {
+                    "value": "title may not contain control characters"
+                  },
+                  "description-over-limit": {
+                    "value": "description over 2000 bytes"
+                  },
+                  "description-control-characters": {
+                    "value": "description may not contain control characters"
+                  },
+                  "password-over-limit": {
+                    "value": "bin password too long"
+                  }
                 }
               }
             }
@@ -134,7 +184,8 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
-                }
+                },
+                "example": "invalid API key"
               }
             }
           },
@@ -144,6 +195,15 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
+                },
+                "example": "too many bad API keys"
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds until the requesting address's API-key lockout expires.",
+                "schema": {
+                  "type": "integer"
                 }
               }
             }
@@ -168,9 +228,9 @@
     },
     "/api/bins/{hash}": {
       "get": {
-        "summary": "apiInspectBin answers GET /api/bins/{hash}: no API key, the bin's row and its file list sorted by path.",
-        "description": "The hash it reads from the path is an eight-hex spelling because the table\nonly names the {hash} route through the apiBinPathRE hex gate. A password-protected bin\nanswers 401 until Basic opens it, and that 401 records no failure — the API-key lockout is\nnot the bin's password gate.",
-        "operationId": "server.apiInspectBin",
+        "summary": "Inspect a bin: its object and every file it holds.",
+        "description": "Answers 200 with the bin object plus its files — path, size and updated_at — sorted by path, even for a bin whose base is covered by a stored index.html. Needs no API key. A password-protected bin answers 401 bin password required until its password is given as Basic Auth, and that 401 charges nothing.",
+        "operationId": "inspectBin",
         "parameters": [
           {
             "name": "hash",
@@ -198,7 +258,8 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
-                }
+                },
+                "example": "bin password required"
               }
             }
           },
@@ -208,7 +269,8 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
-                }
+                },
+                "example": "unknown bin"
               }
             }
           },
@@ -231,9 +293,9 @@
         ]
       },
       "delete": {
-        "summary": "apiDeleteBin removes a bin and every file in it.",
-        "description": "The order is pinned: the wrapper's key, bin\nlookup, and only then the bin's own password gate, so a protected bin goes only to a request\ncarrying its current password — and a 401 charges nothing while the bin survives. The body is\nnot read at all: a DELETE has nothing to say. The answer is 204 with an empty body, because\nthere is nothing left to report about a bin that is gone.",
-        "operationId": "server.apiDeleteBin",
+        "summary": "Delete a bin and every file in it.",
+        "description": "Carries no request body and answers 204 with an empty body. Key-checked: a wrong API key answers 403 and costs the requesting address a lockout step; a protected bin answers 401 bin password required until Basic Auth carries its current password, and that 401 charges nothing.",
+        "operationId": "deleteBin",
         "parameters": [
           {
             "name": "hash",
@@ -254,7 +316,8 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
-                }
+                },
+                "example": "bin password required"
               }
             }
           },
@@ -264,7 +327,8 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
-                }
+                },
+                "example": "invalid API key"
               }
             }
           },
@@ -274,7 +338,8 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
-                }
+                },
+                "example": "unknown bin"
               }
             }
           },
@@ -284,6 +349,15 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
+                },
+                "example": "too many bad API keys"
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds until the requesting address's API-key lockout expires.",
+                "schema": {
+                  "type": "integer"
                 }
               }
             }
@@ -306,9 +380,9 @@
         ]
       },
       "patch": {
-        "summary": "apiPatchBin merges a JSON body into a bin's row: a given field is set — null and \"\" clear theirs, a password is stored as a bcrypt hash — and an absent one leaves what the bin holds, which is what UpdateBinMeta's COALESCE reads from a NULL argument.",
-        "description": "The order is pinned: the\nwrapper's key, body validation, bin lookup, and only then the bin's own password gate, so a\nprotected bin is changed only by a request that carries its current password, and a refused\nrequest changes nothing. {} is a no-op answering the current row; no body at all is refused\nas unreadable, unlike create's pinned empty request.",
-        "operationId": "server.apiPatchBin",
+        "summary": "Edit a bin's title, description and password.",
+        "description": "A merge with three states per field: present in the body it replaces the stored value — given as null or \"\" it clears it — absent it leaves what the bin holds. {} is a no-op answering the current row; a bodyless request is refused 400. A given password is stored as a bcrypt hash, at most 72 bytes. Key-checked: a wrong API key answers 403 and costs the requesting address a lockout step; a protected bin also needs its current password as Basic Auth for every change, rotating or clearing the password included, and that 401 charges nothing. A refused request changes nothing; an accepted one answers 200 with the bin object as it now stands.",
+        "operationId": "patchBin",
         "parameters": [
           {
             "name": "hash",
@@ -346,6 +420,29 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
+                },
+                "examples": {
+                  "unreadable-request": {
+                    "value": "could not read the request"
+                  },
+                  "unrecognized-field": {
+                    "value": "unrecognized field in the request"
+                  },
+                  "title-over-limit": {
+                    "value": "title over 200 bytes"
+                  },
+                  "title-control-characters": {
+                    "value": "title may not contain control characters"
+                  },
+                  "description-over-limit": {
+                    "value": "description over 2000 bytes"
+                  },
+                  "description-control-characters": {
+                    "value": "description may not contain control characters"
+                  },
+                  "password-over-limit": {
+                    "value": "bin password too long"
+                  }
                 }
               }
             }
@@ -356,7 +453,8 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
-                }
+                },
+                "example": "bin password required"
               }
             }
           },
@@ -366,7 +464,8 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
-                }
+                },
+                "example": "invalid API key"
               }
             }
           },
@@ -376,7 +475,8 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
-                }
+                },
+                "example": "unknown bin"
               }
             }
           },
@@ -386,6 +486,15 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
+                },
+                "example": "too many bad API keys"
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds until the requesting address's API-key lockout expires.",
+                "schema": {
+                  "type": "integer"
                 }
               }
             }
@@ -410,8 +519,8 @@
     },
     "/api/health": {
       "get": {
-        "summary": "apiHealth is the container probe's route: it says nothing about bins, needs no key and charges nothing, so it answers even while its address is blocked.",
-        "operationId": "server.apiHealth",
+        "summary": "Liveness probe: answers {\"status\":\"ok\"}.",
+        "operationId": "health",
         "responses": {
           "200": {
             "description": "OK",
@@ -434,11 +543,12 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "description": "Needs no API key and charges nothing, so it answers even while the requesting address is blocked. Says nothing about bins."
       },
       "head": {
-        "summary": "apiHealth is the container probe's route: it says nothing about bins, needs no key and charges nothing, so it answers even while its address is blocked.",
-        "operationId": "headApiHealth",
+        "summary": "Liveness probe: answers {\"status\":\"ok\"}.",
+        "operationId": "headHealth",
         "responses": {
           "200": {
             "description": "OK",
@@ -461,14 +571,15 @@
             }
           }
         },
-        "security": []
+        "security": [],
+        "description": "Needs no API key and charges nothing, so it answers even while the requesting address is blocked. Says nothing about bins."
       }
     },
     "/api/key": {
       "post": {
-        "summary": "apiKeyCheck answers the key check.",
-        "description": "It registers through the withAPIKey wrapper, whose\nguard is requireKey's verbatim, so a wrong key through it charges exactly like a wrong key\nthrough a write, and a match creates nothing, charges nothing and answers 204 with an\nempty body.",
-        "operationId": "server.apiKeyCheck",
+        "summary": "Check an API key without creating anything.",
+        "description": "A working key answers 204 with an empty body and creates nothing. A wrong key answers 403 and costs the requesting address the same lockout step as a wrong key on a write.",
+        "operationId": "checkApiKey",
         "responses": {
           "204": {
             "description": "No Content"
@@ -479,7 +590,8 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
-                }
+                },
+                "example": "invalid API key"
               }
             }
           },
@@ -489,6 +601,15 @@
               "text/plain; charset=utf-8": {
                 "schema": {
                   "type": "string"
+                },
+                "example": "too many bad API keys"
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds until the requesting address's API-key lockout expires.",
+                "schema": {
+                  "type": "integer"
                 }
               }
             }
@@ -503,9 +624,9 @@
     },
     "/openapi.json": {
       "get": {
-        "summary": "serveOpenAPI answers GET /openapi.json: the machine-readable contract, served verbatim from the embedded file.",
-        "description": "It needs no key, touches no store and charges nothing, so it\nanswers even while its address is blocked. Every other method is refused by the route\ntable before this handler is reached, and the one path the table names is spelled exactly\n— a trailing slash names no entry and stays the plain 404.",
-        "operationId": "server.serveOpenAPI",
+        "summary": "Fetch this OpenAPI document.",
+        "description": "Answers 200 application/json with this machine-readable contract for the /api surface — the document committed with the server's source, served byte for byte. Needs no API key, touches no store and charges nothing, so it answers even while the requesting address is blocked.",
+        "operationId": "getOpenAPIDocument",
         "responses": {
           "200": {
             "description": "OK",
@@ -518,7 +639,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     }
   },
@@ -536,7 +658,8 @@
           "title": {
             "type": "string"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "binDetailJSON": {
         "type": "object",
@@ -566,7 +689,16 @@
           "url": {
             "type": "string"
           }
-        }
+        },
+        "required": [
+          "bin",
+          "url",
+          "title",
+          "description",
+          "has_password",
+          "created_at",
+          "files"
+        ]
       },
       "binJSON": {
         "type": "object",
@@ -590,7 +722,15 @@
           "url": {
             "type": "string"
           }
-        }
+        },
+        "required": [
+          "bin",
+          "url",
+          "title",
+          "description",
+          "has_password",
+          "created_at"
+        ]
       },
       "binListJSON": {
         "type": "object",
@@ -605,7 +745,10 @@
           "next_cursor": {
             "type": "string"
           }
-        }
+        },
+        "required": [
+          "bins"
+        ]
       },
       "fileJSON": {
         "type": "object",
@@ -620,7 +763,12 @@
           "updated_at": {
             "type": "string"
           }
-        }
+        },
+        "required": [
+          "path",
+          "size",
+          "updated_at"
+        ]
       },
       "healthBody": {
         "type": "object",
@@ -629,11 +777,18 @@
           "status": {
             "type": "string"
           }
-        }
+        },
+        "required": [
+          "status"
+        ]
       },
       "archiveAnswer": {
         "type": "object",
         "description": "archiveAnswer is the JSON a successful archive upload answers: the store's own created and replaced counts for the extracted entries.",
+        "required": [
+          "created",
+          "replaced"
+        ],
         "properties": {
           "created": {
             "type": "integer"
