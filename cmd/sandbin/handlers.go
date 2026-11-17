@@ -68,19 +68,16 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Unauthenticated on purpose for the container HEALTHCHECK: it says nothing
-	// about bins, and bin hashes are hex so "healthz" can never name one.
-	if r.URL.Path == "/healthz" {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		io.WriteString(w, "ok")
+	// "api" is no eight-hex hash, so this prefix can never name or shadow a bin, same
+	// reasoning as the static routes below it. The whole /api surface dispatches in api.go:
+	// GET|HEAD /api/health is the unauthenticated probe the container HEALTHCHECK asks for,
+	// and POST /api/key is the pure key check: good key 204, wrong key charged.
+	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+		s.apiRoutes(w, r)
 		return
 	}
 
-	// "robots.txt" holds dots, so it can never name a hex bin hash, same reasoning as healthz.
+	// "robots.txt" holds dots, so it can never name a hex bin hash, same reasoning as the /api branch.
 	// It asks crawlers to index nothing on this instance; it needs no key and charges nothing.
 	if r.URL.Path == "/robots.txt" {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -89,16 +86,6 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		io.WriteString(w, robots.Text)
-		return
-	}
-
-	// "verify-key" holds a dash, so it can never name a hex bin hash, same reasoning as healthz.
-	if r.URL.Path == "/verify-key" {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		s.verifyKey(w, r)
 		return
 	}
 
@@ -203,22 +190,7 @@ func (s *server) binRoutes(w http.ResponseWriter, r *http.Request, hash, sub str
 
 // createBin makes a bin and answers with the path it lives under.
 func (s *server) createBin(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r, s.trustedProxies)
-	if until, blocked := s.store.IsBlocked(ip, time.Now()); blocked {
-		w.Header().Set("Retry-After", strconv.Itoa(int(time.Until(until).Seconds())))
-		// An attempt while blocked is itself a failure, so hammering walks the penalty up.
-		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
-			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
-		}
-		http.Error(w, "too many bad API keys", http.StatusTooManyRequests)
-		return
-	}
-
-	if subtle.ConstantTimeCompare([]byte(r.Header.Get(apiKeyHeader)), s.apiKey) != 1 {
-		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
-			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
-		}
-		http.Error(w, "invalid API key", http.StatusForbidden)
+	if !s.requireKey(w, r) {
 		return
 	}
 
@@ -263,10 +235,11 @@ func (s *server) createBin(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, "/"+hash+"/")
 }
 
-// verifyKey answers the key check: its guard is createBin's verbatim, so a wrong key
-// through it charges exactly like a wrong key through POST /, and a match creates
-// nothing and charges nothing.
-func (s *server) verifyKey(w http.ResponseWriter, r *http.Request) {
+// requireKey is the guard every key-checked request runs first: a blocked address is refused
+// with 429 and a Retry-After — an attempt while blocked is itself a failure, so hammering
+// walks the penalty up — and a wrong or missing key charges the lockout and answers 403. ok
+// reports whether the request may proceed; when it is false the refusal is already written.
+func (s *server) requireKey(w http.ResponseWriter, r *http.Request) bool {
 	ip := clientIP(r, s.trustedProxies)
 	if until, blocked := s.store.IsBlocked(ip, time.Now()); blocked {
 		w.Header().Set("Retry-After", strconv.Itoa(int(time.Until(until).Seconds())))
@@ -275,7 +248,7 @@ func (s *server) verifyKey(w http.ResponseWriter, r *http.Request) {
 			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
 		}
 		http.Error(w, "too many bad API keys", http.StatusTooManyRequests)
-		return
+		return false
 	}
 
 	if subtle.ConstantTimeCompare([]byte(r.Header.Get(apiKeyHeader)), s.apiKey) != 1 {
@@ -283,11 +256,9 @@ func (s *server) verifyKey(w http.ResponseWriter, r *http.Request) {
 			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
 		}
 		http.Error(w, "invalid API key", http.StatusForbidden)
-		return
+		return false
 	}
-
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	io.WriteString(w, "key ok")
+	return true
 }
 
 func (s *server) getFile(w http.ResponseWriter, r *http.Request, hash, sub string) {
@@ -382,22 +353,7 @@ func (s *server) getFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 }
 
 func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub string) {
-	ip := clientIP(r, s.trustedProxies)
-	if until, blocked := s.store.IsBlocked(ip, time.Now()); blocked {
-		w.Header().Set("Retry-After", strconv.Itoa(int(time.Until(until).Seconds())))
-		// An attempt while blocked is itself a failure, so hammering walks the penalty up.
-		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
-			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
-		}
-		http.Error(w, "too many bad API keys", http.StatusTooManyRequests)
-		return
-	}
-
-	if subtle.ConstantTimeCompare([]byte(r.Header.Get(apiKeyHeader)), s.apiKey) != 1 {
-		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
-			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
-		}
-		http.Error(w, "invalid API key", http.StatusForbidden)
+	if !s.requireKey(w, r) {
 		return
 	}
 
@@ -514,22 +470,7 @@ type deleteBody struct {
 // carry. The bin base names no path, so a DELETE there is method not allowed: a bin itself is
 // never deleted.
 func (s *server) deletePath(w http.ResponseWriter, r *http.Request, hash, sub string) {
-	ip := clientIP(r, s.trustedProxies)
-	if until, blocked := s.store.IsBlocked(ip, time.Now()); blocked {
-		w.Header().Set("Retry-After", strconv.Itoa(int(time.Until(until).Seconds())))
-		// An attempt while blocked is itself a failure, so hammering walks the penalty up.
-		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
-			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
-		}
-		http.Error(w, "too many bad API keys", http.StatusTooManyRequests)
-		return
-	}
-
-	if subtle.ConstantTimeCompare([]byte(r.Header.Get(apiKeyHeader)), s.apiKey) != 1 {
-		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
-			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
-		}
-		http.Error(w, "invalid API key", http.StatusForbidden)
+	if !s.requireKey(w, r) {
 		return
 	}
 
@@ -616,22 +557,7 @@ func (s *server) patchBin(w http.ResponseWriter, r *http.Request, hash, sub stri
 		return
 	}
 
-	ip := clientIP(r, s.trustedProxies)
-	if until, blocked := s.store.IsBlocked(ip, time.Now()); blocked {
-		w.Header().Set("Retry-After", strconv.Itoa(int(time.Until(until).Seconds())))
-		// An attempt while blocked is itself a failure, so hammering walks the penalty up.
-		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
-			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
-		}
-		http.Error(w, "too many bad API keys", http.StatusTooManyRequests)
-		return
-	}
-
-	if subtle.ConstantTimeCompare([]byte(r.Header.Get(apiKeyHeader)), s.apiKey) != 1 {
-		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
-			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
-		}
-		http.Error(w, "invalid API key", http.StatusForbidden)
+	if !s.requireKey(w, r) {
 		return
 	}
 

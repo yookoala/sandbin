@@ -104,43 +104,46 @@ func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	return rec
 }
 
-func TestHealthz(t *testing.T) {
+// TestAPIHealthRouteRoundTrip is the container probe's route re-pointed from /healthz: it
+// answers without any key, on GET and HEAD, answers 405 to every other method, and the
+// /api branch must not shadow a real bin: a full round trip still works.
+func TestAPIHealthRouteRoundTrip(t *testing.T) {
 	h := newTestServer(t, "test-key")
 
-	// No API key is sent: /healthz must answer anyway.
-	rec := get(t, h, "/healthz")
+	// No API key is sent: /api/health must answer anyway.
+	rec := get(t, h, "/api/health")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /healthz = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+		t.Fatalf("GET /api/health = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "ok" {
-		t.Errorf("GET /healthz body = %q, want %q", got, "ok")
+	if got := rec.Body.String(); got != "{\"status\":\"ok\"}\n" {
+		t.Errorf("GET /api/health body = %q, want %q", got, "{\"status\":\"ok\"}\n")
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
-		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", ct)
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
 
-	req := httptest.NewRequest(http.MethodHead, "/healthz", nil)
+	req := httptest.NewRequest(http.MethodHead, "/api/health", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Errorf("HEAD /healthz = %d, want %d", rec.Code, http.StatusOK)
+		t.Errorf("HEAD /api/health = %d, want %d", rec.Code, http.StatusOK)
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/healthz", nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/health", nil)
 	req.Header.Set("X-API-Key", "test-key")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("POST /healthz = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+		t.Errorf("POST /api/health = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
 	}
 
 	// The branch must not shadow a real bin: a full round trip still works.
 	base := createTestBin(t, h, "test-key")
 	if rec := put(t, h, base+"page.html", "test-key", "<h1>Hello</h1>"); rec.Code != http.StatusCreated {
-		t.Fatalf("PUT after the healthz branch = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+		t.Fatalf("PUT after the /api branch = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
 	}
 	if rec := get(t, h, base+"page.html"); rec.Code != http.StatusOK || rec.Body.String() != "<h1>Hello</h1>" {
-		t.Errorf("GET after the healthz branch = %d, body %q", rec.Code, rec.Body.String())
+		t.Errorf("GET after the /api branch = %d, body %q", rec.Code, rec.Body.String())
 	}
 }
 
@@ -175,7 +178,7 @@ func TestRobotsTxt(t *testing.T) {
 		t.Errorf("POST /robots.txt = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
 	}
 	if body := rec.Body.String(); body != "method not allowed\n" {
-		t.Errorf("POST /robots.txt body = %q, want the same wording healthz uses", body)
+		t.Errorf("POST /robots.txt body = %q, want the wording every method refusal uses", body)
 	}
 
 	// The branch is an exact path: near misses keep the plain 404 bin fallback.
@@ -1980,10 +1983,10 @@ func TestListingShowsBinMetadata(t *testing.T) {
 	}
 }
 
-// verifyKeyFrom POSTs /verify-key from a fixed socket address; an empty apiKey omits the header.
-func verifyKeyFrom(t *testing.T, h http.Handler, remoteAddr, apiKey string) *httptest.ResponseRecorder {
+// postAPIKeyFrom POSTs /api/key from a fixed socket address; an empty apiKey omits the header.
+func postAPIKeyFrom(t *testing.T, h http.Handler, remoteAddr, apiKey string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/verify-key", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/key", nil)
 	req.RemoteAddr = remoteAddr
 	if apiKey != "" {
 		req.Header.Set("X-API-Key", apiKey)
@@ -1993,36 +1996,36 @@ func verifyKeyFrom(t *testing.T, h http.Handler, remoteAddr, apiKey string) *htt
 	return rec
 }
 
-// TestVerifyKeyAnswersKeyOk is the key check's happy path: the correct key answers
-// "key ok", and a correct call creates no bin and charges nothing.
-func TestVerifyKeyAnswersKeyOk(t *testing.T) {
+// TestAPIKeyAnswersNoContent is the key check's happy path: the correct key answers
+// 204 with an empty body, and a correct call creates no bin and charges nothing.
+func TestAPIKeyAnswersNoContent(t *testing.T) {
 	s := newTestServer(t, "test-key")
 
-	rec := verifyKeyFrom(t, s, "198.51.100.21:1234", "test-key")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /verify-key with the correct key = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	rec := postAPIKeyFrom(t, s, "198.51.100.21:1234", "test-key")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST /api/key with the correct key = %d, want %d; body %q", rec.Code, http.StatusNoContent, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "key ok" {
-		t.Errorf("body = %q, want %q", got, "key ok")
+	if got := rec.Body.String(); got != "" {
+		t.Errorf("204 body = %q, want it empty", got)
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
-		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", ct)
+	if ct := rec.Header().Get("Content-Type"); ct != "" {
+		t.Errorf("Content-Type = %q, want none on a 204", ct)
 	}
 	if _, ok := ipBlockRow(t, s.store, "198.51.100.21"); ok {
-		t.Errorf("a key-correct /verify-key charged 198.51.100.21, want no row in ip_blocks")
+		t.Errorf("a key-correct /api/key charged 198.51.100.21, want no row in ip_blocks")
 	}
 	if count := storedBinCount(t, s); count != 0 {
-		t.Errorf("bins = %d, want /verify-key to create no bin", count)
+		t.Errorf("bins = %d, want /api/key to create no bin", count)
 	}
 }
 
-// TestVerifyKeyWrongKeyChargesTheAddress keeps the lockout rules for /verify-key exactly
+// TestAPIKeyWrongKeyChargesTheAddress keeps the lockout rules for /api/key exactly
 // what they are for POST /: one wrong or missing key is a charged 403, an attempt while
 // blocked is a charged 429 with a Retry-After, and hammering walks the penalty up.
-func TestVerifyKeyWrongKeyChargesTheAddress(t *testing.T) {
+func TestAPIKeyWrongKeyChargesTheAddress(t *testing.T) {
 	s := newTestServer(t, "test-key")
 
-	rec := verifyKeyFrom(t, s, "203.0.113.21:1234", "wrong")
+	rec := postAPIKeyFrom(t, s, "203.0.113.21:1234", "wrong")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("wrong key = %d, want %d; body %q", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
@@ -2037,7 +2040,7 @@ func TestVerifyKeyWrongKeyChargesTheAddress(t *testing.T) {
 	}
 
 	// A missing header counts as a failure the way it does at POST /.
-	rec = verifyKeyFrom(t, s, "203.0.113.22:1234", "")
+	rec = postAPIKeyFrom(t, s, "203.0.113.22:1234", "")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("missing header = %d, want %d; body %q", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
@@ -2047,9 +2050,9 @@ func TestVerifyKeyWrongKeyChargesTheAddress(t *testing.T) {
 
 	// The blocked address is refused even with the correct key, and the attempt
 	// itself is charged.
-	rec = verifyKeyFrom(t, s, "203.0.113.21:1234", "test-key")
+	rec = postAPIKeyFrom(t, s, "203.0.113.21:1234", "test-key")
 	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("blocked /verify-key = %d, want %d; body %q", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+		t.Fatalf("blocked /api/key = %d, want %d; body %q", rec.Code, http.StatusTooManyRequests, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "too many bad API keys") {
 		t.Errorf("429 body = %q, want the too many bad API keys message", rec.Body.String())
@@ -2062,9 +2065,9 @@ func TestVerifyKeyWrongKeyChargesTheAddress(t *testing.T) {
 		t.Errorf("after a blocked attempt = failures %d, block %v; want 2 failures, %v", failures, dur, 2*blockStep)
 	}
 
-	rec = verifyKeyFrom(t, s, "203.0.113.21:1234", "test-key")
+	rec = postAPIKeyFrom(t, s, "203.0.113.21:1234", "test-key")
 	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("second blocked /verify-key = %d, want %d", rec.Code, http.StatusTooManyRequests)
+		t.Fatalf("second blocked /api/key = %d, want %d", rec.Code, http.StatusTooManyRequests)
 	}
 	ra2 := retryAfter(t, rec)
 	if ra2 <= ra1 {
@@ -2072,19 +2075,19 @@ func TestVerifyKeyWrongKeyChargesTheAddress(t *testing.T) {
 	}
 }
 
-// TestVerifyKeyIsNoKeyOracle is the 405 answer: only POST checks a key, so no other
+// TestAPIKeyIsNoKeyOracle is the 405 answer: only POST checks a key, so no other
 // method can probe one — not for free, and not by charging either.
-func TestVerifyKeyIsNoKeyOracle(t *testing.T) {
+func TestAPIKeyIsNoKeyOracle(t *testing.T) {
 	s := newTestServer(t, "test-key")
 
 	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions} {
-		req := httptest.NewRequest(method, "/verify-key", nil)
+		req := httptest.NewRequest(method, "/api/key", nil)
 		req.RemoteAddr = "198.51.100.22:1234"
 		req.Header.Set("X-API-Key", "test-key")
 		rec := httptest.NewRecorder()
 		s.ServeHTTP(rec, req)
 		if rec.Code != http.StatusMethodNotAllowed {
-			t.Errorf("%s /verify-key = %d, want %d; body %q", method, rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
+			t.Errorf("%s /api/key = %d, want %d; body %q", method, rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
 		}
 	}
 	if _, ok := ipBlockRow(t, s.store, "198.51.100.22"); ok {
@@ -2092,18 +2095,18 @@ func TestVerifyKeyIsNoKeyOracle(t *testing.T) {
 	}
 }
 
-// TestVerifyKeyDoesNotShadowBins proves the root branch stays clear of bin hashes: a
-// file literally named verify-key under a bin is an ordinary file, stored and served.
-func TestVerifyKeyDoesNotShadowBins(t *testing.T) {
+// TestAPIKeyDoesNotShadowBins proves the /api branch stays clear of bin hashes: a
+// file literally named api/key under a bin is an ordinary file, stored and served.
+func TestAPIKeyDoesNotShadowBins(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	base := createTestBin(t, s, "test-key")
 
-	if rec := put(t, s, base+"verify-key", "test-key", "an ordinary file"); rec.Code != http.StatusCreated {
-		t.Fatalf("PUT %sverify-key = %d, want %d; body %q", base, rec.Code, http.StatusCreated, rec.Body.String())
+	if rec := put(t, s, base+"api/key", "test-key", "an ordinary file"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT %sapi/key = %d, want %d; body %q", base, rec.Code, http.StatusCreated, rec.Body.String())
 	}
-	rec := get(t, s, base+"verify-key")
+	rec := get(t, s, base+"api/key")
 	if rec.Code != http.StatusOK || rec.Body.String() != "an ordinary file" {
-		t.Errorf("GET %sverify-key = %d, body %q; want 200 and the stored body", base, rec.Code, rec.Body.String())
+		t.Errorf("GET %sapi/key = %d, body %q; want 200 and the stored body", base, rec.Code, rec.Body.String())
 	}
 }
 
@@ -2464,7 +2467,7 @@ func TestDeleteUnknownBinAndBase(t *testing.T) {
 	}
 
 	// The root and the fixed routes answer DELETE exactly as they answer any other method.
-	for _, p := range []string{"/", "/healthz", "/verify-key", "/skills/sandbin-preview/SKILL.md"} {
+	for _, p := range []string{"/", "/api/health", "/api/key", "/skills/sandbin-preview/SKILL.md"} {
 		rec := del(t, s, p, "test-key")
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("DELETE %s = %d, body %q; want 405", p, rec.Code, rec.Body.String())
