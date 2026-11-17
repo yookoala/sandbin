@@ -284,7 +284,7 @@ The liveness route answers `GET` and `HEAD` and every other method `405`.
 
 Answers `200` `application/json` with `{"status":"ok"}`. Unauthenticated on purpose for
 container health checks (see [Running with podman](sandbin-podman.md)); it charges nothing and
-answers even while its address is blocked, because `GET` is never charged. It says nothing
+answers even while its address is blocked, because it needs no key. It says nothing
 about bins.
 
 ```sh

@@ -465,12 +465,13 @@ func TestDocsAPIPageIsSwaggerStyle(t *testing.T) {
 
 // TestDocsNoRetiredSpellings pins the no-shim rule on the hosted pages: the retired
 // header-driven surface appears on no page — no X-Bin-* or X-Extract header, no /verify-key
-// or /healthz route, and no `POST /`-creates-a-bin text.
+// or /healthz route, no `POST /`-creates-a-bin text, and no blanket `GET` is never charged
+// claim that the key-checked listing disproves.
 func TestDocsNoRetiredSpellings(t *testing.T) {
 	h := newTestServer(t, "test-key")
 	for _, name := range wantDocPages {
 		body := get(t, h, "/docs/"+name).Body.String()
-		for _, gone := range []string{"X-Bin-", "X-Extract", "/verify-key", "/healthz", "<code>POST /</code>"} {
+		for _, gone := range []string{"X-Bin-", "X-Extract", "/verify-key", "/healthz", "<code>POST /</code>", "<code>GET</code> is never charged"} {
 			if strings.Contains(body, gone) {
 				t.Errorf("%s still carries the retired spelling %q in:\n%s", name, gone, body[:min(len(body), 400)])
 			}
