@@ -1178,24 +1178,6 @@ func getFrom(t *testing.T, h http.Handler, remoteAddr, path, apiKey string) *htt
 	return rec
 }
 
-// patchFrom PATCHes a path from a fixed socket address; an empty apiKey omits the header.
-// headers names which metadata headers to send, so a field that should stay absent is simply
-// not in the map, and an empty value in it clears that field. The body is what a PATCH ignores.
-func patchFrom(t *testing.T, h http.Handler, remoteAddr, path, apiKey string, headers map[string]string) *httptest.ResponseRecorder {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodPatch, path, strings.NewReader("a body a PATCH ignores"))
-	req.RemoteAddr = remoteAddr
-	if apiKey != "" {
-		req.Header.Set("X-API-Key", apiKey)
-	}
-	for name, value := range headers {
-		req.Header.Set(name, value)
-	}
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	return rec
-}
-
 // del DELETEs a path with the API key and returns the recorder.
 func del(t *testing.T, h http.Handler, path, apiKey string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -1673,39 +1655,42 @@ func TestPostRefusesBadMetadata(t *testing.T) {
 	}
 }
 
-// TestPatchBinMetadataCombinations is the semantics table: for each header on its own, a
-// present header replaces, an absent one leaves, an empty value clears. The json answer is
-// the row as it now stands, read back after every PATCH.
+// TestPatchBinMetadataCombinations is the semantics table: for each body on its own, a given
+// field replaces, an absent one leaves, an empty value clears. The json answer is the row as
+// it now stands, read back after every PATCH.
 func TestPatchBinMetadataCombinations(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	base := createTestBinWithMetadata(t, s, "test-key", "first title", "first description")
+	hash := strings.Trim(base, "/")
 	const addr = "198.51.100.11:1234"
 
 	for i, tc := range []struct {
-		headers                              map[string]string
-		wantTitle, wantDescription, wantBody string
+		body                       string
+		wantTitle, wantDescription string
 	}{
-		// Neither header sent: nothing changes.
-		{nil, "first title", "first description", `{"title":"first title","description":"first description"}`},
-		// One header replaces its field and says nothing about the other.
-		{map[string]string{"X-Bin-Title": "second title"}, "second title", "first description", `{"title":"second title","description":"first description"}`},
-		{map[string]string{"X-Bin-Description": "second description"}, "second title", "second description", `{"title":"second title","description":"second description"}`},
-		{map[string]string{"X-Bin-Title": "third title", "X-Bin-Description": "third description"}, "third title", "third description", `{"title":"third title","description":"third description"}`},
+		// No field given: nothing changes.
+		{`{}`, "first title", "first description"},
+		// One field replaces its value and says nothing about the other.
+		{`{"title":"second title"}`, "second title", "first description"},
+		{`{"description":"second description"}`, "second title", "second description"},
+		{`{"title":"third title","description":"third description"}`, "third title", "third description"},
 		// An empty value clears its field and leaves the other alone.
-		{map[string]string{"X-Bin-Title": ""}, "", "third description", `{"title":"","description":"third description"}`},
-		{map[string]string{"X-Bin-Description": ""}, "", "", `{"title":"","description":""}`},
+		{`{"title":""}`, "", "third description"},
+		{`{"description":""}`, "", ""},
 		// A cleared field stays cleared when the next PATCH does not mention it.
-		{map[string]string{"X-Bin-Title": "fourth title"}, "fourth title", "", `{"title":"fourth title","description":""}`},
+		{`{"title":"fourth title"}`, "fourth title", ""},
 	} {
-		rec := patchFrom(t, s, addr, base, "test-key", tc.headers)
+		rec := patchBinsJSON(t, s, addr, "/api/bins/"+hash, "test-key", tc.body, "", "")
 		if rec.Code != http.StatusOK {
-			t.Fatalf("PATCH #%d = %d, want %d; body %q", i+1, rec.Code, http.StatusOK, rec.Body.String())
+			t.Fatalf("PATCH #%d body %s = %d, want %d; body %q", i+1, tc.body, rec.Code, http.StatusOK, rec.Body.String())
 		}
 		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 			t.Errorf("PATCH #%d Content-Type = %q, want application/json", i+1, ct)
 		}
-		if want := tc.wantBody + "\n"; rec.Body.String() != want {
-			t.Errorf("PATCH #%d body = %q, want %q", i+1, rec.Body.String(), want)
+		answer := readBinAnswer(t, rec)
+		if answer.Title != tc.wantTitle || answer.Description != tc.wantDescription {
+			t.Errorf("PATCH #%d answer metadata = %q / %q, want %q / %q",
+				i+1, answer.Title, answer.Description, tc.wantTitle, tc.wantDescription)
 		}
 		if title, description := storedMeta(t, s, base); title != tc.wantTitle || description != tc.wantDescription {
 			t.Errorf("after PATCH #%d: stored metadata = %q / %q, want %q / %q",
@@ -1717,22 +1702,27 @@ func TestPatchBinMetadataCombinations(t *testing.T) {
 func TestPatchUnknownBinAndSubPath(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
 
-	rec := patchFrom(t, s, "198.51.100.12:1234", "/deadbeef/", "test-key", map[string]string{"X-Bin-Title": "x"})
+	rec := patchBinsJSON(t, s, "198.51.100.12:1234", "/api/bins/deadbeef", "test-key", `{"title":"x"}`, "", "")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("PATCH unknown bin = %d, want %d; body %q", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 
-	// Only the bin base takes a PATCH: a sub path keeps answering 405.
-	if rec := patchFrom(t, s, "198.51.100.12:1234", base+"page.html", "test-key", nil); rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("PATCH a sub path = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	// The old header spelling retires with patchBin: the bin base and a sub path under it
+	// answer the plain 405 the router gives every method it does not name there.
+	for _, p := range []string{base, base + "page.html"} {
+		rec := patchBinsJSON(t, s, "198.51.100.12:1234", p, "test-key", "", "", "")
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("PATCH %s = %d, want %d", p, rec.Code, http.StatusMethodNotAllowed)
+		}
 	}
 
-	// The body is ignored: a PATCH stores no file and leaves the bin's files as they were.
-	if rec := patchFrom(t, s, "198.51.100.12:1234", base, "test-key", map[string]string{"X-Bin-Title": "a title"}); rec.Code != http.StatusOK {
+	// A JSON PATCH stores no file: the bin's files stay as they were.
+	if rec := patchBinsJSON(t, s, "198.51.100.12:1234", "/api/bins/"+hash, "test-key", `{"title":"a title"}`, "", ""); rec.Code != http.StatusOK {
 		t.Fatalf("PATCH with a body = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	files, err := s.store.ListFiles(strings.Trim(base, "/"))
+	files, err := s.store.ListFiles(hash)
 	if err != nil {
 		t.Fatalf("ListFiles: %v", err)
 	}
@@ -1746,11 +1736,10 @@ func TestPatchUnknownBinAndSubPath(t *testing.T) {
 func TestPatchOverLongMetadataChangesNothing(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	base := createTestBinWithMetadata(t, s, "test-key", "kept title", "kept description")
+	hash := strings.Trim(base, "/")
 
-	rec := patchFrom(t, s, "198.51.100.14:1234", base, "test-key", map[string]string{
-		"X-Bin-Title":       strings.Repeat("t", maxTitleBytes+1),
-		"X-Bin-Description": strings.Repeat("d", maxDescriptionBytes+1),
-	})
+	rec := patchBinsJSON(t, s, "198.51.100.14:1234", "/api/bins/"+hash, "test-key",
+		`{"title":"`+strings.Repeat("t", maxTitleBytes+1)+`","description":"`+strings.Repeat("d", maxDescriptionBytes+1)+`"}`, "", "")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("PATCH with over-long metadata = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
@@ -1758,7 +1747,7 @@ func TestPatchOverLongMetadataChangesNothing(t *testing.T) {
 		t.Errorf("body = %q, want the title refusal", got)
 	}
 
-	rec = patchFrom(t, s, "198.51.100.14:1234", base, "test-key", map[string]string{"X-Bin-Title": "a\nnewline"})
+	rec = patchBinsJSON(t, s, "198.51.100.14:1234", "/api/bins/"+hash, "test-key", `{"title":"a\nnewline"}`, "", "")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("PATCH with a control character = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
@@ -1777,9 +1766,10 @@ func TestPatchOverLongMetadataChangesNothing(t *testing.T) {
 func TestPatchWrongKeyChargesTheAddress(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	base := createTestBinWithMetadata(t, s, "test-key", "kept title", "kept description")
+	hash := strings.Trim(base, "/")
 	const addr = "203.0.113.20:1234"
 
-	rec := patchFrom(t, s, addr, base, "wrong", map[string]string{"X-Bin-Title": "written?"})
+	rec := patchBinsJSON(t, s, addr, "/api/bins/"+hash, "wrong", `{"title":"written?"}`, "", "")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("PATCH with a wrong key = %d, want %d; body %q", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
@@ -1787,7 +1777,7 @@ func TestPatchWrongKeyChargesTheAddress(t *testing.T) {
 		t.Errorf("after a PATCH failure = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
 	}
 
-	rec = patchFrom(t, s, addr, base, "test-key", map[string]string{"X-Bin-Title": "written?"})
+	rec = patchBinsJSON(t, s, addr, "/api/bins/"+hash, "test-key", `{"title":"written?"}`, "", "")
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("PATCH from the blocked address = %d, want %d; body %q", rec.Code, http.StatusTooManyRequests, rec.Body.String())
 	}
@@ -1796,7 +1786,7 @@ func TestPatchWrongKeyChargesTheAddress(t *testing.T) {
 	}
 	retryAfter(t, rec)
 
-	rec = patchFrom(t, s, addr, base, "test-key", map[string]string{"X-Bin-Title": "written?"})
+	rec = patchBinsJSON(t, s, addr, "/api/bins/"+hash, "test-key", `{"title":"written?"}`, "", "")
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("hammered PATCH = %d, want %d", rec.Code, http.StatusTooManyRequests)
 	}
@@ -1817,7 +1807,7 @@ func TestPatchProtectedBinChargesNothing(t *testing.T) {
 	hash := strings.Trim(base, "/")
 	const addr = "198.51.100.13:1234"
 
-	rec := patchFrom(t, s, addr, base, "test-key", map[string]string{"X-Bin-Title": "quiet title"})
+	rec := patchBinsJSON(t, s, addr, "/api/bins/"+hash, "test-key", `{"title":"quiet title"}`, "", "")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("PATCH without the bin password = %d, want %d; body %q", rec.Code, http.StatusUnauthorized, rec.Body.String())
 	}
@@ -1831,28 +1821,23 @@ func TestPatchProtectedBinChargesNothing(t *testing.T) {
 		t.Errorf("stored title after the 401 = %q, want the bin unchanged", title)
 	}
 
-	req := httptest.NewRequest(http.MethodPatch, base, nil)
-	req.RemoteAddr = addr
-	req.Header.Set("X-API-Key", "test-key")
-	req.Header.Set("X-Bin-Title", "quiet title")
-	req.SetBasicAuth(hash, "sesame")
-	rec = httptest.NewRecorder()
-	s.ServeHTTP(rec, req)
+	rec = patchBinsJSON(t, s, addr, "/api/bins/"+hash, "test-key", `{"title":"quiet title"}`, hash, "sesame")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PATCH with the bin password = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if rec.Body.String() != `{"title":"quiet title","description":""}`+"\n" {
-		t.Errorf("body = %q, want the resulting row", rec.Body.String())
+	answer := readBinAnswer(t, rec)
+	if answer.Title != "quiet title" || answer.Description != "" {
+		t.Errorf("answer metadata = %q / %q, want the resulting row", answer.Title, answer.Description)
 	}
 	if _, ok := ipBlockRow(t, s.store, "198.51.100.13"); ok {
 		t.Errorf("the working PATCH charged 198.51.100.13, want no row in ip_blocks")
 	}
 }
 
-// TestGetBinBaseCarriesMetadata is the machine route for metadata: the two headers answer a
-// bin base GET, on the raw index.html branch as well as the listing one, and a sub-path GET
-// carries neither.
-func TestGetBinBaseCarriesMetadata(t *testing.T) {
+// TestGetBinBaseNoMetadataHeaders is ruling R1's handler-side pin: the metadata headers retire
+// with patchBin, on the raw index.html branch as well as the listing one — a bin page shows its
+// title and description in the body only, and a sub-path GET carries neither.
+func TestGetBinBaseNoMetadataHeaders(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	base := createTestBinWithMetadata(t, s, "test-key", "Test report", "findings of the audit")
 
@@ -1860,11 +1845,14 @@ func TestGetBinBaseCarriesMetadata(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET the bin base = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if got := rec.Header().Get("X-Bin-Title"); got != "Test report" {
-		t.Errorf("X-Bin-Title = %q, want the stored title", got)
+	if body := rec.Body.String(); !strings.Contains(body, "Test report") || !strings.Contains(body, "findings of the audit") {
+		t.Errorf("the listing does not show the stored title/description:\n%s", body)
 	}
-	if got := rec.Header().Get("X-Bin-Description"); got != "findings of the audit" {
-		t.Errorf("X-Bin-Description = %q, want the stored description", got)
+	if got := rec.Header().Get("X-Bin-Title"); got != "" {
+		t.Errorf("X-Bin-Title = %q, want no metadata header on a bin page", got)
+	}
+	if got := rec.Header().Get("X-Bin-Description"); got != "" {
+		t.Errorf("X-Bin-Description = %q, want no metadata header on a bin page", got)
 	}
 
 	if rec := put(t, s, base+"notes.md", "test-key", "# Notes"); rec.Code != http.StatusCreated {
@@ -1881,7 +1869,7 @@ func TestGetBinBaseCarriesMetadata(t *testing.T) {
 		t.Errorf("X-Bin-Description on a sub path = %q, want no metadata there", got)
 	}
 
-	// The raw index.html shortcut keeps the page verbatim and adds only the headers.
+	// The raw index.html shortcut keeps the page verbatim and adds no headers either.
 	if rec := put(t, s, base+"index.html", "test-key", "<h1>Custom index</h1>"); rec.Code != http.StatusCreated {
 		t.Fatalf("PUT index.html = %d, want %d", rec.Code, http.StatusCreated)
 	}
@@ -1889,8 +1877,8 @@ func TestGetBinBaseCarriesMetadata(t *testing.T) {
 	if got := rec.Body.String(); got != "<h1>Custom index</h1>" {
 		t.Errorf("body of the raw index.html = %q, want it served unmodified", got)
 	}
-	if got := rec.Header().Get("X-Bin-Title"); got != "Test report" {
-		t.Errorf("X-Bin-Title on the raw index.html = %q, want the stored title", got)
+	if got := rec.Header().Get("X-Bin-Title"); got != "" {
+		t.Errorf("X-Bin-Title on the raw index.html = %q, want it absent", got)
 	}
 
 	// Empty metadata sends no header, on either branch.
@@ -2663,7 +2651,7 @@ func TestDeleteEmptiedBinSurvives(t *testing.T) {
 	if title, description := storedMeta(t, s, base); title != "kept title" || description != "kept description" {
 		t.Errorf("stored metadata after the deletes = %q / %q, want it untouched", title, description)
 	}
-	rec = patchFrom(t, s, "198.51.100.43:1234", base, "test-key", map[string]string{"X-Bin-Title": "new title"})
+	rec = patchBinsJSON(t, s, "198.51.100.43:1234", "/api/bins/"+strings.Trim(base, "/"), "test-key", `{"title":"new title"}`, "", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PATCH the emptied bin = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
 	}
@@ -2788,7 +2776,7 @@ func TestFallbackNeverShadowsAnything(t *testing.T) {
 	if rec := put(t, s, base+"app/new.js", "test-key", "written"); rec.Code != http.StatusCreated {
 		t.Errorf("PUT app/new.js in a bin with a fallback = %d, want %d", rec.Code, http.StatusCreated)
 	}
-	if rec := patchFrom(t, s, "198.51.100.44:1234", base+"notes.md", "test-key", map[string]string{"X-Bin-Title": "no"}); rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != "method not allowed\n" {
+	if rec := patchBinsJSON(t, s, "198.51.100.44:1234", base+"notes.md", "test-key", "", "", ""); rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != "method not allowed\n" {
 		t.Errorf("PATCH a file path in a bin with a fallback = %d, body %q; want 405", rec.Code, rec.Body.String())
 	}
 	if rec := del(t, s, base+"gone.txt", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {

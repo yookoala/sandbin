@@ -509,3 +509,517 @@ func TestFieldValueStates(t *testing.T) {
 		}
 	}
 }
+
+// patchBinsJSON PATCHes a path from a fixed socket address: an empty apiKey omits the header,
+// an empty body sends no body at all, which is the empty request, and a non-empty basicUser
+// sends Basic auth with basicPassword, which is how a protected bin is opened.
+func patchBinsJSON(t *testing.T, h http.Handler, remoteAddr, path, apiKey, body, basicUser, basicPassword string) *httptest.ResponseRecorder {
+	t.Helper()
+	var rdr io.Reader
+	if body != "" {
+		rdr = strings.NewReader(body)
+	}
+	req := httptest.NewRequest(http.MethodPatch, path, rdr)
+	if remoteAddr != "" {
+		req.RemoteAddr = remoteAddr
+	}
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
+	if basicUser != "" {
+		req.SetBasicAuth(basicUser, basicPassword)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// getBasicFrom GETs a path from a fixed socket address with Basic credentials.
+func getBasicFrom(t *testing.T, h http.Handler, remoteAddr, path, user, password string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	if remoteAddr != "" {
+		req.RemoteAddr = remoteAddr
+	}
+	req.SetBasicAuth(user, password)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// readBinAnswer decodes a recorder's body into the bin object shape, wherever it answered.
+func readBinAnswer(t *testing.T, rec *httptest.ResponseRecorder) binAnswer {
+	t.Helper()
+	var b binAnswer
+	if err := json.Unmarshal(rec.Body.Bytes(), &b); err != nil {
+		t.Fatalf("answer %q is not a bin object: %v", rec.Body.String(), err)
+	}
+	return b
+}
+
+// binDetailAnswer is the test's own reading of the inspect answer: the bin object plus the
+// files array it names, each with its path, size and updated_at.
+type binDetailAnswer struct {
+	binAnswer
+	Files []fileAnswer `json:"files"`
+}
+
+type fileAnswer struct {
+	Path      string `json:"path"`
+	Size      int64  `json:"size"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// readBinDetail decodes a GET /api/bins/{hash} answer into the bin object and its files.
+func readBinDetail(t *testing.T, rec *httptest.ResponseRecorder) binDetailAnswer {
+	t.Helper()
+	var d binDetailAnswer
+	if err := json.Unmarshal(rec.Body.Bytes(), &d); err != nil {
+		t.Fatalf("inspect answer %q is not a bin detail object: %v", rec.Body.String(), err)
+	}
+	return d
+}
+
+// TestAPIInspectBin is GET /api/bins/{hash}: no API key, the bin object plus its file list
+// sorted by path — an array, never null — and the list never hides, not when an index.html
+// covers the bin's own page. A protected bin answers 401 until Basic opens it, and no 401,
+// right or wrong, charges the address.
+func TestAPIInspectBin(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+
+	seed := map[string]string{
+		"notes.md":      "body of notes.md",
+		"a.txt":         "body of a.txt",
+		"drafts/one.md": "body of drafts/one.md",
+	}
+	for name, body := range seed {
+		if rec := put(t, s, base+name, "test-key", body); rec.Code != http.StatusCreated {
+			t.Fatalf("PUT %s = %d, want %d; body %q", name, rec.Code, http.StatusCreated, rec.Body.String())
+		}
+	}
+
+	rec := get(t, s, "/api/bins/"+hash)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/bins/%s with no API key = %d, want %d; body %q", hash, rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	detail := readBinDetail(t, rec)
+	if detail.Bin != hash || detail.URL != base {
+		t.Errorf("bin/url = %q / %q, want %q / %q", detail.Bin, detail.URL, hash, base)
+	}
+	if detail.HasPassword {
+		t.Errorf("has_password = true, want false for an open bin")
+	}
+	if _, err := time.Parse(time.RFC3339, detail.CreatedAt); err != nil {
+		t.Errorf("created_at %q is not RFC 3339: %v", detail.CreatedAt, err)
+	}
+	if len(detail.Files) != len(seed) {
+		t.Fatalf("files = %d entries, want the %d seeded files; body %q", len(detail.Files), len(seed), rec.Body.String())
+	}
+	for i, f := range detail.Files {
+		if want := []string{"a.txt", "drafts/one.md", "notes.md"}[i]; f.Path != want {
+			t.Errorf("files[%d].path = %q, want %q: the list is sorted by path", i, f.Path, want)
+		}
+		if want := int64(len(seed[f.Path])); f.Size != want {
+			t.Errorf("%s size = %d, want %d", f.Path, f.Size, want)
+		}
+		if _, err := time.Parse(time.RFC3339, f.UpdatedAt); err != nil {
+			t.Errorf("%s updated_at %q is not RFC 3339: %v", f.Path, f.UpdatedAt, err)
+		}
+	}
+
+	// An empty bin answers an array, never null.
+	emptyHash := strings.Trim(createTestBin(t, s, "test-key"), "/")
+	rec = get(t, s, "/api/bins/"+emptyHash)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET the empty bin = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if detail = readBinDetail(t, rec); detail.Files == nil || len(detail.Files) != 0 {
+		t.Errorf("empty bin files = %v, want [] ; body %q", detail.Files, rec.Body.String())
+	}
+
+	// A root index.html hides the listing from the bin's HTML page; the API list never hides.
+	if rec := put(t, s, base+"index.html", "test-key", "<h1>Cover</h1>"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT index.html = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	if page := get(t, s, base); page.Code != http.StatusOK || page.Body.String() != "<h1>Cover</h1>" {
+		t.Fatalf("GET the covered bin = %d, body %q; want the stored index.html", page.Code, page.Body.String())
+	} else if strings.Contains(page.Body.String(), "notes.md") {
+		t.Errorf("the covered bin's page lists notes.md, want the file list hidden there:\n%s", page.Body.String())
+	}
+	rec = get(t, s, "/api/bins/"+hash)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/bins/%s with the cover in place = %d, want %d", hash, rec.Code, http.StatusOK)
+	}
+	detail = readBinDetail(t, rec)
+	wantFiles := []string{"a.txt", "drafts/one.md", "index.html", "notes.md"}
+	if len(detail.Files) != len(wantFiles) {
+		t.Fatalf("covered bin files = %d entries, want %d; body %q", len(detail.Files), len(wantFiles), rec.Body.String())
+	}
+	for i, f := range detail.Files {
+		if f.Path != wantFiles[i] {
+			t.Errorf("files[%d].path = %q, want %q", i, f.Path, wantFiles[i])
+		}
+	}
+
+	// A protected bin gates on the bin password, not on any API key.
+	const addr = "198.51.100.82:1234"
+	pbase := createTestBinWithPassword(t, s, "sesame")
+	phash := strings.Trim(pbase, "/")
+	req := httptest.NewRequest(http.MethodPut, pbase+"secret.txt", strings.NewReader("shh"))
+	req.Header.Set("X-API-Key", "test-key")
+	req.SetBasicAuth(phash, "sesame")
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("PUT the protected bin's file = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	rec = getFrom(t, s, addr, "/api/bins/"+phash, "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET the protected bin without Basic = %d, want %d; body %q", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "bin password required\n" {
+		t.Errorf("401 body = %q, want the bin password required message", got)
+	}
+	if www := rec.Header().Get("WWW-Authenticate"); !strings.HasPrefix(www, "Basic") {
+		t.Errorf("WWW-Authenticate = %q, want a Basic challenge", www)
+	}
+
+	rec = getBasicFrom(t, s, addr, "/api/bins/"+phash, phash, "sesame")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET the protected bin with the right Basic = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	detail = readBinDetail(t, rec)
+	if !detail.HasPassword {
+		t.Errorf("has_password = false, want true for the protected bin")
+	}
+	if len(detail.Files) != 1 || detail.Files[0].Path != "secret.txt" || detail.Files[0].Size != 3 {
+		t.Errorf("files = %v, want the one secret.txt entry; body %q", detail.Files, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "sesame") {
+		t.Errorf("body %q carries the password, want it nowhere", rec.Body.String())
+	}
+
+	rec = getBasicFrom(t, s, addr, "/api/bins/"+phash, phash, "wrong")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET with the wrong Basic = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	// No 401 through a bin gate charges the address: the API-key lockout is not this gate.
+	if _, ok := ipBlockRow(t, s.store, "198.51.100.82"); ok {
+		t.Errorf("the bin-password 401s charged 198.51.100.82, want no row in ip_blocks")
+	}
+}
+
+// TestAPIPatchJSON is the PATCH semantics table at the JSON surface: a given field replaces,
+// an absent one leaves what the bin holds, null and "" clear theirs, and {} is a no-op that
+// answers the unchanged row. The answer body is the full bin object as the row now stands.
+func TestAPIPatchJSON(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBinWithMetadata(t, s, "test-key", "first title", "first description")
+	hash := strings.Trim(base, "/")
+	const addr = "198.51.100.80:1234"
+
+	bin, ok, err := s.store.GetBin(hash)
+	if err != nil || !ok {
+		t.Fatalf("GetBin(%q) = ok %v, err %v", hash, ok, err)
+	}
+	createdAt := bin.CreatedAt
+
+	for i, tc := range []struct {
+		body                                 string
+		wantTitle, wantDescription, wantBody string
+	}{
+		// {} touches nothing and answers the row as it was.
+		{`{}`, "first title", "first description", `{"bin":"` + hash + `","url":"` + base + `","title":"first title","description":"first description","has_password":false,"created_at":"` + createdAt + `"}`},
+		// One field replaces its value and says nothing about the other.
+		{`{"title":"second title"}`, "second title", "first description", `{"bin":"` + hash + `","url":"` + base + `","title":"second title","description":"first description","has_password":false,"created_at":"` + createdAt + `"}`},
+		{`{"description":"second description"}`, "second title", "second description", `{"bin":"` + hash + `","url":"` + base + `","title":"second title","description":"second description","has_password":false,"created_at":"` + createdAt + `"}`},
+		{`{"title":"third title","description":"third description"}`, "third title", "third description", `{"bin":"` + hash + `","url":"` + base + `","title":"third title","description":"third description","has_password":false,"created_at":"` + createdAt + `"}`},
+		// null and "" both clear their field and leave the other alone.
+		{`{"title":null}`, "", "third description", `{"bin":"` + hash + `","url":"` + base + `","title":"","description":"third description","has_password":false,"created_at":"` + createdAt + `"}`},
+		{`{"description":""}`, "", "", `{"bin":"` + hash + `","url":"` + base + `","title":"","description":"","has_password":false,"created_at":"` + createdAt + `"}`},
+		// A cleared field stays cleared when the next PATCH does not mention it.
+		{`{"title":"fourth title"}`, "fourth title", "", `{"bin":"` + hash + `","url":"` + base + `","title":"fourth title","description":"","has_password":false,"created_at":"` + createdAt + `"}`},
+	} {
+		rec := patchBinsJSON(t, s, addr, "/api/bins/"+hash, "test-key", tc.body, "", "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PATCH #%d body %s = %d, want %d; body %q", i+1, tc.body, rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("PATCH #%d Content-Type = %q, want application/json", i+1, ct)
+		}
+		if want := tc.wantBody + "\n"; rec.Body.String() != want {
+			t.Errorf("PATCH #%d body = %q, want the full bin object %q", i+1, rec.Body.String(), want)
+		}
+		if title, description := storedMeta(t, s, base); title != tc.wantTitle || description != tc.wantDescription {
+			t.Errorf("after PATCH #%d: stored metadata = %q / %q, want %q / %q",
+				i+1, title, description, tc.wantTitle, tc.wantDescription)
+		}
+	}
+
+	// A malformed body is refused, and the row keeps what it held.
+	for _, c := range []struct{ body, want string }{
+		{`{"titel":"x"}`, "unrecognized field in the request\n"},
+		{`not json`, "could not read the request\n"},
+		{`{"title":5}`, "could not read the request\n"},
+		{`null`, "could not read the request\n"},
+		{`{"title":"a"}{"title":"b"}`, "could not read the request\n"},
+		{`{"title":"` + strings.Repeat("t", maxTitleBytes+1) + `"}`, "title over 200 bytes\n"},
+		{`{"title":"a\nb"}`, "title may not contain control characters\n"},
+	} {
+		rec := patchBinsJSON(t, s, addr, "/api/bins/"+hash, "test-key", c.body, "", "")
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("PATCH body %s = %d, want %d; body %q", c.body, rec.Code, http.StatusBadRequest, rec.Body.String())
+			continue
+		}
+		if got := rec.Body.String(); got != c.want {
+			t.Errorf("PATCH body %s = %q, want %q", c.body, got, c.want)
+		}
+		if title, description := storedMeta(t, s, base); title != "fourth title" || description != "" {
+			t.Errorf("after the refusal of %s: stored metadata = %q / %q, want it unchanged", c.body, title, description)
+		}
+	}
+}
+
+// TestAPIPatchPassword is the password half of PATCH: rotation needs the current password on
+// Basic, the new one is bcrypt-stored and the bin answers it from then on, clearing takes
+// null or "" through the same gate, an over-long candidate is a 400, and an attempt without
+// the current password is a 401 that leaves the row alone and charges nothing.
+func TestAPIPatchPassword(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBinWithPassword(t, s, "sesame")
+	hash := strings.Trim(base, "/")
+	const addr = "198.51.100.81:1234"
+	apiPath := "/api/bins/" + hash
+
+	// Rotation: the current password on Basic, the new one in the body.
+	rec := patchBinsJSON(t, s, addr, apiPath, "test-key", `{"password":"new-pass"}`, hash, "sesame")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rotate with the current Basic = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	patched := readBinAnswer(t, rec)
+	if !patched.HasPassword {
+		t.Errorf("has_password = false, want true after the rotation")
+	}
+	if got := rec.Body.String(); strings.Contains(got, "sesame") || strings.Contains(got, "new-pass") {
+		t.Errorf("body %q carries a password, want neither in any body", got)
+	}
+	stored, ok, err := s.store.GetBin(hash)
+	if err != nil || !ok {
+		t.Fatalf("GetBin(%q) = ok %v, err %v", hash, ok, err)
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(stored.PasswordHash), []byte("new-pass")); err != nil {
+		t.Fatalf("the stored hash does not match the new password: %v", err)
+	}
+
+	// The bin answers the new password and not the old one, on its page and on the API.
+	if rec := getBasicFrom(t, s, addr, base, hash, "new-pass"); rec.Code != http.StatusOK {
+		t.Errorf("GET with the new password = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if rec := getBasicFrom(t, s, addr, base, hash, "sesame"); rec.Code != http.StatusUnauthorized {
+		t.Errorf("GET with the old password = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if rec := getBasicFrom(t, s, addr, apiPath, hash, "new-pass"); rec.Code != http.StatusOK {
+		t.Errorf("GET /api/bins/%s with the new password = %d, want %d", hash, rec.Code, http.StatusOK)
+	}
+
+	// A rotation attempt without the current password — no Basic or the wrong one — is a
+	// 401 that leaves the row alone and charges nothing.
+	for _, attempt := range []struct{ user, password, why string }{
+		{"", "", "no Basic"},
+		{hash, "sesame", "the superseded password"},
+	} {
+		rec := patchBinsJSON(t, s, addr, apiPath, "test-key", `{"password":"attacker"}`, attempt.user, attempt.password)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("rotate with %s = %d, want %d; body %q", attempt.why, rec.Code, http.StatusUnauthorized, rec.Body.String())
+		}
+		if got := rec.Body.String(); got != "bin password required\n" {
+			t.Errorf("401 body = %q, want the bin password required message", got)
+		}
+		if _, ok := ipBlockRow(t, s.store, "198.51.100.81"); ok {
+			t.Fatalf("rotate with %s charged 198.51.100.81, want no row in ip_blocks", attempt.why)
+		}
+		stored, _, err := s.store.GetBin(hash)
+		if err != nil {
+			t.Fatalf("GetBin after %s: %v", attempt.why, err)
+		}
+		if err := bcrypt.CompareHashAndPassword([]byte(stored.PasswordHash), []byte("attacker")); err == nil {
+			t.Errorf("the row took the attacker password through %s, want the row unchanged", attempt.why)
+		}
+	}
+
+	// A candidate longer than bcrypt can hold is a 400 — and it is one before the bin's
+	// own gate, with or without Basic, because a bad body fails first.
+	long := `{"password":"` + strings.Repeat("p", 73) + `"}`
+	for _, attempt := range []struct{ user, password, why string }{
+		{hash, "new-pass", "the current Basic"},
+		{"", "", "no Basic"},
+	} {
+		rec := patchBinsJSON(t, s, addr, apiPath, "test-key", long, attempt.user, attempt.password)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("rotate with a 73-byte password with %s = %d, want %d; body %q", attempt.why, rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
+		if got := rec.Body.String(); got != "bin password too long\n" {
+			t.Errorf("body = %q, want the bin password too long message", got)
+		}
+	}
+
+	// Clear with null: the current password first, then the bin is open again.
+	rec = patchBinsJSON(t, s, addr, apiPath, "test-key", `{"password":null}`, hash, "new-pass")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear with null = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if patched = readBinAnswer(t, rec); patched.HasPassword {
+		t.Errorf("has_password = true after clearing, want false")
+	}
+	if stored, _, err := s.store.GetBin(hash); err != nil || stored.PasswordHash != "" {
+		t.Errorf("stored hash = %q (err %v), want the bin open", stored.PasswordHash, err)
+	}
+	if rec := get(t, s, base); rec.Code != http.StatusOK {
+		t.Errorf("GET the cleared bin without Basic = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if rec := get(t, s, apiPath); rec.Code != http.StatusOK {
+		t.Errorf("GET /api/bins/%s without Basic after the clear = %d, want %d", hash, rec.Code, http.StatusOK)
+	}
+
+	// Clear with "": the same door on the other spelling, and the bin writes open.
+	second := createTestBinWithPassword(t, s, "second")
+	secondHash := strings.Trim(second, "/")
+	rec = patchBinsJSON(t, s, addr, "/api/bins/"+secondHash, "test-key", `{"password":""}`, secondHash, "second")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear with \"\" = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if patched = readBinAnswer(t, rec); patched.HasPassword {
+		t.Errorf("has_password = true after clearing with \"\", want false")
+	}
+	if rec := put(t, s, second+"open.txt", "test-key", "open"); rec.Code != http.StatusCreated {
+		t.Errorf("PUT into the cleared bin without Basic = %d, want %d", rec.Code, http.StatusCreated)
+	}
+}
+
+// TestAPIPatchShapes keeps the per-bin surface to its pinned spellings: the old header PATCH
+// answers the plain 405 here, a bin the store does not hold is the plain 404, trailing-slash
+// and non-hash segments stay 404 whatever the method, an unknown field is a loud 400, and
+// none of these touches a bin.
+func TestAPIPatchShapes(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+	const addr = "198.51.100.83:1234"
+
+	// The old header spelling retires here: the bin base answers the plain 405 every
+	// unnamed method on a bin path gets, and a path below the bin keeps its 405.
+	for _, p := range []string{base, base + "notes.md"} {
+		rec := patchBinsJSON(t, s, addr, p, "test-key", `{"title":"no"}`, "", "")
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("PATCH %s = %d, want %d; body %q", p, rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
+			continue
+		}
+		if rec.Body.String() != "method not allowed\n" {
+			t.Errorf("PATCH %s body = %q, want the method not allowed message", p, rec.Body.String())
+		}
+	}
+
+	// Unknown bins are the plain 404; so are the trailing-slash and non-hash spellings.
+	for _, c := range []struct{ method, path string }{
+		{http.MethodPatch, "/api/bins/deadbeef"},
+		{http.MethodPatch, "/api/bins/" + hash + "/"},
+		{http.MethodPatch, "/api/bins/notahash"},
+		{http.MethodGet, "/api/bins/deadbeef"},
+	} {
+		req := httptest.NewRequest(c.method, c.path, strings.NewReader(`{"title":"x"}`))
+		req.RemoteAddr = addr
+		req.Header.Set("X-API-Key", "test-key")
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s %s = %d, want %d; body %q", c.method, c.path, rec.Code, http.StatusNotFound, rec.Body.String())
+			continue
+		}
+		if rec.Body.String() != "unknown bin\n" {
+			t.Errorf("%s %s body = %q, want the unknown bin message", c.method, c.path, rec.Body.String())
+		}
+	}
+
+	// A field this API does not have fails loudly.
+	rec := patchBinsJSON(t, s, addr, "/api/bins/"+hash, "test-key", `{"titel":"x"}`, "", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PATCH with an unknown field = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "unrecognized field in the request\n" {
+		t.Errorf("body = %q, want the unrecognized field message", got)
+	}
+
+	// A known bin path on a method the dispatch does not name is the plain 405 —
+	// DELETE stays one until Task 6 gives it its answer.
+	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodHead} {
+		req := httptest.NewRequest(m, "/api/bins/"+hash, nil)
+		req.RemoteAddr = addr
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != "method not allowed\n" {
+			t.Errorf("%s /api/bins/%s = %d, body %q; want 405 method not allowed", m, hash, rec.Code, rec.Body.String())
+		}
+	}
+
+	// The bin took none of this.
+	if title, description := storedMeta(t, s, base); title != "" || description != "" {
+		t.Errorf("stored metadata after the refusals = %q / %q, want it untouched", title, description)
+	}
+	if files, err := s.store.ListFiles(hash); err != nil || len(files) != 0 {
+		t.Errorf("files after the refusals = %d (err %v), want none", len(files), err)
+	}
+}
+
+// TestBinPageNoMetadataHeaders is ruling R1 at the page: the title and description a bin's
+// listing shows come from the DB row, and they travel in the body only — the
+// X-Bin-Title and X-Bin-Description response headers retire with the JSON PATCH surface,
+// on the listing branch and the raw index.html one alike.
+func TestBinPageNoMetadataHeaders(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBinWithMetadata(t, s, "test-key", "Test report", "findings of the audit")
+	hash := strings.Trim(base, "/")
+
+	rec := get(t, s, base)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET the bin base = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "Test report") || !strings.Contains(body, "findings of the audit") {
+		t.Errorf("the listing does not show the stored title/description:\n%s", body)
+	}
+	if got := rec.Header().Get("X-Bin-Title"); got != "" {
+		t.Errorf("X-Bin-Title = %q, want no metadata header on any bin page", got)
+	}
+	if got := rec.Header().Get("X-Bin-Description"); got != "" {
+		t.Errorf("X-Bin-Description = %q, want no metadata header on any bin page", got)
+	}
+
+	// The raw index.html branch carries nothing either.
+	if rec := put(t, s, base+"index.html", "test-key", "<h1>Custom index</h1>"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT index.html = %d, want %d", rec.Code, http.StatusCreated)
+	}
+	rec = get(t, s, base)
+	if got := rec.Body.String(); got != "<h1>Custom index</h1>" {
+		t.Errorf("body = %q, want the stored index.html verbatim", got)
+	}
+	if got := rec.Header().Get("X-Bin-Title"); got != "" {
+		t.Errorf("X-Bin-Title on the raw index.html = %q, want it absent", got)
+	}
+	if got := rec.Header().Get("X-Bin-Description"); got != "" {
+		t.Errorf("X-Bin-Description on the raw index.html = %q, want it absent", got)
+	}
+
+	// The metadata itself is not gone: the JSON inspect answer still carries it.
+	rec = get(t, s, "/api/bins/"+hash)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/bins/%s = %d, want %d", hash, rec.Code, http.StatusOK)
+	}
+	if b := readBinAnswer(t, rec); b.Title != "Test report" || b.Description != "findings of the audit" {
+		t.Errorf("inspect metadata = %q / %q, want the stored Test report / findings of the audit", b.Title, b.Description)
+	}
+}

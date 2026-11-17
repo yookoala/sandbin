@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,15 +26,13 @@ import (
 )
 
 const (
-	apiKeyHeader         = "X-API-Key"
-	binTitleHeader       = "X-Bin-Title"
-	binDescriptionHeader = "X-Bin-Description"
-	extractHeader        = "X-Extract"
-	maxBodyBytes         = 1 << 20 // 1 MiB per PUT
-	maxPathLen           = 256
-	maxPathSegs          = 16
-	maxTitleBytes        = 200
-	maxDescriptionBytes  = 2000
+	apiKeyHeader        = "X-API-Key"
+	extractHeader       = "X-Extract"
+	maxBodyBytes        = 1 << 20 // 1 MiB per PUT
+	maxPathLen          = 256
+	maxPathSegs         = 16
+	maxTitleBytes       = 200
+	maxDescriptionBytes = 2000
 )
 
 type server struct {
@@ -70,8 +67,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// "api" is no eight-hex hash, so this prefix can never name or shadow a bin, same
 	// reasoning as the static routes below it. The whole /api surface dispatches in api.go:
 	// GET|HEAD /api/health is the unauthenticated probe the container HEALTHCHECK asks for,
-	// POST /api/key is the pure key check — good key 204, wrong key charged — and POST
-	// /api/bins makes a bin from a JSON body.
+	// POST /api/key is the pure key check — good key 204, wrong key charged — POST /api/bins
+	// makes a bin from a JSON body, and GET and PATCH /api/bins/{hash} inspect and update one.
 	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
 		s.apiRoutes(w, r)
 		return
@@ -172,7 +169,9 @@ func singleSegment(urlPath string) (string, bool) {
 	return seg, true
 }
 
-// binRoutes serves GET, PUT, DELETE and PATCH under one bin hash.
+// binRoutes serves GET, PUT and DELETE under one bin hash. PATCH retired here when the bin
+// metadata endpoint moved to PATCH /api/bins/{hash}: a PATCH on a bin path is now the plain
+// 405 every other unnamed method gets.
 func (s *server) binRoutes(w http.ResponseWriter, r *http.Request, hash, sub string) {
 	switch r.Method {
 	case http.MethodGet:
@@ -181,8 +180,6 @@ func (s *server) binRoutes(w http.ResponseWriter, r *http.Request, hash, sub str
 		s.putFile(w, r, hash, sub)
 	case http.MethodDelete:
 		s.deletePath(w, r, hash, sub)
-	case http.MethodPatch:
-		s.patchBin(w, r, hash, sub)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -238,16 +235,9 @@ func (s *server) getFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 	}
 
 	if sub == "" {
-		// The bin's own words ride the answer of its base path, on the raw index.html
-		// branch as well as the listing one: the page's author owns that file, so the
-		// metadata reaches a reader only as headers there.
-		if bin.Title != "" {
-			w.Header().Set(binTitleHeader, bin.Title)
-		}
-		if bin.Description != "" {
-			w.Header().Set(binDescriptionHeader, bin.Description)
-		}
-
+		// The bin's own words reach a reader through the listing body and the JSON inspect
+		// answer; the old X-Bin-Title/X-Bin-Description response headers retired with the
+		// header PATCH. A stored index.html is the page its author owns, served untouched.
 		content, ok, err := s.store.GetFile(hash, "index.html")
 		if err != nil {
 			log.Printf("get index of bin %q: %v", hash, err)
@@ -493,101 +483,6 @@ func (s *server) deletePath(w http.ResponseWriter, r *http.Request, hash, sub st
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(append(out, '\n'))
-}
-
-// binMetaBody is the PATCH answer: the bin's metadata as its row now holds it.
-type binMetaBody struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
-}
-
-// patchBin merges X-Bin-Title and X-Bin-Description into a bin's row: a header that is
-// present replaces its field, an absent one leaves it, an empty value clears it. Only the
-// bin base takes a PATCH, and the request body is ignored.
-func (s *server) patchBin(w http.ResponseWriter, r *http.Request, hash, sub string) {
-	if sub != "" {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if !s.requireKey(w, r) {
-		return
-	}
-
-	// The headers are checked before any SQL runs, so a refused PATCH leaves the row as it was.
-	titleRaw, titleGiven := headerValue(r.Header, binTitleHeader)
-	descriptionRaw, descriptionGiven := headerValue(r.Header, binDescriptionHeader)
-	if err := checkBinText("title", titleRaw, maxTitleBytes); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := checkBinText("description", descriptionRaw, maxDescriptionBytes); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	bin, ok, err := s.store.GetBin(hash)
-	if err != nil {
-		log.Printf("get bin %q: %v", hash, err)
-		http.Error(w, "unknown bin", http.StatusNotFound)
-		return
-	} else if !ok {
-		http.Error(w, "unknown bin", http.StatusNotFound)
-		return
-	}
-	if !s.binAuthorized(w, r, bin) {
-		return
-	}
-
-	// A NULL argument is the "leave it" case the COALESCE in UpdateBinMeta reads.
-	// This header-based patch never touches the password, so its argument is NULL too.
-	var title, description sql.NullString
-	if titleGiven {
-		title = sql.NullString{String: titleRaw, Valid: true}
-	}
-	if descriptionGiven {
-		description = sql.NullString{String: descriptionRaw, Valid: true}
-	}
-	updated, err := s.store.UpdateBinMeta(hash, title, description, sql.NullString{})
-	if err != nil {
-		log.Printf("update metadata of bin %q: %v", hash, err)
-		http.Error(w, "could not update bin", http.StatusInternalServerError)
-		return
-	}
-	if !updated {
-		// The bin went away between the read and the write.
-		http.Error(w, "unknown bin", http.StatusNotFound)
-		return
-	}
-
-	bin, ok, err = s.store.GetBin(hash)
-	if err != nil || !ok {
-		log.Printf("get bin %q: %v", hash, err)
-		http.Error(w, "unknown bin", http.StatusNotFound)
-		return
-	}
-
-	// The answer carries the row as it now stands, so the caller never has to guess what
-	// a keep-and-replace mix left behind.
-	out, err := json.Marshal(binMetaBody{Title: bin.Title, Description: bin.Description})
-	if err != nil {
-		log.Printf("encode metadata of bin %q: %v", hash, err)
-		http.Error(w, "could not answer bin metadata", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write(append(out, '\n'))
-}
-
-// headerValue reports a header's value and whether it was sent at all, which is the
-// difference between "leave this field alone" and "clear it".
-func headerValue(h http.Header, name string) (string, bool) {
-	values := h.Values(name)
-	if values == nil {
-		return "", false
-	}
-	return values[0], true
 }
 
 // checkBinText weighs a title or description against its byte cap and refuses the control

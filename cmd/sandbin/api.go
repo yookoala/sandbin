@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -18,10 +20,11 @@ const maxJSONBodyBytes = 64 << 10
 
 // apiRoutes dispatches everything under /api. "api" is no eight-hex hash, so the prefix can
 // never name or shadow a bin, same reasoning as the static routes below it. It answers POST
-// /api/key, GET|HEAD /api/health and POST /api/bins today; GET and DELETE on /api/bins are the
-// verbs Tasks 5 and 6 add, so they answer the plain 405 for now. A spelling the dispatch does
-// not name — trailing-slash variants included — is the plain 404 unknown bin, and a known path
-// on a wrong method is the plain 405.
+// /api/key, GET|HEAD /api/health, POST /api/bins and, on the one spelling apiBinPathRE names,
+// GET and PATCH /api/bins/{hash}. DELETE on that path is the plain 405 until Task 6 gives it
+// its answer, and GET on the /api/bins collection belongs to Task 5. A spelling the dispatch
+// does not name — trailing-slash variants and non-hash segments under /api/bins/ included —
+// is the plain 404 unknown bin, and a known path on a wrong method is the plain 405.
 func (s *server) apiRoutes(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/api/key":
@@ -43,9 +46,25 @@ func (s *server) apiRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 		s.apiCreateBin(w, r)
 	default:
+		if m := apiBinPathRE.FindStringSubmatch(r.URL.Path); m != nil {
+			switch r.Method {
+			case http.MethodGet:
+				s.apiInspectBin(w, r, m[1])
+			case http.MethodPatch:
+				s.apiPatchBin(w, r, m[1])
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
+			return
+		}
 		http.Error(w, "unknown bin", http.StatusNotFound)
 	}
 }
+
+// apiBinPathRE names the one per-bin spelling /api owns: /api/bins/{hash} with the store's own
+// eight-hex hash and nothing after it. The trailing-slash spelling and any segment that is not
+// a hash stay the plain 404 they always were, whatever the method.
+var apiBinPathRE = regexp.MustCompile(`^/api/bins/([0-9a-f]{8})$`)
 
 // apiKeyCheck answers the key check: its guard is requireKey's verbatim, so a wrong key
 // through it charges exactly like a wrong key through a write, and a match creates nothing,
@@ -249,6 +268,161 @@ func (s *server) apiCreateBin(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Location", "/api/bins/"+hash)
 	if err := writeJSON(w, http.StatusCreated, binToJSON(bin)); err != nil {
+		log.Printf("encode the answer of bin %q: %v", hash, err)
+		http.Error(w, "could not answer the bin", http.StatusInternalServerError)
+	}
+}
+
+// fileJSON spells one file row for the JSON answers that name a bin's contents.
+type fileJSON struct {
+	Path      string `json:"path"`
+	Size      int64  `json:"size"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// binDetailJSON is the inspect answer: the bin object plus every file the bin holds. The bin's
+// own HTML page hides that list whenever an index.html covers the base; the API never does.
+type binDetailJSON struct {
+	binJSON
+	Files []fileJSON `json:"files"`
+}
+
+// apiInspectBin answers GET /api/bins/{hash}: no API key, the bin's row and its file list
+// sorted by path. A password-protected bin answers 401 until Basic opens it, and that 401
+// records no failure — the API-key lockout is not the bin's password gate.
+func (s *server) apiInspectBin(w http.ResponseWriter, r *http.Request, hash string) {
+	bin, ok, err := s.store.GetBin(hash)
+	if err != nil {
+		log.Printf("get bin %q: %v", hash, err)
+		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
+	}
+	if !ok {
+		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
+	}
+	if !s.binAuthorized(w, r, bin) {
+		return
+	}
+
+	files, err := s.store.ListFiles(hash)
+	if err != nil {
+		log.Printf("list bin %q: %v", hash, err)
+		http.Error(w, "could not list bin", http.StatusInternalServerError)
+		return
+	}
+
+	detail := binDetailJSON{
+		binJSON: binToJSON(bin),
+		Files:   make([]fileJSON, 0, len(files)),
+	}
+	for _, f := range files {
+		detail.Files = append(detail.Files, fileJSON{Path: f.Path, Size: f.Size, UpdatedAt: f.UpdatedAt})
+	}
+	if err := writeJSON(w, http.StatusOK, detail); err != nil {
+		log.Printf("encode the answer of bin %q: %v", hash, err)
+		http.Error(w, "could not answer the bin", http.StatusInternalServerError)
+	}
+}
+
+// apiPatchBin merges a JSON body into a bin's row: a given field is set — null and "" clear
+// theirs, a password is stored as a bcrypt hash — and an absent one leaves what the bin holds,
+// which is what UpdateBinMeta's COALESCE reads from a NULL argument. The order is pinned:
+// key, body validation, bin lookup, and only then the bin's own password gate, so a protected
+// bin is changed only by a request that carries its current password, and a refused request
+// changes nothing. {} is a no-op answering the current row.
+func (s *server) apiPatchBin(w http.ResponseWriter, r *http.Request, hash string) {
+	if !s.requireKey(w, r) {
+		return
+	}
+
+	req, ok := decodeBinRequest(w, r)
+	if !ok {
+		return
+	}
+
+	// Fields are validated before the row is read: decoding touches no data, so a bad body is
+	// a 400 even where the bin is unknown or guarded.
+	title, titleGiven := fieldValue(req.Title)
+	if titleGiven {
+		if err := checkBinText("title", title, maxTitleBytes); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	description, descriptionGiven := fieldValue(req.Description)
+	if descriptionGiven {
+		if err := checkBinText("description", description, maxDescriptionBytes); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	password, passwordGiven := fieldValue(req.Password)
+	if passwordGiven && len(password) > 72 {
+		http.Error(w, "bin password too long", http.StatusBadRequest)
+		return
+	}
+
+	bin, found, err := s.store.GetBin(hash)
+	if err != nil {
+		log.Printf("get bin %q: %v", hash, err)
+		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
+	}
+	if !found {
+		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
+	}
+	// Clearing or rotating a protected bin's password goes through the same gate as every
+	// other change to it: the current password first, and a 401 that charges nothing.
+	if !s.binAuthorized(w, r, bin) {
+		return
+	}
+
+	// A NULL argument is UpdateBinMeta's "leave it"; a Valid one writes the value, and a
+	// password given as empty is the empty string that opens the bin.
+	var titleArg, descriptionArg, passwordArg sql.NullString
+	if titleGiven {
+		titleArg = sql.NullString{String: title, Valid: true}
+	}
+	if descriptionGiven {
+		descriptionArg = sql.NullString{String: description, Valid: true}
+	}
+	if passwordGiven {
+		if password == "" {
+			passwordArg = sql.NullString{String: "", Valid: true}
+		} else {
+			hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+			if err != nil {
+				log.Printf("hash bin password: %v", err)
+				http.Error(w, "could not set the bin password", http.StatusInternalServerError)
+				return
+			}
+			passwordArg = sql.NullString{String: string(hashed), Valid: true}
+		}
+	}
+
+	updated, err := s.store.UpdateBinMeta(hash, titleArg, descriptionArg, passwordArg)
+	if err != nil {
+		log.Printf("update bin %q: %v", hash, err)
+		http.Error(w, "could not update bin", http.StatusInternalServerError)
+		return
+	}
+	if !updated {
+		// The bin went away between the read and the write.
+		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
+	}
+
+	// The answer carries the row as it now stands, so the caller never has to guess what a
+	// leave-and-replace mix left behind.
+	bin, found, err = s.store.GetBin(hash)
+	if err != nil || !found {
+		log.Printf("get bin %q: %v", hash, err)
+		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
+	}
+	if err := writeJSON(w, http.StatusOK, binToJSON(bin)); err != nil {
 		log.Printf("encode the answer of bin %q: %v", hash, err)
 		http.Error(w, "could not answer the bin", http.StatusInternalServerError)
 	}
