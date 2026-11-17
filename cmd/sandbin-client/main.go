@@ -102,7 +102,7 @@ func newClientApp(stdin io.Reader, stdout, stderr io.Writer) *cli.App {
 	hook := usageError(stderr)
 	return &cli.App{
 		Name:  "sandbin-client",
-		Usage: "publish previews to a sandbin bin: upload files, describe the bin, take paths out, or init this directory",
+		Usage: "publish previews to a sandbin bin: upload files, describe or list bins, take paths out, or init this directory",
 		// internal/version picks what this build can honestly say: a value the Makefile or the
 		// Containerfile injected, this checkout's commit hash, the tag a release embedded, or dev.
 		Version:      version.String(),
@@ -123,6 +123,7 @@ func newClientApp(stdin io.Reader, stdout, stderr io.Writer) *cli.App {
 			initCommand(stdin, stdout, stderr, hook),
 			deleteCommand(stdout, stderr, hook),
 			describeCommand(stdout, stderr, hook),
+			listCommand(stdout, stderr, hook),
 		},
 	}
 }
@@ -160,8 +161,8 @@ func settingFlags() []cli.Flag {
 // something about the field even when the value it carries is the empty string.
 func metadataFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "title", Usage: "single-line title to give the bin, sent as X-Bin-Title"},
-		&cli.StringFlag{Name: "description", Usage: "single-line description to give the bin, sent as X-Bin-Description"},
+		&cli.StringFlag{Name: "title", Usage: "single-line title to give the bin"},
+		&cli.StringFlag{Name: "description", Usage: "single-line description to give the bin"},
 	}
 }
 
@@ -221,7 +222,7 @@ func uploadCommand(stdin io.Reader, stdout, stderr io.Writer, hook cli.OnUsageEr
 	flags = append(flags, metadataFlags()...)
 	flags = append(flags,
 		&cli.StringFlag{Name: "archive", Usage: "upload this folder as one tar.gz the server unpacks into the bin"},
-		&cli.BoolFlag{Name: "no-extract", Usage: "send every upload with X-Extract, so archive bodies are stored raw"},
+		&cli.BoolFlag{Name: "no-extract", Usage: "put every upload with ?raw=1, so archive bodies are stored raw"},
 	)
 	cmd := &cli.Command{
 		Name:      "upload",
@@ -370,7 +371,7 @@ func runUpload(c *cli.Context, stdin io.Reader, stdout, stderr io.Writer) (err e
 	}
 	if archiveFile != "" {
 		// The folder archive uploads last, after the file arguments and stdin of the same
-		// run. --no-extract sends the opt-out header, so there the archive itself is what
+		// run. --no-extract sends the ?raw=1 opt-out, so there the archive itself is what
 		// lands in the bin.
 		f, err := os.Open(archiveFile)
 		if err != nil {
@@ -513,15 +514,15 @@ func runDelete(c *cli.Context, stdout, stderr io.Writer) (err error) {
 	return nil
 }
 
-// describeCommand is sandbin-client describe: it prints the title and description of the
-// bin this directory points at. It writes nothing, so it needs no API key.
+// describeCommand is sandbin-client describe: it prints the full inspection of the bin
+// this directory points at. It writes nothing, so it needs no API key.
 func describeCommand(stdout, stderr io.Writer, hook cli.OnUsageErrorFunc) *cli.Command {
 	flags := append(settingFlags(),
 		&cli.StringFlag{Name: "bin", Usage: "an existing bin hash to read"},
 	)
 	cmd := &cli.Command{
 		Name:      "describe",
-		Usage:     "print this bin's title and description; writes nothing and needs no API key",
+		Usage:     "print the full inspection of the directory's bin",
 		ArgsUsage: "(no arguments)",
 		Flags:     flags,
 		Action: func(c *cli.Context) error {
@@ -564,11 +565,91 @@ func runDescribe(c *cli.Context, stdout, stderr io.Writer) (err error) {
 	if protected && cl.password == "" {
 		fmt.Fprintf(stderr, "sandbin-client: warning: bin %s has a password and SANDBIN_BIN_PASSWORD is not set\n", bin)
 	}
-	title, description, err := cl.describeBin(bin)
+	info, err := cl.inspectBin(bin)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "title: %s\ndescription: %s\n", title, description)
+	password := "no"
+	if info.HasPassword {
+		password = "yes"
+	}
+	fmt.Fprintf(stdout, "bin: %s\ntitle: %s\ndescription: %s\npassword: %s\ncreated: %s\n",
+		info.Hash, info.Title, info.Description, password, info.CreatedAt)
+	if len(info.Files) == 0 {
+		fmt.Fprintln(stdout, "files: none")
+		return nil
+	}
+	fmt.Fprintln(stdout, "files:")
+	for _, file := range info.Files {
+		fmt.Fprintf(stdout, "  %s  %d bytes  %s\n", file.Path, file.Size, file.UpdatedAt)
+	}
+	return nil
+}
+
+// listCommand is sandbin-client list: it prints every bin the server holds, newest
+// first. The listing is key-gated on the server, so the run needs the API key like any
+// write, and it walks the server's pages without the user ever naming one.
+func listCommand(stdout, stderr io.Writer, hook cli.OnUsageErrorFunc) *cli.Command {
+	cmd := &cli.Command{
+		Name:      "list",
+		Usage:     "print every bin on the server, newest first",
+		ArgsUsage: "(no arguments)",
+		Flags:     settingFlags(),
+		Action: func(c *cli.Context) error {
+			return runList(c, stdout, stderr)
+		},
+	}
+	cmd.OnUsageError = hook
+	return cmd
+}
+
+// runList is the whole list verb: one walk of GET /api/bins, then one line per bin on
+// stdout, newest first. A bin with no title prints without the title column.
+func runList(c *cli.Context, stdout, stderr io.Writer) (err error) {
+	defer func() {
+		if err != nil {
+			reportFailure(stderr, err)
+		}
+	}()
+
+	if extra := c.Args().Slice(); len(extra) > 0 {
+		return fmt.Errorf("list takes no arguments: it prints every bin, it does not take one: %q", strings.Join(extra, " "))
+	}
+
+	dir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	s, err := readSettings(c, dir)
+	if err != nil {
+		return err
+	}
+
+	// The listing is a key-gated read: without the key the run refuses exactly like a
+	// write run, before any request.
+	if s.apiKey == "" {
+		return errors.New("no API key: pass --api-key, set SANDBIN_API_KEY or run sandbin-client init")
+	}
+
+	cl, err := newClient(s.baseURL, s.apiKey, "")
+	if err != nil {
+		return err
+	}
+	bins, err := cl.listBins()
+	if err != nil {
+		return err
+	}
+	if len(bins) == 0 {
+		fmt.Fprintln(stdout, "no bins")
+		return nil
+	}
+	for _, bin := range bins {
+		if bin.Title == "" {
+			fmt.Fprintf(stdout, "  %s  %s\n", bin.Hash, bin.CreatedAt)
+			continue
+		}
+		fmt.Fprintf(stdout, "  %s  %s  %s\n", bin.Hash, bin.CreatedAt, bin.Title)
+	}
 	return nil
 }
 
@@ -1047,9 +1128,10 @@ func readStdin(stdin io.Reader) ([]byte, error) {
 	return body, nil
 }
 
-// resultLine is what one upload adds to stdout. An answer that carried X-Extracted-Count
-// says how many files the server unpacked and where they live; the file URL it names is
-// the archive's, and the extracted files sit under the archive name's directory in the bin.
+// resultLine is what one upload adds to stdout. An archive answer carries its created
+// and replaced counts, and the run says how many files the server unpacked and where
+// they live; the file URL it names is the archive's, and the extracted files sit under
+// the archive name's directory in the bin.
 func resultLine(created bool, extracted int, url string) string {
 	if extracted > 0 {
 		return fmt.Sprintf("extracted %d files into %s", extracted, url)

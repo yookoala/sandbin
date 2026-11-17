@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,59 +14,133 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yookoala/sandbin/internal/version"
 	"gopkg.in/yaml.v3"
 )
 
-// fakeServer mirrors the real server's contract so the client is tested without a
+// fakeBin mirrors the real server's contract so the client is tested without a
 // network or the server binary: one 403 for the first bad API key and then 429 with
-// a growing Retry-After for every later key-checked request, 404 for an unknown bin,
-// 401 for a missing bin password, 413 for an oversized body, and 201 or 200
-// according to whether the path was new. It counts requests, which is how these
-// tests prove the client never retries.
+// a growing Retry-After for every later key-checked request (every write and the bin
+// listing; a per-bin inspect is not key-checked), 404 for an unknown bin, 401 for a
+// missing bin password, 413 for an oversized body, and 201 or 200 according to
+// whether the path was new. It counts requests, which is how these tests prove the
+// client never retries. Its answers are the JSON bodies the shipped API answers.
 type fakeBin struct {
 	password    string
 	title       string
 	description string
+	createdAt   string
+}
+
+// fakeFile is one stored upload: the body and the updated_at the inspect answer
+// reports for it.
+type fakeFile struct {
+	body      string
+	updatedAt string
+}
+
+// fakeRecord notes one API request as it arrived — method, path, raw body and
+// headers — which is how the JSON-body tests say what actually went on the wire.
+type fakeRecord struct {
+	method string
+	path   string
+	body   string
+	header http.Header
 }
 
 type fakeServer struct {
 	apiKey     string
 	bodyLimit  int
 	log        io.Writer // optional sink that notes each arriving request
-	createBody string    // when set, POST answers with this instead of "/abc1234/"
+	createBody string    // when set, POST /api/bins answers with this instead of the bin JSON
 
-	// Archive knobs for the archive tests: unpack makes a PUT without X-Extract
-	// extract a gzipped tar body the way the real server does, and putFail, when
-	// non-zero, answers every PUT with that status.
-	unpack  bool
-	putFail int
+	// Archive knobs for the archive tests: unpack makes a PUT without the ?raw
+	// query extract a gzipped tar body the way the real server does, and putFail,
+	// when non-zero, answers every PUT with that status. pageSize is the GET
+	// /api/bins page size, 100 when unset.
+	unpack   bool
+	putFail  int
+	pageSize int
 
-	mu          sync.Mutex
-	requests    int
-	puts        int
-	patches     int
-	deletes     int
-	failures    int
-	extractSeen []string           // each PUT's X-Extract value, in arrival order
-	putPaths    []string           // each PUT's URL path, in arrival order
-	deletePaths []string           // each DELETE's URL path, in arrival order
-	deleteAuths []string           // each DELETE's Basic Auth user name, "" when it sent none
-	bins        map[string]fakeBin // bin hash -> its password and metadata
-	files       map[string]string  // "bin/path" -> stored body
+	mu            sync.Mutex
+	requests      int
+	puts          int
+	patches       int
+	deletes       int
+	failures      int
+	listGets      []string     // each GET /api/bins path, in arrival order
+	inspectPaths  []string     // each GET /api/bins/{hash} path, in arrival order
+	keyPaths      []string     // each /api/key request path, in arrival order
+	creates       []fakeRecord // each POST /api/bins, in arrival order
+	putRawQueries []string     // each PUT's raw query, in arrival order
+	putPaths      []string     // each PUT's URL path, in arrival order
+	deletePaths   []string     // each DELETE's URL path, in arrival order
+	deleteAuths   []string     // each DELETE's Basic Auth user name, "" when it sent none
+	patchCalls    []fakeRecord // each PATCH /api/bins/{hash}, in arrival order
+	bins          map[string]fakeBin
+	files         map[string]fakeFile
+}
+
+// fakeCreatedAt stamps every fake bin a distinct sortable UTC stamp, so the list
+// walk's newest-first order and describe's created line are deterministic.
+func fakeCreatedAt(seq int) string {
+	return time.Date(2026, 1, seq, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+}
+
+// fakeFileUpdatedAt is the updated_at every stored upload carries, so an inspect
+// answer for an uploaded file is deterministic too.
+const fakeFileUpdatedAt = "2026-01-01T12:00:00Z"
+
+// fakeBinAnswer is the bin object every JSON answer about a bin carries.
+type fakeBinAnswer struct {
+	Bin         string `json:"bin"`
+	URL         string `json:"url"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	HasPassword bool   `json:"has_password"`
+	CreatedAt   string `json:"created_at"`
+}
+
+func fakeBinJSON(hash string, b fakeBin) fakeBinAnswer {
+	return fakeBinAnswer{
+		Bin:         hash,
+		URL:         "/" + hash + "/",
+		Title:       b.title,
+		Description: b.description,
+		HasPassword: b.password != "",
+		CreatedAt:   b.createdAt,
+	}
+}
+
+// fakeCursor spells a keyset position the way the real server does: unpadded
+// URL-safe base64 over the created_at, the unit separator and the hash.
+func fakeCursor(createdAt, hash string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(createdAt + "\x1f" + hash))
+}
+
+func writeFakeJSON(w http.ResponseWriter, status int, v any) {
+	out, err := json.Marshal(v)
+	if err != nil {
+		http.Error(w, "could not answer", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	w.Write(append(out, '\n'))
 }
 
 // newFake starts a fake server, exports its url and key as the client's env, and
 // runs the test in a private working directory.
 func newFake(t *testing.T, apiKey string) *fakeServer {
 	t.Helper()
-	f := &fakeServer{apiKey: apiKey, bodyLimit: 1 << 20, bins: map[string]fakeBin{}, files: map[string]string{}}
+	f := &fakeServer{apiKey: apiKey, bodyLimit: 1 << 20, bins: map[string]fakeBin{}, files: map[string]fakeFile{}}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	t.Setenv("SANDBIN_URL", srv.URL)
@@ -79,7 +154,7 @@ func newFake(t *testing.T, apiKey string) *fakeServer {
 // or env, for the precedence and bin-reuse tests that need two servers.
 func newFakeAt(t *testing.T, apiKey string) (*fakeServer, string) {
 	t.Helper()
-	f := &fakeServer{apiKey: apiKey, bodyLimit: 1 << 20, bins: map[string]fakeBin{}, files: map[string]string{}}
+	f := &fakeServer{apiKey: apiKey, bodyLimit: 1 << 20, bins: map[string]fakeBin{}, files: map[string]fakeFile{}}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	return f, srv.URL
@@ -92,7 +167,7 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.requests++
 	if r.Method == http.MethodPut {
 		f.puts++
-		f.extractSeen = append(f.extractSeen, r.Header.Get("X-Extract"))
+		f.putRawQueries = append(f.putRawQueries, r.URL.RawQuery)
 		f.putPaths = append(f.putPaths, r.URL.Path)
 	}
 	if r.Method == http.MethodPatch {
@@ -107,11 +182,24 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.deleteAuths = append(f.deleteAuths, user)
 	}
+	if r.URL.Path == "/api/key" {
+		f.keyPaths = append(f.keyPaths, r.URL.Path)
+	}
+	if r.URL.Path == "/api/bins" && r.Method == http.MethodGet {
+		f.listGets = append(f.listGets, r.URL.Path)
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/bins/") && r.Method == http.MethodGet {
+		f.inspectPaths = append(f.inspectPaths, r.URL.Path)
+	}
 	if f.log != nil {
 		fmt.Fprintln(f.log, "request", r.Method)
 	}
 
-	keyChecked := r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete
+	// The real server's charge rule: every write plus the bin listing runs
+	// requireKey; a per-bin GET does not.
+	keyChecked := r.Method == http.MethodPost || r.Method == http.MethodPut ||
+		r.Method == http.MethodPatch || r.Method == http.MethodDelete ||
+		(r.Method == http.MethodGet && r.URL.Path == "/api/bins")
 	if keyChecked && f.failures > 0 {
 		// An attempt while blocked is another failure, so the wait walks up.
 		f.failures++
@@ -125,32 +213,41 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.URL.Path == "/verify-key" {
+	if r.URL.Path == "/api/key" {
 		// The real server's contract: only POST answers, and the key guard above is
-		// what charged any wrong key before this point.
+		// what charged any wrong key before this point. A good key creates nothing,
+		// charges nothing and answers 204 with an empty body.
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		io.WriteString(w, "key ok")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.URL.Path == "/api/bins" && r.Method == http.MethodPost {
+		f.serveCreateBin(w, r)
+		return
+	}
+	if r.URL.Path == "/api/bins" && r.Method == http.MethodGet {
+		f.serveListBins(w, r)
+		return
+	}
+	if hash, ok := strings.CutPrefix(r.URL.Path, "/api/bins/"); ok && hash != "" && !strings.Contains(hash, "/") {
+		switch r.Method {
+		case http.MethodGet:
+			f.serveInspectBin(w, r, hash)
+		case http.MethodPatch:
+			f.servePatchBin(w, r, hash)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 		return
 	}
 
 	if r.Method == http.MethodPost {
-		hash := fmt.Sprintf("bin%04d", len(f.bins)+1)
-		f.bins[hash] = fakeBin{
-			password:    r.Header.Get("X-Bin-Password"),
-			title:       r.Header.Get("X-Bin-Title"),
-			description: r.Header.Get("X-Bin-Description"),
-		}
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusCreated)
-		if f.createBody != "" {
-			io.WriteString(w, f.createBody)
-			return
-		}
-		io.WriteString(w, "/"+hash+"/")
+		// POST / retired: creation lives at POST /api/bins, so the root answers a
+		// write with the plain 405 every other known path gives a method it does not take.
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -164,110 +261,288 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown bin", http.StatusNotFound)
 		return
 	}
-	if r.Method != http.MethodPut {
-		// GET, PATCH and DELETE read, write or empty the bin itself; nothing else is on
-		// this fake, and every one of them proves the bin password first.
-		_, password, ok := r.BasicAuth()
-		if bin.password != "" && (!ok || password != bin.password) {
-			w.Header().Set("WWW-Authenticate", `Basic realm="sandbin"`)
-			http.Error(w, "bin password required", http.StatusUnauthorized)
-			return
-		}
-		switch r.Method {
-		case http.MethodGet:
-			// The metadata of a bin base GET comes back as headers, empty fields omitted.
-			if bin.title != "" {
-				w.Header().Set("X-Bin-Title", bin.title)
-			}
-			if bin.description != "" {
-				w.Header().Set("X-Bin-Description", bin.description)
-			}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			io.WriteString(w, "<!doctype html>\n<title>/"+first+"/</title>\n")
-			return
-		case http.MethodPatch:
-			if rest != "" {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-			// A header that was sent replaces its field, an empty value clears it, and a
-			// header that was not sent leaves it. The answer is the row as it now stands.
-			if values, ok := r.Header["X-Bin-Title"]; ok {
-				bin.title = values[0]
-			}
-			if values, ok := r.Header["X-Bin-Description"]; ok {
-				bin.description = values[0]
-			}
-			f.bins[first] = bin
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, "{\"title\":%q,\"description\":%q}\n", bin.title, bin.description)
-			return
-		case http.MethodDelete:
-			if rest == "" {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-			body, err := io.ReadAll(io.LimitReader(r.Body, 4097))
-			if err != nil {
-				http.Error(w, "could not read body", http.StatusBadRequest)
-				return
-			}
-			if len(body) > 0 {
-				http.Error(w, "delete takes no body", http.StatusBadRequest)
-				return
-			}
-			// The real server's rule: the trailing slash marks the folder, and a folder is
-			// every path under it, answered sorted.
-			folder := strings.HasSuffix(rest, "/")
-			sub := strings.TrimSuffix(rest, "/")
-			var deleted []string
-			if folder {
-				prefix := first + "/" + sub + "/"
-				for key := range f.files {
-					if strings.HasPrefix(key, prefix) {
-						deleted = append(deleted, strings.TrimPrefix(key, first+"/"))
-					}
-				}
-				sort.Strings(deleted)
-				for _, name := range deleted {
-					delete(f.files, first+"/"+name)
-				}
-			} else if _, stored := f.files[first+"/"+sub]; stored {
-				delete(f.files, first+"/"+sub)
-				deleted = []string{sub}
-			}
-			if len(deleted) == 0 {
-				http.Error(w, "unknown path", http.StatusNotFound)
-				return
-			}
-			out, err := json.Marshal(struct {
-				Deleted []string `json:"deleted"`
-			}{deleted})
-			if err != nil {
-				http.Error(w, "could not answer the delete", http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			w.Write(append(out, '\n'))
-			return
-		}
+	if r.Method == http.MethodPut {
+		f.servePut(w, r, first, rest, bin)
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodDelete {
+		// PATCH on a bin path retired with the header PATCH: the plain 405.
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !f.binAuthorized(w, r, bin) {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		// The bin base still answers its listing page; the X-Bin-Title/
+		// X-Bin-Description response headers retired with the header PATCH.
+		if rest != "" {
+			http.Error(w, "unknown path", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		io.WriteString(w, "<!doctype html>\n<title>/"+first+"/</title>\n")
+		return
+	case http.MethodDelete:
+		if rest == "" {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, 4097))
+		if err != nil {
+			http.Error(w, "could not read body", http.StatusBadRequest)
+			return
+		}
+		if len(body) > 0 {
+			http.Error(w, "delete takes no body", http.StatusBadRequest)
+			return
+		}
+		// The real server's rule: the trailing slash marks the folder, and a folder is
+		// every path under it, answered sorted.
+		folder := strings.HasSuffix(rest, "/")
+		sub := strings.TrimSuffix(rest, "/")
+		var deleted []string
+		if folder {
+			prefix := first + "/" + sub + "/"
+			for key := range f.files {
+				if strings.HasPrefix(key, prefix) {
+					deleted = append(deleted, strings.TrimPrefix(key, first+"/"))
+				}
+			}
+			sort.Strings(deleted)
+			for _, name := range deleted {
+				delete(f.files, first+"/"+name)
+			}
+		} else if _, stored := f.files[first+"/"+sub]; stored {
+			delete(f.files, first+"/"+sub)
+			deleted = []string{sub}
+		}
+		if len(deleted) == 0 {
+			http.Error(w, "unknown path", http.StatusNotFound)
+			return
+		}
+		out, err := json.Marshal(struct {
+			Deleted []string `json:"deleted"`
+		}{deleted})
+		if err != nil {
+			http.Error(w, "could not answer the delete", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(append(out, '\n'))
+		return
+	}
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+}
+
+// record snapshots what arrived on the wire before the handler touches the request.
+func (f *fakeServer) record(r *http.Request) fakeRecord {
+	return fakeRecord{method: r.Method, path: r.URL.Path, header: r.Header.Clone()}
+}
+
+// binAuthorized is the bin's own password gate: Basic opens it, a miss is the 401
+// that charges nothing.
+func (f *fakeServer) binAuthorized(w http.ResponseWriter, r *http.Request, bin fakeBin) bool {
+	if bin.password == "" {
+		return true
+	}
+	_, password, ok := r.BasicAuth()
+	if !ok || password != bin.password {
+		w.Header().Set("WWW-Authenticate", `Basic realm="sandbin"`)
+		http.Error(w, "bin password required", http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+
+// serveCreateBin mirrors POST /api/bins: the JSON body's title, description and
+// password make the bin, and 201 answers the bin object with its Location.
+func (f *fakeServer) serveCreateBin(w http.ResponseWriter, r *http.Request) {
+	rec := f.record(r)
+	body, err := io.ReadAll(io.LimitReader(r.Body, 4097))
+	if err != nil {
+		http.Error(w, "could not read the request", http.StatusBadRequest)
+		return
+	}
+	rec.body = string(body)
+	f.creates = append(f.creates, rec)
+
+	var req struct {
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		Password    string `json:"password"`
+	}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, "could not read the request", http.StatusBadRequest)
+			return
+		}
+	}
+	seq := len(f.bins) + 1
+	hash := fmt.Sprintf("bin%04d", seq)
+	f.bins[hash] = fakeBin{
+		password:    req.Password,
+		title:       req.Title,
+		description: req.Description,
+		createdAt:   fakeCreatedAt(seq),
+	}
+	w.Header().Set("Location", "/api/bins/"+hash)
+	if f.createBody != "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, f.createBody)
+		return
+	}
+	writeFakeJSON(w, http.StatusCreated, fakeBinJSON(hash, f.bins[hash]))
+}
+
+// serveListBins mirrors GET /api/bins: newest-first pages of bin objects, the
+// next_cursor naming the page's last row only when a further row exists.
+func (f *fakeServer) serveListBins(w http.ResponseWriter, r *http.Request) {
+	type row struct{ createdAt, hash string }
+	rows := []row{}
+	for hash, b := range f.bins {
+		rows = append(rows, row{b.createdAt, hash})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].createdAt != rows[j].createdAt {
+			return rows[i].createdAt > rows[j].createdAt
+		}
+		return rows[i].hash > rows[j].hash
+	})
+	if raw := r.URL.Query().Get("cursor"); raw != "" {
+		decoded, err := base64.RawURLEncoding.DecodeString(raw)
+		if err != nil {
+			http.Error(w, "invalid cursor", http.StatusBadRequest)
+			return
+		}
+		cutAt, cutHash, found := strings.Cut(string(decoded), "\x1f")
+		if !found || cutAt == "" || cutHash == "" {
+			http.Error(w, "invalid cursor", http.StatusBadRequest)
+			return
+		}
+		after := []row{}
+		for _, one := range rows {
+			if one.createdAt < cutAt || (one.createdAt == cutAt && one.hash < cutHash) {
+				after = append(after, one)
+			}
+		}
+		rows = after
+	}
+	size := f.pageSize
+	if size == 0 {
+		size = 100
+	}
+	hasMore := len(rows) > size
+	if hasMore {
+		rows = rows[:size]
+	}
+	answer := struct {
+		Bins       []fakeBinAnswer `json:"bins"`
+		NextCursor string          `json:"next_cursor,omitempty"`
+	}{Bins: make([]fakeBinAnswer, 0, len(rows))}
+	for _, one := range rows {
+		answer.Bins = append(answer.Bins, fakeBinJSON(one.hash, f.bins[one.hash]))
+	}
+	if hasMore {
+		last := rows[len(rows)-1]
+		answer.NextCursor = fakeCursor(last.createdAt, last.hash)
+	}
+	writeFakeJSON(w, http.StatusOK, answer)
+}
+
+// serveInspectBin mirrors GET /api/bins/{hash}: no API key, the bin object plus
+// every file it holds sorted by path.
+func (f *fakeServer) serveInspectBin(w http.ResponseWriter, r *http.Request, hash string) {
+	bin, known := f.bins[hash]
+	if !known {
+		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
+	}
+	if !f.binAuthorized(w, r, bin) {
+		return
+	}
+	type fileAnswer struct {
+		Path      string `json:"path"`
+		Size      int64  `json:"size"`
+		UpdatedAt string `json:"updated_at"`
+	}
+	prefix := hash + "/"
+	var files []fileAnswer
+	for key, file := range f.files {
+		if name, ok := strings.CutPrefix(key, prefix); ok {
+			files = append(files, fileAnswer{Path: name, Size: int64(len(file.body)), UpdatedAt: file.updatedAt})
+		}
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	if files == nil {
+		files = []fileAnswer{}
+	}
+	answer := struct {
+		fakeBinAnswer
+		Files []fileAnswer `json:"files"`
+	}{fakeBinJSON(hash, bin), files}
+	writeFakeJSON(w, http.StatusOK, answer)
+}
+
+// servePatchBin mirrors PATCH /api/bins/{hash}: a field the body names replaces its
+// value (the empty string clears it), a field it does not name stays, and 200
+// answers the row as it now stands.
+func (f *fakeServer) servePatchBin(w http.ResponseWriter, r *http.Request, hash string) {
+	bin, known := f.bins[hash]
+	if !known {
+		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
+	}
+	if !f.binAuthorized(w, r, bin) {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 4097))
+	if err != nil {
+		http.Error(w, "could not read the request", http.StatusBadRequest)
+		return
+	}
+	rec := f.record(r)
+	rec.body = string(body)
+	f.patchCalls = append(f.patchCalls, rec)
+	if len(body) == 0 {
+		http.Error(w, "could not read the request", http.StatusBadRequest)
+		return
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		http.Error(w, "could not read the request", http.StatusBadRequest)
+		return
+	}
+	for name, target := range map[string]*string{"title": &bin.title, "description": &bin.description} {
+		raw, given := fields[name]
+		if !given {
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			http.Error(w, "could not read the request", http.StatusBadRequest)
+			return
+		}
+		*target = value
+	}
+	f.bins[hash] = bin
+	writeFakeJSON(w, http.StatusOK, fakeBinJSON(hash, bin))
+}
+
+// servePut mirrors the file PUT: the ?raw query is the extraction opt-out, a
+// gzipped tar body otherwise lands as its entries, and every success answers JSON
+// — the stored row for one file, the created/replaced counts for an archive.
+func (f *fakeServer) servePut(w http.ResponseWriter, r *http.Request, first, rest string, bin fakeBin) {
 	if rest == "" {
 		http.Error(w, "empty path", http.StatusBadRequest)
 		return
 	}
-	if bin.password != "" {
-		_, sent, ok := r.BasicAuth()
-		if !ok || sent != bin.password {
-			w.Header().Set("WWW-Authenticate", `Basic realm="sandbin"`)
-			http.Error(w, "bin password required", http.StatusUnauthorized)
-			return
-		}
+	if !f.binAuthorized(w, r, bin) {
+		return
 	}
-
 	body, err := io.ReadAll(io.LimitReader(r.Body, int64(f.bodyLimit)+1))
 	if err != nil {
 		http.Error(w, "could not read body", http.StatusBadRequest)
@@ -277,53 +552,65 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "body over 1 MiB", http.StatusRequestEntityTooLarge)
 		return
 	}
-
-	// The archive branch mirrors the real server's contract: presence of X-Extract
-	// stores the body raw, and otherwise a gzipped tar body is unpacked into files
-	// whose names carry the archive name's directory prefix — the archive name
-	// itself is never stored. putFail answers every PUT with its status.
 	if f.putFail != 0 {
 		http.Error(w, "injected failure", f.putFail)
 		return
 	}
-	if f.unpack && r.Header.Get("X-Extract") == "" && len(body) > 0 && body[0] == 0x1f && body[1] == 0x8b {
-		names, created, err := f.unpackTarGz(first, rest, body)
+
+	// The archive branch mirrors the real server's contract: a raw query parameter
+	// present at all stores the body raw, and otherwise a gzipped tar body is
+	// unpacked into files whose names carry the archive name's directory prefix —
+	// the archive name itself is never stored.
+	if _, keepRaw := r.URL.Query()["raw"]; !keepRaw && f.unpack && len(body) > 0 && body[0] == 0x1f && body[1] == 0x8b {
+		created, replaced, err := f.unpackTarGz(first, rest, body)
 		if err != nil {
 			http.Error(w, "corrupt tar.gz archive", http.StatusBadRequest)
 			return
 		}
-		w.Header().Set("X-Extracted-Count", strconv.Itoa(len(names)))
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		if created {
-			w.WriteHeader(http.StatusCreated)
-		} else {
-			w.WriteHeader(http.StatusOK)
+		status := http.StatusOK
+		if created > 0 {
+			status = http.StatusCreated
 		}
-		for _, name := range names {
-			fmt.Fprintf(w, "/%s/%s\n", first, name)
-		}
+		writeFakeJSON(w, status, struct {
+			Created  int `json:"created"`
+			Replaced int `json:"replaced"`
+		}{created, replaced})
 		return
 	}
 
 	key := first + "/" + rest
-	replaced := f.files[key] != ""
-	f.files[key] = string(body)
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, replaced := f.files[key]
+	f.files[key] = fakeFile{body: string(body), updatedAt: fakeFileUpdatedAt}
 	if replaced {
-		w.WriteHeader(http.StatusOK)
-	} else {
-		w.WriteHeader(http.StatusCreated)
+		writeFakeJSON(w, http.StatusOK, struct {
+			Path      string `json:"path"`
+			Size      int64  `json:"size"`
+			UpdatedAt string `json:"updated_at"`
+		}{rest, int64(len(body)), fakeFileUpdatedAt})
+		return
 	}
-	io.WriteString(w, "/"+key)
+	w.Header().Set("Location", "/"+key)
+	writeFakeJSON(w, http.StatusCreated, struct {
+		Path      string `json:"path"`
+		Size      int64  `json:"size"`
+		UpdatedAt string `json:"updated_at"`
+	}{rest, int64(len(body)), fakeFileUpdatedAt})
 }
 
 // addBin registers a bin with the fake without going through POST, for the test that
 // names one with --bin.
 func (f *fakeServer) addBin(password string) string {
+	return f.addBinMeta(password, "", "")
+}
+
+// addBinMeta registers a bin with its metadata too, so an inspect answer can be
+// pinned without any upload.
+func (f *fakeServer) addBinMeta(password, title, description string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	hash := fmt.Sprintf("bin%04d", len(f.bins)+1)
-	f.bins[hash] = fakeBin{password: password}
+	seq := len(f.bins) + 1
+	hash := fmt.Sprintf("bin%04d", seq)
+	f.bins[hash] = fakeBin{password: password, title: title, description: description, createdAt: fakeCreatedAt(seq)}
 	return hash
 }
 
@@ -367,7 +654,7 @@ func (f *fakeServer) binCount() int {
 func (f *fakeServer) stored(key string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.files[key]
+	return f.files[key].body
 }
 
 // setBodyLimit and setLog change the fake from the test goroutine, so the change
@@ -392,12 +679,20 @@ func (f *fakeServer) setPutFail(status int) {
 	f.putFail = status
 }
 
-// extractValues is each PUT's X-Extract value in arrival order, "" when the header
-// was absent, which is how the archive tests assert the opt-out header is sent.
-func (f *fakeServer) extractValues() []string {
+// setPageSize sizes the fake's GET /api/bins pages, which is how a list test forces
+// a cursor walk across more than one page.
+func (f *fakeServer) setPageSize(size int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]string(nil), f.extractSeen...)
+	f.pageSize = size
+}
+
+// putQueries is each PUT's raw query in arrival order, "" when it carried none,
+// which is how the archive tests assert the ?raw=1 opt-out is sent.
+func (f *fakeServer) putQueries() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.putRawQueries...)
 }
 
 // putOrder is each PUT's URL path in arrival order, which is how the archive tests
@@ -406,6 +701,46 @@ func (f *fakeServer) putOrder() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.putPaths...)
+}
+
+// listRequests counts the GET /api/bins hits, which is how a list test says the
+// cursor walk made one request per page and no more.
+func (f *fakeServer) listRequests() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.listGets)
+}
+
+// inspectPathsSeen is each GET /api/bins/{hash} path in arrival order, which is how
+// the describe tests pin the inspect route.
+func (f *fakeServer) inspectPathsSeen() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.inspectPaths...)
+}
+
+// keyRequestPaths is each /api/key request path in arrival order, which is how the
+// verify tests pin the key-check route.
+func (f *fakeServer) keyRequestPaths() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.keyPaths...)
+}
+
+// createRecords is each POST /api/bins as it arrived, which is how the creation tests
+// assert the JSON body fields and the absence of the retired X-Bin-* headers.
+func (f *fakeServer) createRecords() []fakeRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeRecord(nil), f.creates...)
+}
+
+// patchRecords is each PATCH /api/bins/{hash} as it arrived, which is how the
+// metadata tests assert the JSON patch body and the retired headers.
+func (f *fakeServer) patchRecords() []fakeRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeRecord(nil), f.patchCalls...)
 }
 
 // deletesSeen counts the DELETEs, which is how a delete test says the client made exactly
@@ -431,25 +766,23 @@ func (f *fakeServer) deleteAuthNames() []string {
 }
 
 // unpackTarGz runs under ServeHTTP's lock. Entries land under the upload name's
-// parent directory like the real server puts them, and the returned names are the
-// bin paths the fake now holds.
-func (f *fakeServer) unpackTarGz(bin, sub string, body []byte) ([]string, bool, error) {
+// parent directory like the real server puts them, and the counts answer how many
+// entries were new and how many replaced a stored file.
+func (f *fakeServer) unpackTarGz(bin, sub string, body []byte) (created, replaced int, err error) {
 	gz, err := gzip.NewReader(bytes.NewReader(body))
 	if err != nil {
-		return nil, false, err
+		return 0, 0, err
 	}
 	defer gz.Close()
 	tr := tar.NewReader(gz)
 	prefix := path.Dir(sub) // "." for an archive at the bin root
-	var names []string
-	created := false
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
-			return names, created, nil
+			return created, replaced, nil
 		}
 		if err != nil {
-			return nil, false, err
+			return 0, 0, err
 		}
 		if hdr.Typeflag == tar.TypeDir {
 			continue
@@ -460,14 +793,15 @@ func (f *fakeServer) unpackTarGz(bin, sub string, body []byte) ([]string, bool, 
 		}
 		content, err := io.ReadAll(tr)
 		if err != nil {
-			return nil, false, err
+			return 0, 0, err
 		}
 		key := bin + "/" + name
-		if _, seen := f.files[key]; !seen {
-			created = true
+		if _, seen := f.files[key]; seen {
+			replaced++
+		} else {
+			created++
 		}
-		f.files[key] = string(content)
-		names = append(names, name)
+		f.files[key] = fakeFile{body: string(content), updatedAt: fakeFileUpdatedAt}
 	}
 }
 
@@ -477,6 +811,8 @@ func (f *fakeServer) setLog(w io.Writer) {
 	f.log = w
 }
 
+// setCreateBody makes POST /api/bins answer this body instead of the bin object,
+// which is how a test hands the client an answer it must refuse.
 func (f *fakeServer) setCreateBody(body string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1552,6 +1888,30 @@ func TestMetadataOnlyRunUpdatesAnExistingBin(t *testing.T) {
 	if title, description := f.binMeta(hash); title != "Audit notes" || description != "findings of the audit" {
 		t.Errorf("stored metadata = %q / %q, want the flags' values", title, description)
 	}
+
+	// The wire is the JSON PATCH: PATCH /api/bins/{hash} with a body carrying the
+	// two fields, and none of the retired X-Bin-* headers.
+	records := f.patchRecords()
+	if len(records) != 1 {
+		t.Fatalf("PATCH records = %d, want exactly one", len(records))
+	}
+	rec := records[0]
+	if rec.method != http.MethodPatch || rec.path != "/api/bins/"+hash {
+		t.Errorf("PATCH = %s %s, want PATCH /api/bins/%s", rec.method, rec.path, hash)
+	}
+	var fields map[string]string
+	if err := json.Unmarshal([]byte(rec.body), &fields); err != nil {
+		t.Fatalf("PATCH body %q is not JSON: %v", rec.body, err)
+	}
+	if wantFields := map[string]string{"title": "Audit notes", "description": "findings of the audit"}; !reflect.DeepEqual(fields, wantFields) {
+		t.Errorf("PATCH body fields = %v, want exactly %v", fields, wantFields)
+	}
+	for _, retired := range []string{"X-Bin-Title", "X-Bin-Description"} {
+		if rec.header.Get(retired) != "" {
+			t.Errorf("%s = %q, want the retired header gone from the wire", retired, rec.header.Get(retired))
+		}
+	}
+
 	if f.requestsSeen() != 1 || f.patchesSeen() != 1 {
 		t.Errorf("requests = %d (PATCHes %d), want exactly one PATCH", f.requestsSeen(), f.patchesSeen())
 	}
@@ -1570,12 +1930,13 @@ func TestMetadataOnlyRunUpdatesAnExistingBin(t *testing.T) {
 		t.Errorf("stored metadata = %q / %q, want the title kept and the description replaced", title, description)
 	}
 
-	// Reading it back is describe's job.
+	// Reading it back is describe's job, and describe prints the full inspection.
 	stdout, stderr, err = runClient(t, nil, "describe", "--bin", hash)
 	if err != nil {
 		t.Fatalf("describe: %v; stderr %s", err, stderr)
 	}
-	if want := "title: Audit notes\ndescription: findings of the audit, again\n"; stdout != want {
+	want = "bin: " + hash + "\ntitle: Audit notes\ndescription: findings of the audit, again\npassword: no\ncreated: " + fakeCreatedAt(1) + "\nfiles: none\n"
+	if stdout != want {
 		t.Errorf("describe stdout =\n%s\nwant\n%s", stdout, want)
 	}
 	if stderr != "" {
@@ -1583,6 +1944,178 @@ func TestMetadataOnlyRunUpdatesAnExistingBin(t *testing.T) {
 	}
 	if f.requestsSeen() != 3 || f.patchesSeen() != 2 {
 		t.Errorf("requests = %d (PATCHes %d), want two PATCHes and the one GET", f.requestsSeen(), f.patchesSeen())
+	}
+}
+
+// TestClientCreateJSON is the creation call itself: POST /api/bins with a JSON body
+// carrying only the fields worth sending, and none of the retired X-Bin-* headers.
+func TestClientCreateJSON(t *testing.T) {
+	f := newFake(t, "test-key")
+	cl, err := newClient(os.Getenv("SANDBIN_URL"), "test-key", "sesame")
+	if err != nil {
+		t.Fatalf("newClient: %v", err)
+	}
+	hash, err := cl.createBin("Prototype", "the JS prototype")
+	if err != nil {
+		t.Fatalf("createBin: %v", err)
+	}
+	if hash != "bin0001" {
+		t.Errorf("hash = %q, want the fake's bin0001", hash)
+	}
+
+	records := f.createRecords()
+	if len(records) != 1 {
+		t.Fatalf("create records = %d, want exactly one", len(records))
+	}
+	rec := records[0]
+	if rec.method != http.MethodPost || rec.path != "/api/bins" {
+		t.Errorf("create = %s %s, want POST /api/bins", rec.method, rec.path)
+	}
+	var fields map[string]string
+	if err := json.Unmarshal([]byte(rec.body), &fields); err != nil {
+		t.Fatalf("create body %q is not JSON: %v", rec.body, err)
+	}
+	wantFields := map[string]string{"title": "Prototype", "description": "the JS prototype", "password": "sesame"}
+	if !reflect.DeepEqual(fields, wantFields) {
+		t.Errorf("create body fields = %v, want exactly %v", fields, wantFields)
+	}
+	for _, retired := range []string{"X-Bin-Title", "X-Bin-Description", "X-Bin-Password"} {
+		if rec.header.Get(retired) != "" {
+			t.Errorf("%s = %q, want the retired header gone from the wire", retired, rec.header.Get(retired))
+		}
+	}
+	if rec.header.Get(apiKeyHeader) != "test-key" {
+		t.Errorf("%s = %q, want the client's key on the create", apiKeyHeader, rec.header.Get(apiKeyHeader))
+	}
+
+	// A client with nothing to say sends an empty object, not three empty fields.
+	plain, err := newClient(os.Getenv("SANDBIN_URL"), "test-key", "")
+	if err != nil {
+		t.Fatalf("newClient: %v", err)
+	}
+	hash, err = plain.createBin("", "")
+	if err != nil {
+		t.Fatalf("createBin with nothing to say: %v", err)
+	}
+	if hash != "bin0002" {
+		t.Errorf("hash = %q, want bin0002", hash)
+	}
+	rec = f.createRecords()[1]
+	fields = map[string]string{}
+	if err := json.Unmarshal([]byte(rec.body), &fields); err != nil {
+		t.Fatalf("create body %q is not JSON: %v", rec.body, err)
+	}
+	if len(fields) != 0 {
+		t.Errorf("create body fields = %v, want no field at all for a bin with nothing to say", fields)
+	}
+}
+
+// TestClientDescribeFull pins the describe lines byte for byte against a titled,
+// password-less bin holding two files.
+func TestClientDescribeFull(t *testing.T) {
+	f := newFake(t, "test-key")
+	hash := f.addBinMeta("", "Release notes", "notes for the release")
+	notesBody, todoBody := "# Notes\n", "body"
+	f.seedFileAt(hash+"/notes.md", notesBody, "2026-01-02T09:00:00Z")
+	f.seedFileAt(hash+"/sub/todo.md", todoBody, "2026-01-03T10:30:00Z")
+
+	stdout, stderr, err := runClient(t, nil, "describe", "--bin", hash)
+	if err != nil {
+		t.Fatalf("describe: %v; stderr %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want nothing", stderr)
+	}
+	want := "bin: " + hash + "\n" +
+		"title: Release notes\n" +
+		"description: notes for the release\n" +
+		"password: no\n" +
+		"created: " + fakeCreatedAt(1) + "\n" +
+		"files:\n" +
+		"  notes.md  " + fmt.Sprint(len(notesBody)) + " bytes  2026-01-02T09:00:00Z\n" +
+		"  sub/todo.md  " + fmt.Sprint(len(todoBody)) + " bytes  2026-01-03T10:30:00Z\n"
+	if stdout != want {
+		t.Errorf("describe stdout =\n%s\nwant\n%s", stdout, want)
+	}
+	if paths := f.inspectPathsSeen(); len(paths) != 1 || paths[0] != "/api/bins/"+hash {
+		t.Errorf("inspect paths = %v, want the one GET /api/bins/%s", paths, hash)
+	}
+	if n := f.requestsSeen(); n != 1 {
+		t.Errorf("requests = %d, want exactly one", n)
+	}
+}
+
+// TestClientList is the list verb: an empty instance says no bins, three bins print
+// newest-first, and the cursor walk is transparent across two pages.
+func TestClientList(t *testing.T) {
+	f := newFake(t, "test-key")
+
+	stdout, stderr, err := runClient(t, nil, "list")
+	if err != nil {
+		t.Fatalf("list on an empty instance: %v; stderr %s", err, stderr)
+	}
+	if stdout != "no bins\n" {
+		t.Errorf("list stdout = %q, want the one line no bins", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want nothing", stderr)
+	}
+
+	f.addBinMeta("", "alpha bin", "the oldest")
+	f.addBinMeta("", "", "the middle one holds no title")
+	f.addBinMeta("", "gamma bin", "the newest")
+	f.setPageSize(2) // force a two-page walk
+
+	stdout, stderr, err = runClient(t, nil, "list")
+	if err != nil {
+		t.Fatalf("list with three bins: %v; stderr %s", err, stderr)
+	}
+	want := "  bin0003  " + fakeCreatedAt(3) + "  gamma bin\n" +
+		"  bin0002  " + fakeCreatedAt(2) + "\n" + // no title, no title column
+		"  bin0001  " + fakeCreatedAt(1) + "  alpha bin\n"
+	if stdout != want {
+		t.Errorf("list stdout =\n%s\nwant\n%s", stdout, want)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want nothing", stderr)
+	}
+	// Two pages of two and one: exactly two GETs for this walk, on top of the
+	// empty instance's one, and nothing else.
+	if n := f.listRequests() - 1; n != 2 {
+		t.Errorf("GET /api/bins for the three-bin walk = %d, want the walk of two pages", n)
+	}
+	if n := f.requestsSeen(); n != 3 {
+		t.Errorf("requests = %d, want the empty list plus the two pages", n)
+	}
+}
+
+// TestClientVerifyKey204 re-points the key check: POST /api/key answers a good key with
+// 204 and an empty body, and a wrong key is the same refusal it always was.
+func TestClientVerifyKey204(t *testing.T) {
+	f := newFake(t, "test-key")
+	cl, err := newClient(os.Getenv("SANDBIN_URL"), "test-key", "")
+	if err != nil {
+		t.Fatalf("newClient: %v", err)
+	}
+	if err := cl.verifyKey(); err != nil {
+		t.Fatalf("verifyKey with the good key: %v", err)
+	}
+	if paths := f.keyRequestPaths(); len(paths) != 1 || paths[0] != "/api/key" {
+		t.Errorf("key check paths = %v, want the one request at /api/key", paths)
+	}
+	if n := f.requestsSeen(); n != 1 {
+		t.Errorf("requests = %d, want exactly one", n)
+	}
+	if n := f.binCount(); n != 0 {
+		t.Errorf("bins = %d, want the key check to create nothing", n)
+	}
+
+	wrong, err := newClient(os.Getenv("SANDBIN_URL"), "wrong-key", "")
+	if err != nil {
+		t.Fatalf("newClient: %v", err)
+	}
+	if err := wrong.verifyKey(); err == nil || !strings.Contains(err.Error(), "server rejected this API key") {
+		t.Errorf("verifyKey with the wrong key = %v, want the refusal the old route gave", err)
 	}
 }
 
@@ -1609,8 +2142,9 @@ func TestMetadataFlagClearsAField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("describe after the clear: %v", err)
 	}
-	if stdout != "title: kept title\ndescription: \n" {
-		t.Errorf("describe stdout = %q, want the cleared field printed as empty", stdout)
+	want := "bin: " + hash + "\ntitle: kept title\ndescription: \npassword: no\ncreated: " + fakeCreatedAt(1) + "\nfiles: none\n"
+	if stdout != want {
+		t.Errorf("describe stdout =\n%s\nwant the cleared field printed as empty\n%s", stdout, want)
 	}
 }
 
@@ -1796,7 +2330,10 @@ func TestDescribeNeedsNoAPIKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("describe without an API key: %v; stderr %s", err, stderr)
 	}
-	if want := "title: Audit notes\ndescription: findings of the audit\n"; stdout != want {
+	// The full inspection: the bin's own lines plus the uploaded file.
+	want := "bin: " + hash + "\ntitle: Audit notes\ndescription: findings of the audit\npassword: no\ncreated: " + fakeCreatedAt(1) +
+		"\nfiles:\n  index.html  " + fmt.Sprint(len("<h1>x</h1>")) + " bytes  " + fakeFileUpdatedAt + "\n"
+	if stdout != want {
 		t.Errorf("stdout =\n%s\nwant\n%s", stdout, want)
 	}
 	if stderr != "" {
@@ -1814,7 +2351,7 @@ func TestDescribeNeedsNoAPIKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("describe --bin: %v", err)
 	}
-	if want := "title: Audit notes\ndescription: findings of the audit\n"; stdout != want {
+	if stdout != want {
 		t.Errorf("describe --bin stdout =\n%s\nwant\n%s", stdout, want)
 	}
 }
@@ -1868,8 +2405,9 @@ func TestDescribeProtectedBinHonoursBinPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("describe with the bin password: %v; stderr %s", err, stderr)
 	}
-	if stdout != "title: Secret notes\ndescription: \n" {
-		t.Errorf("stdout = %q, want the two lines", stdout)
+	want := "bin: " + hash + "\ntitle: Secret notes\ndescription: \npassword: yes\ncreated: " + fakeCreatedAt(1) + "\nfiles: none\n"
+	if stdout != want {
+		t.Errorf("describe stdout =\n%s\nwant the full inspection of the protected bin\n%s", stdout, want)
 	}
 }
 
@@ -1952,9 +2490,15 @@ func (l *orderLog) snapshot() []string {
 // seedFile puts a file in the fake's store without an upload, for the tests that name a
 // bin with --bin instead of creating one.
 func (f *fakeServer) seedFile(key, body string) {
+	f.seedFileAt(key, body, fakeFileUpdatedAt)
+}
+
+// seedFileAt seeds a file with its own updated_at, which is how the describe tests
+// pin an inspect answer line by line.
+func (f *fakeServer) seedFileAt(key, body, updatedAt string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.files[key] = body
+	f.files[key] = fakeFile{body: body, updatedAt: updatedAt}
 }
 
 // TestDeleteFilePrintsDeletedLineAndKeepsTheBin is the single-file case: one DELETE, one

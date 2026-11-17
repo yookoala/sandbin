@@ -11,7 +11,7 @@ import (
 )
 
 // TestNoExtractSendsTheHeaderOnEveryPut is the opt-out wiring: --no-extract puts
-// X-Extract on every PUT of the run, and a plain run sends none.
+// ?raw=1 on every PUT of the run, and a plain run sends no query.
 func TestNoExtractSendsTheHeaderOnEveryPut(t *testing.T) {
 	f := newFake(t, "test-key")
 	writeWorkDirFile(t, "a.zip", "PK fake zip bytes")
@@ -20,8 +20,8 @@ func TestNoExtractSendsTheHeaderOnEveryPut(t *testing.T) {
 	if _, _, err := runClient(t, nil, "upload", "--no-extract", "a.zip", "b.tar.gz"); err != nil {
 		t.Fatalf("--no-extract run: %v", err)
 	}
-	if got := f.extractValues(); !reflect.DeepEqual(got, []string{"keep", "keep"}) {
-		t.Errorf("X-Extract values = %q, want keep on both PUTs", got)
+	if got := f.putQueries(); !reflect.DeepEqual(got, []string{"raw=1", "raw=1"}) {
+		t.Errorf("PUT queries = %q, want raw=1 on both PUTs", got)
 	}
 	if got := f.stored("bin0001/a.zip"); got != "PK fake zip bytes" {
 		t.Errorf("stored a.zip = %q, want the body unchanged", got)
@@ -33,8 +33,8 @@ func TestNoExtractSendsTheHeaderOnEveryPut(t *testing.T) {
 	if _, _, err := runClient(t, nil, "upload", "a.zip", "b.tar.gz"); err != nil {
 		t.Fatalf("plain run: %v", err)
 	}
-	if got := f2.extractValues(); !reflect.DeepEqual(got, []string{"", ""}) {
-		t.Errorf("X-Extract values = %q, want no header on a plain run", got)
+	if got := f2.putQueries(); !reflect.DeepEqual(got, []string{"", ""}) {
+		t.Errorf("PUT queries = %q, want no query on a plain run", got)
 	}
 }
 
@@ -143,19 +143,19 @@ func TestArchiveCombinedWithFilesAndStdin(t *testing.T) {
 }
 
 // TestArchiveRawModeWithNoExtract uploads the built tar.gz as one plain file:
-// the opt-out header goes, the bin holds exactly the archive, and the result
+// the ?raw=1 opt-out goes, the bin holds exactly the archive, and the result
 // line is the old created line.
 func TestArchiveRawModeWithNoExtract(t *testing.T) {
 	f := newFake(t, "test-key")
-	f.setUnpack(true) // on, so only the X-Extract header can keep it raw
+	f.setUnpack(true) // on, so only the ?raw query can keep it raw
 	writeWorkDirFile(t, "hello/world.html", "two")
 
 	stdout, stderr, err := runClient(t, nil, "upload", "--archive", "hello", "--no-extract")
 	if err != nil {
 		t.Fatalf("--archive hello --no-extract: %v; stderr %s", err, stderr)
 	}
-	if got := f.extractValues(); !reflect.DeepEqual(got, []string{"keep"}) {
-		t.Errorf("X-Extract values = %q, want keep on the archive PUT", got)
+	if got := f.putQueries(); !reflect.DeepEqual(got, []string{"raw=1"}) {
+		t.Errorf("PUT queries = %q, want raw=1 on the archive PUT", got)
 	}
 	body := f.stored("bin0001/hello.tar.gz")
 	if len(body) < 2 || body[0] != 0x1f || body[1] != 0x8b {

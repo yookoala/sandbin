@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,14 +13,10 @@ import (
 	"time"
 )
 
-const (
-	apiKeyHeader         = "X-API-Key"
-	binPasswordHeader    = "X-Bin-Password"
-	binTitleHeader       = "X-Bin-Title"
-	binDescriptionHeader = "X-Bin-Description"
-	extractHeader        = "X-Extract"
-	extractedCountHeader = "X-Extracted-Count"
-)
+// apiKeyHeader is the one custom header the JSON API still reads; the bin metadata,
+// the bin password and the extraction opt-out all live in the body, the URL or Basic
+// Auth now.
+const apiKeyHeader = "X-API-Key"
 
 // apiError is a non-2xx answer: the status, the plain-text body the server wrote,
 // and for a 429 the seconds it asked us to wait.
@@ -60,7 +57,7 @@ type client struct {
 	base      *url.URL // the server's base URL, with no trailing slash
 	apiKey    string
 	password  string // empty leaves the bin open
-	noExtract bool   // --no-extract: every PUT of the run carries the X-Extract opt-out header
+	noExtract bool   // --no-extract: every PUT of the run carries the ?raw=1 opt-out query
 }
 
 // newClient checks the base URL once, so a bad --url fails before any request.
@@ -91,51 +88,92 @@ func (c *client) fileURL(bin, name string) string {
 	return u.String()
 }
 
-// createBin POSTs "/" and returns the new bin's hash, read out of the "/abc1234/"
-// body the server answers with. No Basic Auth here: the bin password is being set,
-// not proven. A metadata header goes only when there is metadata to send, so a bin
-// without any is created exactly as it always was.
+// binJSON is the bin object every JSON answer about a bin carries. inspectBin's answer
+// adds the files array; a create, patch or list answer holds no files.
+type binJSON struct {
+	Bin         string     `json:"bin"`
+	Title       string     `json:"title"`
+	Description string     `json:"description"`
+	HasPassword bool       `json:"has_password"`
+	CreatedAt   string     `json:"created_at"`
+	Files       []fileInfo `json:"files"`
+}
+
+// fileInfo is one file an inspect answer lists.
+type fileInfo struct {
+	Path      string `json:"path"`
+	Size      int64  `json:"size"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// binInfo is one bin as the API inspects it: its hash, its metadata, when the server
+// made it, and the files it holds.
+type binInfo struct {
+	Hash        string
+	Title       string
+	Description string
+	CreatedAt   string
+	HasPassword bool
+	Files       []fileInfo
+}
+
+func (j binJSON) info() binInfo {
+	return binInfo{
+		Hash:        j.Bin,
+		Title:       j.Title,
+		Description: j.Description,
+		CreatedAt:   j.CreatedAt,
+		HasPassword: j.HasPassword,
+		Files:       j.Files,
+	}
+}
+
+// createBin POSTs /api/bins with a JSON body carrying only the fields worth sending:
+// the title and description when they are not empty, and the bin password from
+// c.password when one is set. It returns the new bin's hash, read out of the bin object
+// the server answers with. No Basic Auth here: the bin password is being set, not
+// proven. A client with nothing to say sends the empty object, which the server reads
+// as a bin with nothing to say.
 func (c *client) createBin(title, description string) (string, error) {
-	req, err := http.NewRequest(http.MethodPost, c.base.String()+"/", nil)
+	fields := map[string]string{}
+	if title != "" {
+		fields["title"] = title
+	}
+	if description != "" {
+		fields["description"] = description
+	}
+	if c.password != "" {
+		fields["password"] = c.password
+	}
+	body, err := json.Marshal(fields)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequest(http.MethodPost, c.base.String()+"/api/bins", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set(apiKeyHeader, c.apiKey)
-	if c.password != "" {
-		req.Header.Set(binPasswordHeader, c.password)
-	}
-	if title != "" {
-		req.Header.Set(binTitleHeader, title)
-	}
-	if description != "" {
-		req.Header.Set(binDescriptionHeader, description)
-	}
-	_, _, body, err := c.do(req)
+	req.Header.Set("Content-Type", "application/json")
+	_, _, answer, err := c.do(req)
 	if err != nil {
 		return "", err
 	}
-	return binHashFromPath(string(body))
-}
-
-// binHashFromPath cuts the "/abc1234/" a created bin answers with down to its hash
-// and refuses a body that is not a bin path at all.
-// shortcut: the shape is checked as one path segment rather than 8 hex digits, so a
-// server that names bins differently still works.
-func binHashFromPath(body string) (string, error) {
-	trimmed := strings.TrimSpace(body)
-	if !strings.HasPrefix(trimmed, "/") || !strings.HasSuffix(trimmed, "/") {
-		return "", fmt.Errorf("server did not return a bin path: %q", trimmed)
+	var created binJSON
+	if err := json.Unmarshal(answer, &created); err != nil {
+		return "", fmt.Errorf("server did not answer a bin object: %q", strings.TrimSpace(string(answer)))
 	}
-	hash := strings.Trim(trimmed, "/")
-	if hash == "" || strings.Contains(hash, "/") {
-		return "", fmt.Errorf("server did not return a bin path: %q", trimmed)
+	if created.Bin == "" {
+		return "", fmt.Errorf("server did not answer a bin hash: %q", strings.TrimSpace(string(answer)))
 	}
-	return hash, nil
+	return created.Bin, nil
 }
 
 // putFile PUTs one body under a bin and reports whether the server created the file
-// (201) or replaced it (200), plus the count the server extracted it into when the
-// answer carries X-Extracted-Count. --no-extract sends the opt-out header on every PUT.
+// (201) or replaced it (200), plus the extracted count an archive answer carries: the
+// {"created","replaced"} counts of the files the server unpacked. A plain file answer
+// is the stored row and has no counts. --no-extract sends the ?raw=1 opt-out query on
+// every PUT.
 func (c *client) putFile(bin, name string, body io.Reader) (bool, int, error) {
 	req, err := http.NewRequest(http.MethodPut, c.fileURL(bin, name), body)
 	if err != nil {
@@ -147,16 +185,26 @@ func (c *client) putFile(bin, name string, body io.Reader) (bool, int, error) {
 		req.SetBasicAuth(bin, c.password)
 	}
 	if c.noExtract {
-		req.Header.Set(extractHeader, "keep")
+		req.URL.RawQuery = "raw=1"
 	}
-	status, header, _, err := c.do(req)
+	status, _, answer, err := c.do(req)
 	if err != nil {
 		return false, 0, err
 	}
+	// The same decode reads the counts out of an archive answer and finds none in a
+	// file answer's {"path","size","updated_at"} row.
+	// shortcut: a body this client cannot read keeps its count at 0; the status decides the line.
+	var counts struct {
+		Created  *int `json:"created"`
+		Replaced *int `json:"replaced"`
+	}
 	extracted := 0
-	if raw := header.Get(extractedCountHeader); raw != "" {
-		if n, err := strconv.Atoi(raw); err == nil {
-			extracted = n
+	if err := json.Unmarshal(answer, &counts); err == nil {
+		if counts.Created != nil {
+			extracted += *counts.Created
+		}
+		if counts.Replaced != nil {
+			extracted += *counts.Replaced
 		}
 	}
 	switch status {
@@ -204,23 +252,29 @@ func (c *client) deletePaths(bin, name string, folder bool) ([]string, error) {
 	return answer.Deleted, nil
 }
 
-// patchBinMeta PATCHes the bin base with the metadata headers it carries: a nil value says
-// nothing about that field, an empty one clears it. The answer is the bin's row as it now
-// stands, which this client does not read: all it needs is that the write took.
+// patchBinMeta PATCHes /api/bins/{bin} with a JSON body carrying only the fields the
+// run named: a nil value says nothing about that field, an empty one clears it. The
+// answer is the bin's row as it now stands, which this client does not read: all it
+// needs is that the write took.
 func (c *client) patchBinMeta(bin string, title, description *string) error {
-	req, err := http.NewRequest(http.MethodPatch, c.binURL(bin), nil)
+	fields := map[string]string{}
+	if title != nil {
+		fields["title"] = *title
+	}
+	if description != nil {
+		fields["description"] = *description
+	}
+	body, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPatch, c.base.String()+"/api/bins/"+bin, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set(apiKeyHeader, c.apiKey)
 	if c.password != "" {
 		req.SetBasicAuth(bin, c.password)
-	}
-	if title != nil {
-		req.Header.Set(binTitleHeader, *title)
-	}
-	if description != nil {
-		req.Header.Set(binDescriptionHeader, *description)
 	}
 	status, _, _, err := c.do(req)
 	if err != nil {
@@ -232,41 +286,73 @@ func (c *client) patchBinMeta(bin string, title, description *string) error {
 	return nil
 }
 
-// describeBin GETs the bin base once and reads the metadata headers its answer carries; a
-// header that is not there is a bin with nothing in that field. No API key goes out, because
-// reading a bin is what a GET has always been; a protected bin answers 401 until the bin
-// password arrives as Basic Auth.
-func (c *client) describeBin(bin string) (string, string, error) {
-	req, err := http.NewRequest(http.MethodGet, c.binURL(bin), nil)
+// inspectBin GETs /api/bins/{bin} once and returns the full inspection the server
+// answers: the bin's metadata and every file it holds, sorted by path. No API key goes
+// out, because reading one bin is what a GET has always been; a protected bin answers
+// 401 until the bin password arrives as Basic Auth.
+func (c *client) inspectBin(bin string) (binInfo, error) {
+	req, err := http.NewRequest(http.MethodGet, c.base.String()+"/api/bins/"+bin, nil)
 	if err != nil {
-		return "", "", err
+		return binInfo{}, err
 	}
 	if c.password != "" {
 		req.SetBasicAuth(bin, c.password)
 	}
-	resp, err := c.http.Do(req)
+	_, _, body, err := c.do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("%s %s: %v", req.Method, req.URL, err)
+		return binInfo{}, err
 	}
-	defer resp.Body.Close()
-
-	// The page behind the headers is whatever the bin holds, and this read is about the
-	// headers, so the body is only taken as far as an error message needs it.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-	if err != nil {
-		return "", "", fmt.Errorf("%s %s: read response: %v", req.Method, req.URL, err)
+	var answer binJSON
+	if err := json.Unmarshal(body, &answer); err != nil {
+		return binInfo{}, fmt.Errorf("%s: server answered %q", req.URL, strings.TrimSpace(string(body)))
 	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return "", "", newAPIError(resp, body)
-	}
-	return resp.Header.Get(binTitleHeader), resp.Header.Get(binDescriptionHeader), nil
+	return answer.info(), nil
 }
 
-// verifyKey POSTs /verify-key with the API key and asks only "is this key ok?". A 200
-// is the ok, a 403 is the wrong key, and a 429 is this address already locked out by
-// bad keys. One attempt, no retry: a retry would only deepen the lockout.
+// listBins GETs /api/bins and returns every bin the server holds, newest first: each
+// page answers the next cursor when a further bin exists, and the walk ends at the
+// page that does not. The API key rides on every page, the same one do sends for a
+// write.
+func (c *client) listBins() ([]binInfo, error) {
+	var all []binInfo
+	cursor := ""
+	for {
+		u := *c.base
+		u.Path = c.base.Path + "/api/bins"
+		if cursor != "" {
+			u.RawQuery = url.Values{"cursor": []string{cursor}}.Encode()
+		}
+		req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set(apiKeyHeader, c.apiKey)
+		_, _, body, err := c.do(req)
+		if err != nil {
+			return nil, err
+		}
+		var page struct {
+			Bins       []binJSON `json:"bins"`
+			NextCursor string    `json:"next_cursor"`
+		}
+		if err := json.Unmarshal(body, &page); err != nil {
+			return nil, fmt.Errorf("%s: server answered %q", req.URL, strings.TrimSpace(string(body)))
+		}
+		for _, b := range page.Bins {
+			all = append(all, b.info())
+		}
+		if page.NextCursor == "" {
+			return all, nil
+		}
+		cursor = page.NextCursor
+	}
+}
+
+// verifyKey POSTs /api/key with the API key and asks only "is this key ok?". A 204 with
+// an empty body is the ok, a 403 is the wrong key, and a 429 is this address already
+// locked out by bad keys. One attempt, no retry: a retry would only deepen the lockout.
 func (c *client) verifyKey() error {
-	req, err := http.NewRequest(http.MethodPost, c.base.String()+"/verify-key", nil)
+	req, err := http.NewRequest(http.MethodPost, c.base.String()+"/api/key", nil)
 	if err != nil {
 		return err
 	}
@@ -281,7 +367,7 @@ func (c *client) verifyKey() error {
 		return fmt.Errorf("cannot reach %s: read response: %v", c.base, err)
 	}
 	switch resp.StatusCode {
-	case http.StatusOK:
+	case http.StatusNoContent:
 		return nil
 	case http.StatusForbidden:
 		return errors.New("server rejected this API key")

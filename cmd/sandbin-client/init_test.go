@@ -500,7 +500,7 @@ func TestInitRerunFlagsAreNotConsent(t *testing.T) {
 		t.Errorf("stdout = %q, want nothing", stdout)
 	}
 	if f.requestsSeen() != seen {
-		t.Errorf("requests = %d, want zero verify-key requests: the guard precedes the verification", f.requestsSeen())
+		t.Errorf("requests = %d, want zero key-check requests: the guard precedes the verification", f.requestsSeen())
 	}
 	assertProjectUntouched(t, cfgRaw, gitRaw)
 }
