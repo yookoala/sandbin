@@ -1,12 +1,20 @@
 # Plan: podman page restructure — published image first, source build second, serve-pair ordering
 
-Status: open. Spec: `docs/decisions/0028-podman-docs-restructure.md` — its seven items settle
+Status: open — implemented at commit `618d472`, awaiting review. Spec:
+`docs/decisions/0028-podman-docs-restructure.md` — its seven items settle
 the retitle and its propagation, the serve→podman→api→ip-blocking order, the new
 "Running the Published Image" section with its `ghcr.io/yookoala/sandbin` facts, the
 "Building & Running from Source" section with its four h3 subsections, the one-option-per-line
 command style, the refreshed summary-table row, and the test re-pins. Baseline HEAD is `4c8e5ab`
 (`cmd/sandbin` 213 tests, `cmd/sandbin-client` 107, `internal/frontpage` 17, `internal/robots` 2,
-`internal/version` 6, all gates green).
+`internal/version` 6, all gates green). The implementation commit `618d472` carries
+`docs/usages/sandbin-podman.md` and `docs/usages/sandbin.md` byte-for-byte from the two preserved
+mockups, the api page's one pointer-line retitle, the `docSets` server-set swap, the
+`wantDocPages` order and podman title re-pins, and one new structure test
+`TestDocsPodmanPagePutsPublishedImageFirst`; its counts are `cmd/sandbin` 214,
+`cmd/sandbin-client` 107, `internal/frontpage` 17, `internal/robots` 2, `internal/version` 6, with
+`gofmt -l .` empty and `go vet ./...`, `go build ./...`, `go test -count=1 ./...` and
+`go test -race -count=1 ./...` all green.
 
 Design source of truth: the approved mockups, preserved at `docs/plans/0028-podman-docs-restructure/`
 — `podman-restructured.md` and `server-overview-restructured.md` are the exact final texts of
