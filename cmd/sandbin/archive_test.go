@@ -321,15 +321,14 @@ func TestZipUploadExtractsIntoParentDir(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("PUT bundle.zip = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
-		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", ct)
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
-	if got := rec.Header().Get("X-Extracted-Count"); got != "3" {
-		t.Errorf("X-Extracted-Count = %q, want 3", got)
+	if got := rec.Header().Get("X-Extracted-Count"); got != "" {
+		t.Errorf("X-Extracted-Count = %q, want none: the counts answer in the JSON body", got)
 	}
-	wantBody := "/" + hash + "/site/index.html\n/" + hash + "/site/css/app.css\n/" + hash + "/site/report.ansi"
-	if rec.Body.String() != wantBody {
-		t.Errorf("PUT body =\n%q\nwant\n%q", rec.Body.String(), wantBody)
+	if want := "{\"created\":3,\"replaced\":0}\n"; rec.Body.String() != want {
+		t.Errorf("PUT body = %q, want %q", rec.Body.String(), want)
 	}
 
 	got := listingPaths(t, s, hash)
@@ -410,9 +409,12 @@ func TestTarAndTarGzUploadsExtract(t *testing.T) {
 	}
 }
 
-// TestXExtractStoresRaw is the opt-out in all three curl shapes: present at all, any
-// value including empty, the archive body is stored and served byte for byte.
-func TestXExtractStoresRaw(t *testing.T) {
+// TestRawQueryStoresRaw is the opt-out re-pointed from the X-Extract header to the raw
+// query, the same three keep-raw shapes: the raw parameter present at all — bare, empty
+// value, any value — stores and serves the archive byte for byte. The fourth case is the
+// other side of the presence rule: without the query the archive name plus magic is still
+// detected and extracted.
+func TestRawQueryStoresRaw(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	base := createTestBin(t, s, "test-key")
 	hash := strings.Trim(base, "/")
@@ -421,33 +423,48 @@ func TestXExtractStoresRaw(t *testing.T) {
 	for _, shape := range []struct {
 		name  string
 		file  string
-		setup func(req *http.Request)
+		query string // the raw query spelled on the URL
+		keep  bool   // true: the archive stays raw under its own name
 	}{
-		{"bare", "notes-bare.zip", func(req *http.Request) { req.Header["X-Extract"] = []string{} }},
-		{"empty value", "notes-empty.zip", func(req *http.Request) { req.Header.Set("X-Extract", "") }},
-		{"keep", "notes-keep.zip", func(req *http.Request) { req.Header.Set("X-Extract", "keep") }},
+		{"bare", "notes-bare.zip", "?raw", true},
+		{"empty value", "notes-empty.zip", "?raw=", true},
+		{"keep", "notes-keep.zip", "?raw=keep", true},
+		{"no raw query", "notes-open.zip", "", false},
 	} {
-		req := httptest.NewRequest(http.MethodPut, base+shape.file, strings.NewReader(string(body)))
+		req := httptest.NewRequest(http.MethodPut, base+shape.file+shape.query, strings.NewReader(string(body)))
 		req.Header.Set("X-API-Key", "test-key")
-		shape.setup(req)
 		rec := httptest.NewRecorder()
 		s.ServeHTTP(rec, req)
 		if rec.Code != http.StatusCreated {
-			t.Fatalf("PUT X-Extract %s = %d, want %d; body %q", shape.name, rec.Code, http.StatusCreated, rec.Body.String())
-		}
-		if rec.Body.String() != "/"+hash+"/"+shape.file {
-			t.Errorf("X-Extract %s body = %q, want the plain PUT line", shape.name, rec.Body.String())
+			t.Fatalf("PUT %s%s = %d, want %d; body %q", shape.file, shape.query, rec.Code, http.StatusCreated, rec.Body.String())
 		}
 		if got := rec.Header().Get("X-Extracted-Count"); got != "" {
-			t.Errorf("X-Extract %s carried X-Extracted-Count %q, want none", shape.name, got)
+			t.Errorf("%s carried X-Extracted-Count %q, want none", shape.name, got)
+		}
+		if !shape.keep {
+			// Without the raw query the magic still decides: the zip is extracted.
+			if want := "{\"created\":1,\"replaced\":0}\n"; rec.Body.String() != want {
+				t.Errorf("%s body = %q, want %q", shape.name, rec.Body.String(), want)
+			}
+			if rec := get(t, s, base+shape.file); rec.Code != http.StatusNotFound {
+				t.Errorf("GET %s after extraction = %d, want 404: the archive name is not stored", shape.file, rec.Code)
+			}
+			continue
+		}
+		if got := rec.Header().Get("Location"); got != "/"+hash+"/"+shape.file {
+			t.Errorf("Location = %q, want %q", got, "/"+hash+"/"+shape.file)
+		}
+		entry := putEntry(t, rec)
+		if entry.Path != shape.file || entry.Size != int64(len(body)) {
+			t.Errorf("%s entry = %+v, want the raw archive row at %d bytes", shape.name, entry, len(body))
 		}
 		rec = get(t, s, base+shape.file)
 		if rec.Body.String() != string(body) {
-			t.Errorf("GET after X-Extract %s did not return the archive bytes unchanged", shape.name)
+			t.Errorf("GET after %s did not return the archive bytes unchanged", shape.name)
 		}
 	}
-	if got := listingPaths(t, s, hash); strings.Join(got, ",") != "notes-bare.zip,notes-empty.zip,notes-keep.zip" {
-		t.Errorf("listing = %v, want the three raw archives", got)
+	if got := listingPaths(t, s, hash); strings.Join(got, ",") != "a.txt,notes-bare.zip,notes-empty.zip,notes-keep.zip" {
+		t.Errorf("listing = %v, want the three raw archives beside the one extracted entry", got)
 	}
 }
 
@@ -747,8 +764,12 @@ func TestArchiveBodyUnderAPlainNameStoredRaw(t *testing.T) {
 	if got := rec.Header().Get("X-Extracted-Count"); got != "" {
 		t.Errorf("X-Extracted-Count = %q, want none for a non-archive name", got)
 	}
-	if rec.Body.String() != "/"+hash+"/bundle.bin" {
-		t.Errorf("body = %q, want the plain PUT line", rec.Body.String())
+	if got := rec.Header().Get("Location"); got != "/"+hash+"/bundle.bin" {
+		t.Errorf("Location = %q, want %q", got, "/"+hash+"/bundle.bin")
+	}
+	entry := putEntry(t, rec)
+	if entry.Path != "bundle.bin" || entry.Size != int64(len(body)) {
+		t.Errorf("PUT entry = %+v, want the bundle.bin row at %d bytes", entry, len(body))
 	}
 	got := listingPaths(t, s, hash)
 	if strings.Join(got, ",") != "bundle.bin" {
@@ -833,6 +854,10 @@ func TestExtractionUpsertsAtomically(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("PUT update.zip = %d, want 201 (a.txt replaced, sub/new.txt created); body %q", rec.Code, rec.Body.String())
 	}
+	// The mixed upload states its exact counts: one created, one replaced.
+	if want := "{\"created\":1,\"replaced\":1}\n"; rec.Body.String() != want {
+		t.Errorf("mixed PUT body = %q, want %q", rec.Body.String(), want)
+	}
 	if got := listingPaths(t, s, hash); strings.Join(got, ",") != "a.txt,keep.txt,sub/new.txt" {
 		t.Errorf("listing = %v, want a.txt,keep.txt,sub/new.txt", got)
 	}
@@ -848,6 +873,9 @@ func TestExtractionUpsertsAtomically(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("second PUT update.zip = %d, want 200 (all replaced); body %q", rec.Code, rec.Body.String())
 	}
+	if want := "{\"created\":0,\"replaced\":2}\n"; rec.Body.String() != want {
+		t.Errorf("second PUT body = %q, want %q", rec.Body.String(), want)
+	}
 
 	// A bomb mid-upload leaves the bin exactly as the good upload left it.
 	rec = put(t, s, base+"bomb.zip", "test-key", string(bombZipBody(t, maxExtractTotal/(1<<20)+2)))
@@ -862,25 +890,24 @@ func TestExtractionUpsertsAtomically(t *testing.T) {
 	}
 }
 
-// TestExtractionAnswersWithCountAndLines is the response contract itself.
-func TestExtractionAnswersWithCountAndLines(t *testing.T) {
+// TestExtractionAnswersWithCounts is the response contract itself: the JSON counts body,
+// no X-Extracted-Count header, and 201 because entries were created.
+func TestExtractionAnswersWithCounts(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	base := createTestBin(t, s, "test-key")
-	hash := strings.Trim(base, "/")
 
 	body := makeTar(t, true, tarFile("one.txt", "1"), tarFile("dir/two.txt", "2"))
 	rec := put(t, s, base+"two.tar.gz", "test-key", string(body))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("PUT = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
-		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", ct)
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
-	if got := rec.Header().Get("X-Extracted-Count"); got != "2" {
-		t.Errorf("X-Extracted-Count = %q, want 2", got)
+	if got := rec.Header().Get("X-Extracted-Count"); got != "" {
+		t.Errorf("X-Extracted-Count = %q, want none: the counts answer in the JSON body", got)
 	}
-	want := "/" + hash + "/one.txt\n/" + hash + "/dir/two.txt" // archive order
-	if rec.Body.String() != want {
+	if want := "{\"created\":2,\"replaced\":0}\n"; rec.Body.String() != want {
 		t.Errorf("body = %q, want %q", rec.Body.String(), want)
 	}
 }
@@ -987,8 +1014,11 @@ func TestTarDotSlashEntriesLandInTheArchivesFolder(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("PUT site/x.tar.gz = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
 	}
-	if got := rec.Header().Get("X-Extracted-Count"); got != "2" {
-		t.Errorf("X-Extracted-Count = %q, want 2", got)
+	if got := rec.Header().Get("X-Extracted-Count"); got != "" {
+		t.Errorf("X-Extracted-Count = %q, want none", got)
+	}
+	if want := "{\"created\":2,\"replaced\":0}\n"; rec.Body.String() != want {
+		t.Errorf("PUT body = %q, want %q", rec.Body.String(), want)
 	}
 	if got := listingPaths(t, s, hash); strings.Join(got, ",") != "site/hello.txt,site/sub/app.css" {
 		t.Errorf("listing = %v, want site/hello.txt and site/sub/app.css", got)
@@ -1204,8 +1234,11 @@ func TestTarGNUSparseEntriesExtractAsFiles(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("PUT holes.tar = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
 	}
-	if got := rec.Header().Get("X-Extracted-Count"); got != "3" {
-		t.Errorf("X-Extracted-Count = %q, want 3", got)
+	if got := rec.Header().Get("X-Extracted-Count"); got != "" {
+		t.Errorf("X-Extracted-Count = %q, want none", got)
+	}
+	if want := "{\"created\":3,\"replaced\":0}\n"; rec.Body.String() != want {
+		t.Errorf("PUT body = %q, want %q", rec.Body.String(), want)
 	}
 	if got := listingPaths(t, s, hash); strings.Join(got, ",") != "after.txt,fine.txt,holes.bin" {
 		t.Errorf("listing = %v, want the sparse entry beside the ordinary ones", got)

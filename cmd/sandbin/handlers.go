@@ -27,7 +27,6 @@ import (
 
 const (
 	apiKeyHeader        = "X-API-Key"
-	extractHeader       = "X-Extract"
 	maxBodyBytes        = 1 << 20 // 1 MiB per PUT
 	maxPathLen          = 256
 	maxPathSegs         = 16
@@ -335,9 +334,10 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 		return
 	}
 
-	// X-Extract present at all, any value, is the opt-out: store and serve the body
-	// raw, no inspection. Otherwise an archive name plus archive magic is extracted.
-	if _, keep := r.Header[extractHeader]; !keep {
+	// A raw query parameter present at all — bare, empty value, any value — is the
+	// opt-out: store and serve the body raw, no inspection. Otherwise an archive
+	// name plus archive magic is extracted.
+	if _, keep := r.URL.Query()["raw"]; !keep {
 		kind, err := detectArchive(sub, content)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -356,18 +356,39 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	if replaced {
-		w.WriteHeader(http.StatusOK)
-	} else {
-		w.WriteHeader(http.StatusCreated)
+	// The answer is the stored row, not a restatement of the request: GetFileMeta
+	// reads back the path, size and updated_at the store wrote for the file.
+	entry, ok, err := s.store.GetFileMeta(hash, sub)
+	if err != nil || !ok {
+		log.Printf("read back %q in bin %q: ok %v, err %v", sub, hash, ok, err)
+		http.Error(w, "could not read file", http.StatusInternalServerError)
+		return
 	}
-	io.WriteString(w, "/"+hash+"/"+sub)
+
+	// A new file answers 201 with Location naming its path; a replaced one is the plain 200.
+	status := http.StatusOK
+	if !replaced {
+		w.Header().Set("Location", "/"+hash+"/"+sub)
+		status = http.StatusCreated
+	}
+	if err := writeJSON(w, status, fileJSON{Path: entry.Path, Size: entry.Size, UpdatedAt: entry.UpdatedAt}); err != nil {
+		log.Printf("encode the entry %q in bin %q: %v", sub, hash, err)
+		http.Error(w, "could not answer the upload", http.StatusInternalServerError)
+	}
+}
+
+// archiveAnswer is the JSON a successful archive upload answers: the store's own
+// created and replaced counts for the extracted entries.
+type archiveAnswer struct {
+	Created  int `json:"created"`
+	Replaced int `json:"replaced"`
 }
 
 // putArchive answers an extraction upload: the entries land under the upload name's
 // parent directory in one transaction, the archive name itself is not stored, and the
-// answer is the plain-PUT line pluralized, one per extracted file.
+// answer is the store's counts — {"created":N,"replaced":M}, 201 when anything was
+// created and 200 when everything was a replacement. X-Extracted-Count retires with
+// the plain-text line answer: the count is the body now.
 func (s *server) putArchive(w http.ResponseWriter, hash, sub string, kind archiveKind, body []byte) {
 	files, err := extractArchive(kind, sub, body)
 	if err != nil {
@@ -380,25 +401,21 @@ func (s *server) putArchive(w http.ResponseWriter, hash, sub string, kind archiv
 		return
 	}
 
-	created, _, err := s.store.PutFiles(hash, files)
+	created, replaced, err := s.store.PutFiles(hash, files)
 	if err != nil {
 		log.Printf("put %d extracted files in bin %q: %v", len(files), hash, err)
 		http.Error(w, "could not store file", http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("X-Extracted-Count", strconv.Itoa(len(files)))
+	status := http.StatusOK
 	if created >= 1 {
-		w.WriteHeader(http.StatusCreated)
-	} else {
-		w.WriteHeader(http.StatusOK)
+		status = http.StatusCreated
 	}
-	lines := make([]string, 0, len(files))
-	for _, f := range files {
-		lines = append(lines, "/"+hash+"/"+f.Path)
+	if err := writeJSON(w, status, archiveAnswer{Created: created, Replaced: replaced}); err != nil {
+		log.Printf("encode the counts of %q in bin %q: %v", sub, hash, err)
+		http.Error(w, "could not answer the upload", http.StatusInternalServerError)
 	}
-	io.WriteString(w, strings.Join(lines, "\n"))
 }
 
 // deleteBody is the DELETE answer: the bin-relative paths that were removed, a folder

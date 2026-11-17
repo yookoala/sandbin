@@ -90,6 +90,28 @@ func put(t *testing.T, h http.Handler, path, apiKey, body string) *httptest.Resp
 	return rec
 }
 
+// putEntry reads the JSON entry a successful single-file PUT answers: the pinned
+// {"path","size","updated_at"} spelling of the row the store read back for the file
+// just written, under the application/json Content-Type every JSON success carries.
+func putEntry(t *testing.T, rec *httptest.ResponseRecorder) fileJSON {
+	t.Helper()
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("PUT Content-Type = %q, want application/json", ct)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &keys); err != nil {
+		t.Fatalf("PUT body %q is not a JSON object: %v", rec.Body.String(), err)
+	}
+	if len(keys) != 3 || keys["path"] == nil || keys["size"] == nil || keys["updated_at"] == nil {
+		t.Fatalf("PUT body %q is not the pinned {path,size,updated_at} entry", rec.Body.String())
+	}
+	var entry fileJSON
+	if err := json.Unmarshal(rec.Body.Bytes(), &entry); err != nil {
+		t.Fatalf("PUT body %q is not the JSON entry: %v", rec.Body.String(), err)
+	}
+	return entry
+}
+
 func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -705,8 +727,17 @@ func TestPostPutGetRoundTrip(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("PUT new file = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
 	}
-	if want := base + "page.html"; rec.Body.String() != want {
-		t.Errorf("PUT body = %q, want %q", rec.Body.String(), want)
+	// The plain-text line answer retires: a new file answers 201 with Location
+	// naming its path, and the stored row as the JSON entry.
+	if got := rec.Header().Get("Location"); got != base+"page.html" {
+		t.Errorf("201 Location = %q, want %q", got, base+"page.html")
+	}
+	entry := putEntry(t, rec)
+	if entry.Path != "page.html" || entry.Size != int64(len("<h1>Hello</h1>")) {
+		t.Errorf("PUT entry = %+v, want the page.html row at %d bytes", entry, len("<h1>Hello</h1>"))
+	}
+	if _, err := time.Parse(time.RFC3339, entry.UpdatedAt); err != nil {
+		t.Errorf("entry updated_at %q is not RFC 3339: %v", entry.UpdatedAt, err)
 	}
 
 	rec = get(t, h, base+"page.html")
@@ -723,6 +754,14 @@ func TestPostPutGetRoundTrip(t *testing.T) {
 	rec = put(t, h, base+"page.html", "test-key", "<h1>Replaced</h1>")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT replacing a file = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	// A replaced file keeps the same JSON answer without the Location a new one gets.
+	if got := rec.Header().Get("Location"); got != "" {
+		t.Errorf("the 200 answer carries Location %q, want none", got)
+	}
+	entry = putEntry(t, rec)
+	if entry.Path != "page.html" || entry.Size != int64(len("<h1>Replaced</h1>")) {
+		t.Errorf("replaced PUT entry = %+v, want the page.html row at %d bytes", entry, len("<h1>Replaced</h1>"))
 	}
 
 	rec = put(t, h, base+"notes.md", "test-key", "# Notes\n")
@@ -749,6 +788,57 @@ func TestPostPutGetRoundTrip(t *testing.T) {
 	rec = get(t, h, base+"sub/deep/file.txt")
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("GET unknown path = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+// TestPutRawQueryShapes is the ?raw=1 no-op rule: a raw query on an ordinary file
+// changes nothing about its answer, and a raw query on an archive name stores the
+// archive itself under that name instead of extracting it.
+func TestPutRawQueryShapes(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	base := createTestBin(t, h, "test-key")
+	hash := strings.Trim(base, "/")
+
+	// ?raw=1 on a plain file is a no-op: the ordinary JSON answer and stored file.
+	rec := put(t, h, base+"plain.txt?raw=1", "test-key", "ordinary body")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("PUT plain.txt?raw=1 = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != base+"plain.txt" {
+		t.Errorf("Location = %q, want %q: the Location never carries the query", got, base+"plain.txt")
+	}
+	entry := putEntry(t, rec)
+	if entry.Path != "plain.txt" || entry.Size != int64(len("ordinary body")) {
+		t.Errorf("PUT entry = %+v, want the plain.txt row", entry)
+	}
+	if rec := get(t, h, base+"plain.txt"); rec.Code != http.StatusOK || rec.Body.String() != "ordinary body" {
+		t.Errorf("GET plain.txt = %d, body %q; want 200 and the stored bytes", rec.Code, rec.Body.String())
+	}
+
+	// ?raw=1 on an archive stores it raw under its own name: no entries, no count header.
+	body := makeZip(t, zipEntry{name: "inner.txt", body: "inner"})
+	rec = put(t, h, base+"site/keep.zip?raw=1", "test-key", string(body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("PUT site/keep.zip?raw=1 = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != base+"site/keep.zip" {
+		t.Errorf("Location = %q, want %q", got, base+"site/keep.zip")
+	}
+	if got := rec.Header().Get("X-Extracted-Count"); got != "" {
+		t.Errorf("X-Extracted-Count = %q, want none", got)
+	}
+	entry = putEntry(t, rec)
+	if entry.Path != "site/keep.zip" || entry.Size != int64(len(body)) {
+		t.Errorf("PUT entry = %+v, want the site/keep.zip row at %d bytes", entry, len(body))
+	}
+	if got := listingPaths(t, h, hash); strings.Join(got, ",") != "plain.txt,site/keep.zip" {
+		t.Errorf("listing = %v, want the raw archive under its own name and no extracted entries", got)
+	}
+	if rec := get(t, h, base+"site/keep.zip"); !bytes.Equal(rec.Body.Bytes(), body) {
+		t.Errorf("GET site/keep.zip did not return the archive bytes unchanged")
+	}
+	if rec := get(t, h, base+"site/inner.txt"); rec.Code != http.StatusNotFound {
+		t.Errorf("GET site/inner.txt = %d, want 404: nothing was extracted", rec.Code)
 	}
 }
 
