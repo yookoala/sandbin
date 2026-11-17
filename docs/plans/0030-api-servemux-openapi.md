@@ -181,7 +181,8 @@ exclusively by `_test` files.
   - Acceptance checklist for the generated document (reviewer verifies against it):
     1. `openapi` version is 3.1.x.
     2. `paths` contains exactly `/api/key`, `/api/health`, `/api/bins`, `/api/bins/{hash}` with
-       method sets matching Task 1's table.
+       method sets matching Task 1's table — exactly these four at Task 2 time; the
+       `/openapi.json` path joins the document in Task 3, when the endpoint exists.
     3. The five key-checked operations carry `security: [{apiKey: []}]`; `GET /api/health` none;
        `GET /api/bins/{hash}` the optional `[{ }, {binBasic: [ ]}]`.
     4. `components.securitySchemes` holds `apiKey` (header `X-API-Key`) and `binBasic` (http
@@ -264,8 +265,13 @@ exclusively by `_test` files.
 - [ ] **Step 1: Write failing tests** (they fail to compile until `openapi.go` and the dep exist).
 - [ ] **Step 2: Run, verify failure.**
 - [ ] **Step 3: Implement** embed + handler + registration + ServeHTTP condition; `go get` the dep.
-- [ ] **Step 4: Run tests:** green; `cmd/sandbin` count ≥ 243 + the eight new tests.
-- [ ] **Step 5: Gates** then commit `feat: serve the OpenAPI document at GET /openapi.json with contract pins`.
+- [ ] **Step 4: Regenerate the document:** run `make openapi` — the new `apiRegister` line is
+  static source apispec can scan, so the regenerated `openapi.json` now carries
+  `GET /openapi.json` (no security). If apispec describes the endpoint's body unhelpfully, pin
+  it with a minimal override: `application/json`, an opaque object schema. The cross-check test
+  only passes after this regeneration.
+- [ ] **Step 5: Run tests:** green; `cmd/sandbin` count ≥ 243 + the eight new tests.
+- [ ] **Step 6: Gates** then commit `feat: serve the OpenAPI document at GET /openapi.json with contract pins`.
 
 ---
 
