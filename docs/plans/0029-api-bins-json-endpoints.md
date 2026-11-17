@@ -229,3 +229,11 @@
 
 - Run all five gates at HEAD; record per-package counts (`go test -count=1 <pkg> -v | grep -c '^--- PASS'` for the five packages) in this file's tail as a closing commit, mirroring the established plan records.
 - Scratch end-to-end on `127.0.0.1:18307`: create → upload (plain + archive + `?raw=1`) → inspect → patch (rotate then clear the password) → list (two pages) → delete bin, all with `curl` only, no custom header except `X-API-Key` and Basic; then the same walk through `sandbin-client`. Kill scratch, clean up.
+
+## Final verification (recorded 2026-11-17)
+
+- Gates at HEAD `74db0fb`: `gofmt -l .` empty; `go vet ./...`, `go build ./...`, `go test -count=1 ./...`, `go test -race -count=1 ./...` all green.
+- Per-package test counts (top-level PASS): `cmd/sandbin` 242 (baseline 214), `cmd/sandbin-client` 111 (baseline 107), `internal/frontpage` 17, `internal/robots` 2, `internal/version` 6. No package shrank.
+- Scratch end-to-end (`127.0.0.1:18307`, curl only, custom headers limited to `X-API-Key` + Basic): JSON create 201+Location+bin object → file PUT 201+JSON entry → replace 200 → archive PUT 201 `{"created":2,"replaced":0}` → `?raw=1` keeps the zip raw under its own name → inspect lists every file incl. the archive → PATCH re-patches description → rotate password (old 401, new 200) → `{"password":null}` clears (`has_password:false`, bin open) → `POST /api/key` 204 → `GET /api/health` `{"status":"ok"}` → retired spellings 405 (`POST /`) / 404 (`/healthz`, `/verify-key`) → paged list → create+delete bins (204, then 404s) → final list `{"bins":[]}`.
+- The walk's first attempt omitted `X-API-Key` on three PUTs and demonstrated the lockout live: 403 charged, then 429 with Retry-After on subsequent key-checked requests.
+- Same lifecycle through `sandbin-client`: init 204-checked, `--archive` folder upload reports `extracted 2 files` from the JSON body, `describe` prints the full inspection lines, `list` prints newest-first rows (title column omitted when empty), `--no-extract` stores `archive.zip` raw (`created`). Scratch server killed via `/proc/*/comm` scan; scratch files removed.
