@@ -1716,6 +1716,7 @@ func TestAPIRouteTableIsPublishedSurface(t *testing.T) {
 		"/api/health":      {http.MethodGet, http.MethodHead},
 		"/api/bins":        {http.MethodGet, http.MethodPost},
 		"/api/bins/{hash}": {http.MethodGet, http.MethodPatch, http.MethodDelete},
+		"/openapi.json":    {http.MethodGet},
 	}
 	if len(methods) != len(want) {
 		t.Fatalf("the table names %d paths, want %d: %v", len(methods), len(want), methods)

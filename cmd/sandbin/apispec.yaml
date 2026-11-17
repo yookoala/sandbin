@@ -5,8 +5,8 @@
 #
 #   go install github.com/ehabterra/apispec/cmd/apispec@v0.5.11
 #
-# The generated document is then corrected by cmd/sandbin/openapi-fix.jq (ruling R4) — seven
-# checked-in fixes the generator verifiably cannot express; its header explains each.
+# The generated document is then corrected by cmd/sandbin/openapi-fix.jq (ruling R4) — nine
+# checked-in fixes the generator verifiably cannot express; its header explains each one.
 #
 # Why the framework pattern lists are replaced instead of extended:
 #

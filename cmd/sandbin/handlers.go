@@ -72,15 +72,17 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// "api" is no eight-hex hash, so this prefix can never name or shadow a bin, same
-	// reasoning as the static routes below it. The whole /api surface dispatches in api.go
-	// on an http.ServeMux, every request classified against its authoritative route table
-	// before the mux answers it: GET|HEAD /api/health is the unauthenticated probe the
-	// container HEALTHCHECK asks for, POST /api/key is the pure key check — good key 204,
-	// wrong key charged — POST /api/bins makes a bin from a JSON body, GET /api/bins is the
-	// key-gated paged listing, and GET, PATCH and DELETE /api/bins/{hash} inspect, update
-	// and delete one.
-	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+	// "api" is no eight-hex hash and "openapi.json" holds dots, so neither can ever name or
+	// shadow a bin, same reasoning as the static routes below it. The whole /api surface and
+	// the OpenAPI document dispatch in api.go on an http.ServeMux, every request classified
+	// against its authoritative route table before the mux answers it: GET|HEAD /api/health
+	// is the unauthenticated probe the container HEALTHCHECK asks for, POST /api/key is the
+	// pure key check — good key 204, wrong key charged — POST /api/bins makes a bin from a
+	// JSON body, GET /api/bins is the key-gated paged listing, GET, PATCH and DELETE
+	// /api/bins/{hash} inspect, update and delete one, and GET /openapi.json serves the
+	// machine-readable contract — key-free, never charged, answered even while the address
+	// is blocked.
+	if r.URL.Path == "/openapi.json" || r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
 		s.apiRoutes(w, r)
 		return
 	}

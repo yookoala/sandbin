@@ -500,6 +500,26 @@
           }
         ]
       }
+    },
+    "/openapi.json": {
+      "get": {
+        "summary": "serveOpenAPI answers GET /openapi.json: the machine-readable contract, served verbatim from the embedded file.",
+        "description": "It needs no key, touches no store and charges nothing, so it\nanswers even while its address is blocked. Every other method is refused by the route\ntable before this handler is reached, and the one path the table names is spelled exactly\n— a trailing slash names no entry and stays the plain 404.",
+        "operationId": "server.serveOpenAPI",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The OpenAPI 3.1 document itself: the committed cmd/sandbin/openapi.json, served byte for byte."
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -608,6 +628,18 @@
         "properties": {
           "status": {
             "type": "string"
+          }
+        }
+      },
+      "archiveAnswer": {
+        "type": "object",
+        "description": "archiveAnswer is the JSON a successful archive upload answers: the store's own created and replaced counts for the extracted entries.",
+        "properties": {
+          "created": {
+            "type": "integer"
+          },
+          "replaced": {
+            "type": "integer"
           }
         }
       }

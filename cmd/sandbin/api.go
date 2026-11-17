@@ -22,16 +22,17 @@ import (
 // 1 MiB a file PUT may carry.
 const maxJSONBodyBytes = 64 << 10
 
-// apiRoutes dispatches everything under /api on an http.ServeMux, classified before it is
-// delegated. "api" is no eight-hex hash, so the prefix can never name or shadow a bin, same
-// reasoning as the static routes below it. The mux and its authoritative route table build
-// lazily inside apiOnce on the first /api request, because every server is a composite
+// apiRoutes dispatches the whole /api surface — plus the GET /openapi.json document, whose
+// path joins the table below — on an http.ServeMux, classified before it is delegated. "api"
+// is no eight-hex hash and "openapi.json" holds dots, so neither can name or shadow a bin,
+// same reasoning as the static routes below it. The mux and its authoritative route table
+// build lazily inside apiOnce on the first such request, because every server is a composite
 // literal. Dispatch names a request through the table and only then lets the mux answer it:
 // a path the table does not name — trailing-slash variants and non-hash segments under
 // /api/bins/ included — is the plain 404 unknown bin, and a named path on a method its set
-// does not allow — HEAD on the per-bin spelling, HEAD and DELETE on the collection — is the
-// plain 405. Nothing the table does not name reaches the mux, so the mux's built-in 404,
-// 405 and 301 never answer.
+// does not allow — HEAD on the per-bin spelling, HEAD and DELETE on the collection, every
+// method but GET on the document — is the plain 405. Nothing the table does not name reaches
+// the mux, so the mux's built-in 404, 405 and 301 never answer.
 func (s *server) apiRoutes(w http.ResponseWriter, r *http.Request) {
 	s.apiOnce.Do(func() {
 		s.apiMux, s.apiMethods = s.newAPIRoutes()
@@ -72,11 +73,13 @@ func (s *server) newAPIRoutes() (*http.ServeMux, map[string][]string) {
 	mux.Handle(apiPatternBinGet, http.HandlerFunc(s.apiInspectBin))
 	mux.Handle(apiPatternBinPatch, s.withAPIKey(http.HandlerFunc(s.apiPatchBin)))
 	mux.Handle(apiPatternBinDelete, s.withAPIKey(http.HandlerFunc(s.apiDeleteBin)))
+	mux.Handle(apiPatternOpenAPI, http.HandlerFunc(s.serveOpenAPI))
 
 	for _, pattern := range []string{
 		apiPatternKey, apiPatternHealthGet, apiPatternHealthHead,
 		apiPatternBinsPost, apiPatternBinsGet,
 		apiPatternBinGet, apiPatternBinPatch, apiPatternBinDelete,
+		apiPatternOpenAPI,
 	} {
 		apiRecordMethod(methods, pattern)
 	}
@@ -87,9 +90,9 @@ func (s *server) newAPIRoutes() (*http.ServeMux, map[string][]string) {
 	return mux, methods
 }
 
-// The eight published /api patterns, each spelled once. The mux gets these exact strings
-// and the table records method and path cut from the same const, so the two share one
-// source and can never drift.
+// The nine published patterns — the eight /api routes and the OpenAPI document endpoint —
+// each spelled once. The mux gets these exact strings and the table records method and path
+// cut from the same const, so the two share one source and can never drift.
 const (
 	apiPatternKey        = "POST /api/key"
 	apiPatternHealthGet  = "GET /api/health"
@@ -99,6 +102,7 @@ const (
 	apiPatternBinGet     = "GET /api/bins/{hash}"
 	apiPatternBinPatch   = "PATCH /api/bins/{hash}"
 	apiPatternBinDelete  = "DELETE /api/bins/{hash}"
+	apiPatternOpenAPI    = "GET /openapi.json"
 )
 
 // apiMethodOrder is the canonical order a path's allowed methods are recorded in: the order
