@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 
@@ -41,6 +42,14 @@ type server struct {
 	// trustedProxies adds configured proxy addresses to the loopback, private and
 	// link-local sockets whose X-Forwarded-For clientIP already believes.
 	trustedProxies proxyList
+
+	// apiMux is the /api dispatch's mux and apiMethods its authoritative route table
+	// (path → allowed methods). Every server in this repo is a composite literal that
+	// cannot run an initializer, so both build once inside apiOnce on the first /api
+	// request; see newAPIRoutes.
+	apiOnce    sync.Once
+	apiMux     *http.ServeMux
+	apiMethods map[string][]string
 }
 
 // ServeHTTP sends "/" to the front page (GET) and everything else to the bin subrouter. Path
@@ -64,10 +73,13 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// "api" is no eight-hex hash, so this prefix can never name or shadow a bin, same
-	// reasoning as the static routes below it. The whole /api surface dispatches in api.go:
-	// GET|HEAD /api/health is the unauthenticated probe the container HEALTHCHECK asks for,
-	// POST /api/key is the pure key check — good key 204, wrong key charged — POST /api/bins
-	// makes a bin from a JSON body, and GET and PATCH /api/bins/{hash} inspect and update one.
+	// reasoning as the static routes below it. The whole /api surface dispatches in api.go
+	// on an http.ServeMux, every request classified against its authoritative route table
+	// before the mux answers it: GET|HEAD /api/health is the unauthenticated probe the
+	// container HEALTHCHECK asks for, POST /api/key is the pure key check — good key 204,
+	// wrong key charged — POST /api/bins makes a bin from a JSON body, GET /api/bins is the
+	// key-gated paged listing, and GET, PATCH and DELETE /api/bins/{hash} inspect, update
+	// and delete one.
 	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
 		s.apiRoutes(w, r)
 		return

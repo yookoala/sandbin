@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -20,53 +22,114 @@ import (
 // 1 MiB a file PUT may carry.
 const maxJSONBodyBytes = 64 << 10
 
-// apiRoutes dispatches everything under /api. "api" is no eight-hex hash, so the prefix can
-// never name or shadow a bin, same reasoning as the static routes below it. It answers POST
-// /api/key, GET|HEAD /api/health, POST|GET /api/bins — the GET is the key-gated paged listing
-// — and, on the one spelling apiBinPathRE names, GET, PATCH and DELETE /api/bins/{hash}. A
-// spelling the dispatch does not name — trailing-slash variants and non-hash segments under
-// /api/bins/ included — is the plain 404 unknown bin, and a known path on a wrong method —
-// HEAD on the per-bin spelling, HEAD and DELETE on the collection — is the plain 405.
+// apiRoutes dispatches everything under /api on an http.ServeMux, classified before it is
+// delegated. "api" is no eight-hex hash, so the prefix can never name or shadow a bin, same
+// reasoning as the static routes below it. The mux and its authoritative route table build
+// lazily inside apiOnce on the first /api request, because every server is a composite
+// literal. Dispatch names a request through the table and only then lets the mux answer it:
+// a path the table does not name — trailing-slash variants and non-hash segments under
+// /api/bins/ included — is the plain 404 unknown bin, and a named path on a method its set
+// does not allow — HEAD on the per-bin spelling, HEAD and DELETE on the collection — is the
+// plain 405. Nothing the table does not name reaches the mux, so the mux's built-in 404,
+// 405 and 301 never answer.
 func (s *server) apiRoutes(w http.ResponseWriter, r *http.Request) {
-	switch r.URL.Path {
-	case "/api/key":
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		s.apiKeyCheck(w, r)
-	case "/api/health":
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		s.apiHealth(w, r)
-	case "/api/bins":
-		switch r.Method {
-		case http.MethodPost:
-			s.apiCreateBin(w, r)
-		case http.MethodGet:
-			s.apiListBins(w, r)
-		default:
-			// The collection answers POST and GET only: HEAD and DELETE are the plain 405.
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		}
-	default:
-		if m := apiBinPathRE.FindStringSubmatch(r.URL.Path); m != nil {
-			switch r.Method {
-			case http.MethodGet:
-				s.apiInspectBin(w, r, m[1])
-			case http.MethodPatch:
-				s.apiPatchBin(w, r, m[1])
-			case http.MethodDelete:
-				s.apiDeleteBin(w, r, m[1])
-			default:
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			}
-			return
-		}
+	s.apiOnce.Do(func() {
+		s.apiMux, s.apiMethods = s.newAPIRoutes()
+	})
+
+	allowed := apiLookupMethodSet(s.apiMethods, r.URL.Path)
+	if allowed == nil {
 		http.Error(w, "unknown bin", http.StatusNotFound)
+		return
 	}
+	if !slices.Contains(allowed, r.Method) {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.apiMux.ServeHTTP(w, r)
+}
+
+// newAPIRoutes builds the /api mux and the authoritative route table (path → allowed
+// methods) together, so the table is exactly what the mux was given. /api/health registers
+// its GET and HEAD spellings separately so the table derives HEAD from registration, not
+// from the mux quirk that a GET method pattern also matches HEAD. Each path's method list
+// is sorted, which makes the table deterministic whatever the registration order.
+func (s *server) newAPIRoutes() (*http.ServeMux, map[string][]string) {
+	mux := http.NewServeMux()
+	methods := map[string][]string{}
+
+	apiRegister(mux, methods, "POST /api/key", s.withAPIKey(http.HandlerFunc(s.apiKeyCheck)))
+	apiRegister(mux, methods, "GET /api/health", http.HandlerFunc(s.apiHealth))
+	apiRegister(mux, methods, "HEAD /api/health", http.HandlerFunc(s.apiHealth))
+	apiRegister(mux, methods, "POST /api/bins", s.withAPIKey(http.HandlerFunc(s.apiCreateBin)))
+	apiRegister(mux, methods, "GET /api/bins", s.withAPIKey(http.HandlerFunc(s.apiListBins)))
+	apiRegister(mux, methods, "GET /api/bins/{hash}", http.HandlerFunc(s.apiInspectBin))
+	apiRegister(mux, methods, "PATCH /api/bins/{hash}", s.withAPIKey(http.HandlerFunc(s.apiPatchBin)))
+	apiRegister(mux, methods, "DELETE /api/bins/{hash}", s.withAPIKey(http.HandlerFunc(s.apiDeleteBin)))
+
+	for _, allowed := range methods {
+		sortAPIMethods(allowed)
+	}
+	return mux, methods
+}
+
+// apiMethodOrder is the canonical order a path's allowed methods are recorded in: the order
+// the HTTP surface is published in — GET, HEAD, POST, PUT, PATCH, DELETE — and any other
+// method ranks after them, ordered by name. Sorting the table's method lists this way makes
+// them deterministic whatever the registration order.
+var apiMethodOrder = []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete}
+
+func sortAPIMethods(allowed []string) {
+	slices.SortFunc(allowed, func(a, b string) int {
+		rankA, rankB := apiMethodRank(a), apiMethodRank(b)
+		if rankA != rankB {
+			return cmp.Compare(rankA, rankB)
+		}
+		return strings.Compare(a, b)
+	})
+}
+
+func apiMethodRank(method string) int {
+	if i := slices.Index(apiMethodOrder, method); i >= 0 {
+		return i
+	}
+	return len(apiMethodOrder)
+}
+
+// apiRegister is where a route is born: the mux gets the method pattern and the table
+// records the same method under the pattern's path, so the table is always exactly what the
+// mux was given and the two can never drift.
+func apiRegister(mux *http.ServeMux, methods map[string][]string, pattern string, h http.Handler) {
+	mux.Handle(pattern, h)
+	method, path, _ := strings.Cut(pattern, " ")
+	methods[path] = append(methods[path], method)
+}
+
+// apiLookupMethodSet finds the table entry that names a concrete path: a literal hit, else
+// the per-bin entry registered as /api/bins/{hash} when apiBinPathRE matches. That hex gate
+// is what keeps {hash} from broadening the matching: /api/bins/xyz and /api/bins/deadbeef/
+// name no entry and stay the plain 404, uncharged whatever the key.
+func apiLookupMethodSet(methods map[string][]string, path string) []string {
+	if allowed, ok := methods[path]; ok {
+		return allowed
+	}
+	if apiBinPathRE.MatchString(path) {
+		return methods["/api/bins/{hash}"]
+	}
+	return nil
+}
+
+// withAPIKey is the wrapper every key-checked endpoint registers through: it runs today's
+// requireKey unchanged before the handler, so each route's pinned order — key before body,
+// before lookup, before the bin gate — is preserved by construction. Its shape is what the
+// OpenAPI document's securityMappings follow to attach the apiKey requirement.
+func (s *server) withAPIKey(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.requireKey(w, r) {
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // apiBinPathRE names the one per-bin spelling /api owns: /api/bins/{hash} with the store's own
@@ -74,13 +137,11 @@ func (s *server) apiRoutes(w http.ResponseWriter, r *http.Request) {
 // a hash stay the plain 404 they always were, whatever the method.
 var apiBinPathRE = regexp.MustCompile(`^/api/bins/([0-9a-f]{8})$`)
 
-// apiKeyCheck answers the key check: its guard is requireKey's verbatim, so a wrong key
-// through it charges exactly like a wrong key through a write, and a match creates nothing,
-// charges nothing and answers 204 with an empty body.
+// apiKeyCheck answers the key check. It registers through the withAPIKey wrapper, whose
+// guard is requireKey's verbatim, so a wrong key through it charges exactly like a wrong key
+// through a write, and a match creates nothing, charges nothing and answers 204 with an
+// empty body.
 func (s *server) apiKeyCheck(w http.ResponseWriter, r *http.Request) {
-	if !s.requireKey(w, r) {
-		return
-	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -224,15 +285,11 @@ func binToJSON(b Bin) binJSON {
 }
 
 // apiCreateBin makes a bin from the JSON body and answers 201 with the bin object and its
-// Location. Its guard is requireKey, so a wrong key through it charges exactly as the retired
-// POST / did. An absent field and one given as empty both make an empty value, which is what a
-// bin with nothing to say holds; a password longer than bcrypt can hold is refused before
-// anything is written.
+// Location. Its guard is the withAPIKey wrapper around it — requireKey unchanged — so a wrong
+// key through it charges exactly as the retired POST / did. An absent field and one given as
+// empty both make an empty value, which is what a bin with nothing to say holds; a password
+// longer than bcrypt can hold is refused before anything is written.
 func (s *server) apiCreateBin(w http.ResponseWriter, r *http.Request) {
-	if !s.requireKey(w, r) {
-		return
-	}
-
 	req, ok := decodeBinRequest(w, r, true)
 	if !ok {
 		return
@@ -331,17 +388,14 @@ func decodeCursor(raw string) (BinCursor, error) {
 	return BinCursor{CreatedAt: createdAt, Hash: hash}, nil
 }
 
-// apiListBins answers GET /api/bins, the key-gated listing: its guard is requireKey, so a
-// wrong key through it charges exactly like a wrong key through a write. The paging rules are
-// pinned: limit default 30, a non-integer or a limit below 1 is the plain 400 invalid limit,
-// anything above 100 clamps to 100; cursor is the unpadded URL-safe base64 a previous page
-// answered, and a malformed one is the plain 400 invalid cursor. Bins list complete —
-// protected ones with their metadata and has_password in plain view, the owner's view.
+// apiListBins answers GET /api/bins, the key-gated listing: its guard is the withAPIKey
+// wrapper around it — requireKey unchanged — so a wrong key through it charges exactly like a
+// wrong key through a write. The paging rules are pinned: limit default 30, a non-integer or a
+// limit below 1 is the plain 400 invalid limit, anything above 100 clamps to 100; cursor is the
+// unpadded URL-safe base64 a previous page answered, and a malformed one is the plain 400
+// invalid cursor. Bins list complete — protected ones with their metadata and has_password in
+// plain view, the owner's view.
 func (s *server) apiListBins(w http.ResponseWriter, r *http.Request) {
-	if !s.requireKey(w, r) {
-		return
-	}
-
 	limit := defaultListLimit
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
@@ -402,9 +456,12 @@ type binDetailJSON struct {
 }
 
 // apiInspectBin answers GET /api/bins/{hash}: no API key, the bin's row and its file list
-// sorted by path. A password-protected bin answers 401 until Basic opens it, and that 401
-// records no failure — the API-key lockout is not the bin's password gate.
-func (s *server) apiInspectBin(w http.ResponseWriter, r *http.Request, hash string) {
+// sorted by path. The hash it reads from the path is an eight-hex spelling because the table
+// only names the {hash} route through the apiBinPathRE hex gate. A password-protected bin
+// answers 401 until Basic opens it, and that 401 records no failure — the API-key lockout is
+// not the bin's password gate.
+func (s *server) apiInspectBin(w http.ResponseWriter, r *http.Request) {
+	hash := r.PathValue("hash")
 	bin, ok, err := s.store.GetBin(hash)
 	if err != nil {
 		log.Printf("get bin %q: %v", hash, err)
@@ -441,15 +498,13 @@ func (s *server) apiInspectBin(w http.ResponseWriter, r *http.Request, hash stri
 
 // apiPatchBin merges a JSON body into a bin's row: a given field is set — null and "" clear
 // theirs, a password is stored as a bcrypt hash — and an absent one leaves what the bin holds,
-// which is what UpdateBinMeta's COALESCE reads from a NULL argument. The order is pinned:
-// key, body validation, bin lookup, and only then the bin's own password gate, so a protected
-// bin is changed only by a request that carries its current password, and a refused request
-// changes nothing. {} is a no-op answering the current row; no body at all is refused as
-// unreadable, unlike create's pinned empty request.
-func (s *server) apiPatchBin(w http.ResponseWriter, r *http.Request, hash string) {
-	if !s.requireKey(w, r) {
-		return
-	}
+// which is what UpdateBinMeta's COALESCE reads from a NULL argument. The order is pinned: the
+// wrapper's key, body validation, bin lookup, and only then the bin's own password gate, so a
+// protected bin is changed only by a request that carries its current password, and a refused
+// request changes nothing. {} is a no-op answering the current row; no body at all is refused
+// as unreadable, unlike create's pinned empty request.
+func (s *server) apiPatchBin(w http.ResponseWriter, r *http.Request) {
+	hash := r.PathValue("hash")
 
 	req, ok := decodeBinRequest(w, r, false)
 	if !ok {
@@ -549,15 +604,13 @@ func (s *server) apiPatchBin(w http.ResponseWriter, r *http.Request, hash string
 	}
 }
 
-// apiDeleteBin removes a bin and every file in it. The order is pinned: key, bin lookup, and
-// only then the bin's own password gate, so a protected bin goes only to a request carrying
-// its current password — and a 401 charges nothing while the bin survives. The body is not
-// read at all: a DELETE has nothing to say. The answer is 204 with an empty body, because
+// apiDeleteBin removes a bin and every file in it. The order is pinned: the wrapper's key, bin
+// lookup, and only then the bin's own password gate, so a protected bin goes only to a request
+// carrying its current password — and a 401 charges nothing while the bin survives. The body is
+// not read at all: a DELETE has nothing to say. The answer is 204 with an empty body, because
 // there is nothing left to report about a bin that is gone.
-func (s *server) apiDeleteBin(w http.ResponseWriter, r *http.Request, hash string) {
-	if !s.requireKey(w, r) {
-		return
-	}
+func (s *server) apiDeleteBin(w http.ResponseWriter, r *http.Request) {
+	hash := r.PathValue("hash")
 
 	bin, found, err := s.store.GetBin(hash)
 	if err != nil {

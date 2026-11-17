@@ -1702,3 +1702,39 @@ func TestBinPageNoMetadataHeaders(t *testing.T) {
 		t.Errorf("inspect metadata = %q / %q, want the stored Test report / findings of the audit", b.Title, b.Description)
 	}
 }
+
+// TestAPIRouteTableIsPublishedSurface pins the authoritative route table to the
+// published /api surface exactly: the four paths, their allowed methods, and nothing
+// else. Dispatch, the charging gates and the generated OpenAPI document all read this
+// table, so a registration that adds, drops or re-spells a route fails here.
+func TestAPIRouteTableIsPublishedSurface(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	_, methods := s.newAPIRoutes()
+
+	want := map[string][]string{
+		"/api/key":         {http.MethodPost},
+		"/api/health":      {http.MethodGet, http.MethodHead},
+		"/api/bins":        {http.MethodGet, http.MethodPost},
+		"/api/bins/{hash}": {http.MethodGet, http.MethodPatch, http.MethodDelete},
+	}
+	if len(methods) != len(want) {
+		t.Fatalf("the table names %d paths, want %d: %v", len(methods), len(want), methods)
+	}
+	for path, wantMethods := range want {
+		got := methods[path]
+		if got == nil {
+			t.Errorf("the table has no entry for %s, want methods %v", path, wantMethods)
+			continue
+		}
+		if len(got) != len(wantMethods) {
+			t.Errorf("methods for %s = %v, want exactly %v", path, got, wantMethods)
+			continue
+		}
+		for i := range wantMethods {
+			if got[i] != wantMethods[i] {
+				t.Errorf("methods for %s = %v, want exactly %v", path, got, wantMethods)
+				break
+			}
+		}
+	}
+}
