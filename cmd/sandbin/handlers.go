@@ -28,7 +28,6 @@ import (
 
 const (
 	apiKeyHeader         = "X-API-Key"
-	binPasswordHeader    = "X-Bin-Password"
 	binTitleHeader       = "X-Bin-Title"
 	binDescriptionHeader = "X-Bin-Description"
 	extractHeader        = "X-Extract"
@@ -48,8 +47,8 @@ type server struct {
 	trustedProxies proxyList
 }
 
-// ServeHTTP sends "/" to bin creation (POST) or the front page (GET) and everything else to
-// the bin subrouter. Path validation happens here, before anything touches SQL.
+// ServeHTTP sends "/" to the front page (GET) and everything else to the bin subrouter. Path
+// validation happens here, before anything touches SQL.
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasPrefix(r.URL.Path, "/") {
 		http.Error(w, "unknown bin", http.StatusNotFound)
@@ -57,21 +56,22 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Path == "/" {
-		switch r.Method {
-		case http.MethodPost:
-			s.createBin(w, r)
-		case http.MethodGet:
-			s.renderFrontPage(w, r)
-		default:
+		// POST / used to make a bin; creation lives at POST /api/bins now, so the root
+		// answers a write with the plain 405 every other known path gives a method it does not
+		// take.
+		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
 		}
+		s.renderFrontPage(w, r)
 		return
 	}
 
 	// "api" is no eight-hex hash, so this prefix can never name or shadow a bin, same
 	// reasoning as the static routes below it. The whole /api surface dispatches in api.go:
 	// GET|HEAD /api/health is the unauthenticated probe the container HEALTHCHECK asks for,
-	// and POST /api/key is the pure key check: good key 204, wrong key charged.
+	// POST /api/key is the pure key check — good key 204, wrong key charged — and POST
+	// /api/bins makes a bin from a JSON body.
 	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
 		s.apiRoutes(w, r)
 		return
@@ -186,53 +186,6 @@ func (s *server) binRoutes(w http.ResponseWriter, r *http.Request, hash, sub str
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
-}
-
-// createBin makes a bin and answers with the path it lives under.
-func (s *server) createBin(w http.ResponseWriter, r *http.Request) {
-	if !s.requireKey(w, r) {
-		return
-	}
-
-	// An empty X-Bin-Password means the bin stays open.
-	passwordHash := ""
-	if plain := r.Header.Get(binPasswordHeader); plain != "" {
-		hashed, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
-		if err != nil {
-			if errors.Is(err, bcrypt.ErrPasswordTooLong) {
-				http.Error(w, "bin password too long", http.StatusBadRequest)
-				return
-			}
-			log.Printf("hash bin password: %v", err)
-			http.Error(w, "could not set the bin password", http.StatusInternalServerError)
-			return
-		}
-		passwordHash = string(hashed)
-	}
-
-	// An absent header leaves the field empty, which is the same bin as a bin nobody
-	// gave metadata.
-	title := r.Header.Get(binTitleHeader)
-	description := r.Header.Get(binDescriptionHeader)
-	if err := checkBinText("title", title, maxTitleBytes); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := checkBinText("description", description, maxDescriptionBytes); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	hash, err := s.store.CreateBin(passwordHash, title, description)
-	if err != nil {
-		log.Printf("create bin: %v", err)
-		http.Error(w, "could not create bin", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusCreated)
-	io.WriteString(w, "/"+hash+"/")
 }
 
 // requireKey is the guard every key-checked request runs first: a blocked address is refused

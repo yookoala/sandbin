@@ -31,59 +31,53 @@ func newTestServer(t *testing.T, apiKey string) *server {
 	return &server{store: store, apiKey: []byte(apiKey)}
 }
 
-// createTestBin POSTs a new bin and returns its "/abc1234/" path.
+// createTestBin POSTs a new bin to /api/bins and returns its "/abc1234/" path.
 func createTestBin(t *testing.T, h http.Handler, apiKey string) string {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req.Header.Set("X-API-Key", apiKey)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("POST / = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
-	}
-	body := rec.Body.String()
-	if !regexp.MustCompile(`^/[0-9a-f]{8}/$`).MatchString(body) {
-		t.Fatalf("POST / body %q is not a bin path", body)
-	}
-	return body
+	return createdBinPath(t, postAPIBins(t, h, "", apiKey, ""))
 }
 
 // createTestBinWithPassword POSTs a password protected bin and returns its path.
 func createTestBinWithPassword(t *testing.T, h http.Handler, password string) string {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req.Header.Set("X-API-Key", "test-key")
-	req.Header.Set("X-Bin-Password", password)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("POST with a bin password = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
-	}
-	return rec.Body.String()
+	body := createBodyJSON(t, "", "", password)
+	return createdBinPath(t, postAPIBins(t, h, "", "test-key", body))
 }
 
-// createTestBinWithMetadata POSTs a bin carrying the two metadata headers and returns its
-// "/abc1234/" path. An empty argument sends no header at all, which is a bin without metadata.
+// createTestBinWithMetadata POSTs a bin carrying the two metadata fields and returns its
+// "/abc1234/" path. An empty argument sends no field at all, which is a bin without metadata.
 func createTestBinWithMetadata(t *testing.T, h http.Handler, apiKey, title, description string) string {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req.Header.Set("X-API-Key", apiKey)
-	if title != "" {
-		req.Header.Set("X-Bin-Title", title)
-	}
-	if description != "" {
-		req.Header.Set("X-Bin-Description", description)
-	}
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	body := createBodyJSON(t, title, description, "")
+	return createdBinPath(t, postAPIBins(t, h, "", apiKey, body))
+}
+
+// createdBinPath reads a POST /api/bins answer and returns the bin path its url names.
+func createdBinPath(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("POST with bin metadata = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+		t.Fatalf("POST /api/bins = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
 	}
-	body := rec.Body.String()
-	if !regexp.MustCompile(`^/[0-9a-f]{8}/$`).MatchString(body) {
-		t.Fatalf("POST with bin metadata body %q is not a bin path", body)
+	url := createdBin(t, rec).URL
+	if !regexp.MustCompile(`^/[0-9a-f]{8}/$`).MatchString(url) {
+		t.Fatalf("POST /api/bins body %q names no bin path", rec.Body.String())
 	}
-	return body
+	return url
+}
+
+// createBodyJSON is the body a create carries: only the fields the caller named are in it, so
+// an empty argument stays an absent field, and every value travels JSON-escaped.
+func createBodyJSON(t *testing.T, title, description, password string) string {
+	t.Helper()
+	raw, err := json.Marshal(struct {
+		Title       string `json:"title,omitempty"`
+		Description string `json:"description,omitempty"`
+		Password    string `json:"password,omitempty"`
+	}{title, description, password})
+	if err != nil {
+		t.Fatalf("marshal the create body: %v", err)
+	}
+	return string(raw)
 }
 
 // put writes a file with the API key and returns the recorder.
@@ -823,6 +817,32 @@ func TestMethodNotAllowed(t *testing.T) {
 	}
 }
 
+// TestRootPostIsGone is the retired spelling of create: POST / makes no bin any more, it answers
+// the plain 405 a known path gives a method it does not take, and it makes and charges nothing.
+func TestRootPostIsGone(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	const addr = "198.51.100.24:1234"
+	before := storedBinCount(t, s)
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"title":"no bin here"}`))
+	req.RemoteAddr = addr
+	req.Header.Set("X-API-Key", "test-key")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST / = %d, want %d; body %q", rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "method not allowed\n" {
+		t.Errorf("POST / body = %q, want the method not allowed message", got)
+	}
+	if _, blocked := s.store.IsBlocked("198.51.100.24", time.Now()); blocked {
+		t.Errorf("POST / charged 198.51.100.24, want a 405 that never reaches the key")
+	}
+	if after := storedBinCount(t, s); after != before {
+		t.Errorf("bins after POST / = %d, want the same %d as before", after, before)
+	}
+}
+
 func TestOversizeBody(t *testing.T) {
 	h := newTestServer(t, "test-key")
 	base := createTestBin(t, h, "test-key")
@@ -913,15 +933,14 @@ func TestIndexHTMLWinsOverListing(t *testing.T) {
 func TestBinPassword(t *testing.T) {
 	h := newTestServer(t, "test-key")
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/bins", strings.NewReader(`{"password":"sesame"}`))
 	req.Header.Set("X-API-Key", "test-key")
-	req.Header.Set("X-Bin-Password", "sesame")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("POST with a bin password = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+		t.Fatalf("POST /api/bins with a bin password = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
 	}
-	base := rec.Body.String()
+	base := createdBin(t, rec).URL
 
 	rec = get(t, h, base+"page.html")
 	if rec.Code != http.StatusUnauthorized {
@@ -990,22 +1009,20 @@ func TestBinPassword(t *testing.T) {
 func TestBinPasswordTooLongIsRejected(t *testing.T) {
 	h := newTestServer(t, "test-key")
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/bins", strings.NewReader(`{"password":"`+strings.Repeat("p", 100)+`"}`))
 	req.Header.Set("X-API-Key", "test-key")
-	req.Header.Set("X-Bin-Password", strings.Repeat("p", 100))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("POST with a 100 byte bin password = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+		t.Fatalf("POST /api/bins with a 100 byte bin password = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/", nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/bins", strings.NewReader(`{"password":"`+strings.Repeat("p", 72)+`"}`))
 	req.Header.Set("X-API-Key", "test-key")
-	req.Header.Set("X-Bin-Password", strings.Repeat("p", 72))
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
-		t.Errorf("POST with a 72 byte bin password = %d, want %d", rec.Code, http.StatusCreated)
+		t.Errorf("POST /api/bins with a 72 byte bin password = %d, want %d", rec.Code, http.StatusCreated)
 	}
 }
 
@@ -1121,10 +1138,11 @@ func TestPathTraversal(t *testing.T) {
 	}
 }
 
-// postFrom POSTs "/" from a fixed socket address; an empty apiKey omits the header.
+// postFrom POSTs /api/bins with no body — the empty request — from a fixed socket address; an
+// empty apiKey omits the header.
 func postFrom(t *testing.T, h http.Handler, remoteAddr, apiKey string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/bins", nil)
 	req.RemoteAddr = remoteAddr
 	if apiKey != "" {
 		req.Header.Set("X-API-Key", apiKey)
@@ -1330,7 +1348,7 @@ func TestBlockedAddressKeepsGetService(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create bin = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
 	}
-	base := rec.Body.String()
+	base := createdBin(t, rec).URL
 	if rec := putFrom(t, s, addr, base+"notes.md", "test-key", "# Notes"); rec.Code != http.StatusCreated {
 		t.Fatalf("PUT notes.md = %d, want %d", rec.Code, http.StatusCreated)
 	}
@@ -1433,7 +1451,7 @@ func TestBlockSurvivesRestart(t *testing.T) {
 func TestForgedXFFFromPublicAddress(t *testing.T) {
 	s := newTestServer(t, "test-key")
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/bins", nil)
 	req.RemoteAddr = "8.8.8.8:1234"
 	req.Header.Set("X-Forwarded-For", "198.51.100.4")
 	req.Header.Set("X-API-Key", "wrong")
@@ -1450,7 +1468,7 @@ func TestForgedXFFFromPublicAddress(t *testing.T) {
 	}
 
 	// Rotating forged headers cannot buy a fresh identity.
-	req = httptest.NewRequest(http.MethodPost, "/", nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/bins", nil)
 	req.RemoteAddr = "8.8.8.8:1234"
 	req.Header.Set("X-Forwarded-For", "198.51.100.99")
 	req.Header.Set("X-API-Key", "test-key")
@@ -1470,7 +1488,7 @@ func TestForgedXFFFromPublicAddress(t *testing.T) {
 func TestLocalProxyXFFChargesRightmost(t *testing.T) {
 	s := newTestServer(t, "test-key")
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/bins", nil)
 	req.RemoteAddr = "127.0.0.1:1234"
 	req.Header.Set("X-Forwarded-For", "203.0.113.7, 198.51.100.4")
 	req.Header.Set("X-API-Key", "wrong")
@@ -1506,7 +1524,7 @@ func TestTrustedProxyChargesHeaderAddress(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	s.trustedProxies = proxies
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/bins", nil)
 	req.RemoteAddr = "198.51.100.9:43210" // a socket inside the trusted range
 	req.Header.Set("X-Forwarded-For", "203.0.113.9")
 	req.Header.Set("X-API-Key", "wrong")
@@ -1523,7 +1541,7 @@ func TestTrustedProxyChargesHeaderAddress(t *testing.T) {
 	}
 
 	// The blocked client address is refused even behind the proxy, and hammering escalates.
-	req = httptest.NewRequest(http.MethodPost, "/", nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/bins", nil)
 	req.RemoteAddr = "198.51.100.9:43210"
 	req.Header.Set("X-Forwarded-For", "203.0.113.9")
 	req.Header.Set("X-API-Key", "test-key")
@@ -1547,7 +1565,7 @@ func TestTrustedProxyChargesHeaderAddress(t *testing.T) {
 func TestUntrustedPublicSocketChargesSocket(t *testing.T) {
 	s := newTestServer(t, "test-key") // no trusted proxies configured at all
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/bins", nil)
 	req.RemoteAddr = "198.51.100.9:43210"
 	req.Header.Set("X-Forwarded-For", "203.0.113.9")
 	req.Header.Set("X-API-Key", "wrong")
@@ -1564,7 +1582,7 @@ func TestUntrustedPublicSocketChargesSocket(t *testing.T) {
 	}
 
 	// Rotating the header cannot buy the socket a fresh identity.
-	req = httptest.NewRequest(http.MethodPost, "/", nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/bins", nil)
 	req.RemoteAddr = "198.51.100.9:43210"
 	req.Header.Set("X-Forwarded-For", "203.0.113.99")
 	req.Header.Set("X-API-Key", "test-key")
@@ -1631,12 +1649,7 @@ func TestPostRefusesBadMetadata(t *testing.T) {
 		{"a\x7fb", "", "title may not contain control characters\n"},
 		{"fine title", "a\nb", "description may not contain control characters\n"},
 	} {
-		req := httptest.NewRequest(http.MethodPost, "/", nil)
-		req.Header.Set("X-API-Key", "test-key")
-		req.Header.Set("X-Bin-Title", bad.title)
-		req.Header.Set("X-Bin-Description", bad.description)
-		rec := httptest.NewRecorder()
-		s.ServeHTTP(rec, req)
+		rec := postAPIBins(t, s, "", "test-key", createBodyJSON(t, bad.title, bad.description, ""))
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("POST with title %q / description %q = %d, want %d; body %q",
 				bad.title, bad.description, rec.Code, http.StatusBadRequest, rec.Body.String())

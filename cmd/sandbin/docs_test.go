@@ -732,7 +732,7 @@ func TestDocsRoutesDoNotShadowBins(t *testing.T) {
 		t.Errorf("GET /docs/ is not the hub with a bin in place:\n%s", rec.Body.String())
 	}
 	if base2 := createTestBin(t, h, "test-key"); base2 == "" {
-		t.Error("POST / stopped creating bins")
+		t.Error("POST /api/bins stopped creating bins")
 	}
 }
 

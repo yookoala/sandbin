@@ -2,16 +2,25 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"log"
 	"net/http"
+	"strings"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
+// maxJSONBodyBytes caps every JSON body on /api, which is a much smaller shape than the
+// 1 MiB a file PUT may carry.
+const maxJSONBodyBytes = 64 << 10
+
 // apiRoutes dispatches everything under /api. "api" is no eight-hex hash, so the prefix can
-// never name or shadow a bin, same reasoning as the static routes below it. The skeleton
-// answers POST /api/key and GET|HEAD /api/health today; /api/bins is the name Tasks 3–7 fill
-// in, so that path is known but answers no method yet. A spelling the dispatch does not name
-// — trailing-slash variants included — is the plain 404 unknown bin, and a known path on a
-// wrong method is the plain 405.
+// never name or shadow a bin, same reasoning as the static routes below it. It answers POST
+// /api/key, GET|HEAD /api/health and POST /api/bins today; GET and DELETE on /api/bins are the
+// verbs Tasks 5 and 6 add, so they answer the plain 405 for now. A spelling the dispatch does
+// not name — trailing-slash variants included — is the plain 404 unknown bin, and a known path
+// on a wrong method is the plain 405.
 func (s *server) apiRoutes(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/api/key":
@@ -27,7 +36,11 @@ func (s *server) apiRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 		s.apiHealth(w, r)
 	case "/api/bins":
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.apiCreateBin(w, r)
 	default:
 		http.Error(w, "unknown bin", http.StatusNotFound)
 	}
@@ -68,4 +81,160 @@ func writeJSON(w http.ResponseWriter, status int, v any) error {
 	w.WriteHeader(status)
 	_, err = w.Write(append(out, '\n'))
 	return err
+}
+
+// binRequest is the JSON body a bin write carries. Every field stays raw so an absent one
+// remains distinguishable from one given as empty (fieldValue), and DisallowUnknownFields means
+// a name this API does not have fails the decode instead of being ignored.
+type binRequest struct {
+	Title       json.RawMessage `json:"title"`
+	Description json.RawMessage `json:"description"`
+	Password    json.RawMessage `json:"password"`
+}
+
+// fieldValue reads one raw field: absent (nil) is ("", false); an explicit null or "" is
+// ("", true), which is "given as empty"; a JSON string is its value. Create treats !given and
+// given-empty alike as empty; a patch tells them apart, leave versus clear.
+func fieldValue(raw json.RawMessage) (value string, given bool) {
+	if raw == nil {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", true
+	}
+	return s, true
+}
+
+// fieldIsJSONText reports whether a raw field carries a value this API reads: nothing at all,
+// null, or a JSON string. A number, an object or an array is a malformed request, never a value
+// to quietly treat as empty — a mistyped password must not make an open bin.
+func fieldIsJSONText(raw json.RawMessage) bool {
+	if raw == nil {
+		return true
+	}
+	var s string
+	return json.Unmarshal(raw, &s) == nil
+}
+
+// decodeBinRequest reads the capped JSON body of a bin write. No body is the same request as
+// {}, which is how the decoder reports it too: an empty stream is EOF. A field name this API
+// does not have is the loud refusal, and so is anything that is not a JSON object, or a field
+// that is not null or a string. ok says whether the handler may go on; when it is false the
+// refusal is already written.
+func decodeBinRequest(w http.ResponseWriter, r *http.Request) (binRequest, bool) {
+	var req binRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		if errors.Is(err, io.EOF) {
+			return binRequest{}, true
+		}
+		if strings.Contains(err.Error(), "unknown field") {
+			http.Error(w, "unrecognized field in the request", http.StatusBadRequest)
+			return binRequest{}, false
+		}
+		http.Error(w, "could not read the request", http.StatusBadRequest)
+		return binRequest{}, false
+	}
+	for _, raw := range []json.RawMessage{req.Title, req.Description, req.Password} {
+		if !fieldIsJSONText(raw) {
+			http.Error(w, "could not read the request", http.StatusBadRequest)
+			return binRequest{}, false
+		}
+	}
+	return req, true
+}
+
+// binJSON is the bin object every JSON answer about a bin carries: its hash, the path it lives
+// under, its metadata, whether a password guards it, and when the store made it. Neither the
+// password nor its hash is ever in it.
+type binJSON struct {
+	Bin         string `json:"bin"`
+	URL         string `json:"url"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	HasPassword bool   `json:"has_password"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// binToJSON spells one bin row as that object.
+func binToJSON(b Bin) binJSON {
+	return binJSON{
+		Bin:         b.Hash,
+		URL:         "/" + b.Hash + "/",
+		Title:       b.Title,
+		Description: b.Description,
+		HasPassword: b.PasswordHash != "",
+		CreatedAt:   b.CreatedAt,
+	}
+}
+
+// apiCreateBin makes a bin from the JSON body and answers 201 with the bin object and its
+// Location. Its guard is requireKey, so a wrong key through it charges exactly as the retired
+// POST / did. An absent field and one given as empty both make an empty value, which is what a
+// bin with nothing to say holds; a password longer than bcrypt can hold is refused before
+// anything is written.
+func (s *server) apiCreateBin(w http.ResponseWriter, r *http.Request) {
+	if !s.requireKey(w, r) {
+		return
+	}
+
+	req, ok := decodeBinRequest(w, r)
+	if !ok {
+		return
+	}
+
+	// An absent field and one given as empty both make the empty value a bin with nothing to
+	// say holds.
+	title, _ := fieldValue(req.Title)
+	description, _ := fieldValue(req.Description)
+	if err := checkBinText("title", title, maxTitleBytes); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := checkBinText("description", description, maxDescriptionBytes); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// An empty password, given or not, leaves the bin open.
+	password, _ := fieldValue(req.Password)
+	if len(password) > 72 {
+		http.Error(w, "bin password too long", http.StatusBadRequest)
+		return
+	}
+
+	passwordHash := ""
+	if password != "" {
+		hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			log.Printf("hash bin password: %v", err)
+			http.Error(w, "could not set the bin password", http.StatusInternalServerError)
+			return
+		}
+		passwordHash = string(hashed)
+	}
+
+	hash, err := s.store.CreateBin(passwordHash, title, description)
+	if err != nil {
+		log.Printf("create bin: %v", err)
+		http.Error(w, "could not create bin", http.StatusInternalServerError)
+		return
+	}
+
+	// created_at is the store's own, so the answer reads the row back instead of guessing it.
+	bin, ok, err := s.store.GetBin(hash)
+	if err != nil || !ok {
+		log.Printf("get bin %q: %v", hash, err)
+		http.Error(w, "could not create bin", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Location", "/api/bins/"+hash)
+	if err := writeJSON(w, http.StatusCreated, binToJSON(bin)); err != nil {
+		log.Printf("encode the answer of bin %q: %v", hash, err)
+		http.Error(w, "could not answer the bin", http.StatusInternalServerError)
+	}
 }
