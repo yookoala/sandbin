@@ -49,8 +49,9 @@ test-only.
   everything plan 0030 pinned about `/api/bins…`, `/api/key`, `/api/health`, `/openapi.json`
   stands.
 - Full URLs are `frontBase(r) + path` — never hardcoded. `httptest.NewRequest` defaults
-  `RemoteAddr` to loopback, so trusted-`X-Forwarded-Host`/`X-Forwarded-Proto` contexts are test
-  idioms already used in `handlers_test.go`'s front-base tables. Remember `httptest.NewRecorder`
+  `RemoteAddr` to `192.0.2.1:1234` (TEST-NET, untrusted), so trusted-`X-Forwarded-Host`/
+  `X-Forwarded-Proto` contexts must pin `RemoteAddr` to a loopback socket — the idiom already
+  used in `handlers_test.go`'s front-base tables (ruling P3). Remember `httptest.NewRecorder`
   keeps HEAD bodies (only the real server strips them): pin HEAD status and headers in unit
   tests; the empty-body fact is proven in the Task 4 scratch walk with curl.
 - `cmd/sandbin/openapi.json` stays regenerable: `make openapi` reproduces it byte-for-byte
