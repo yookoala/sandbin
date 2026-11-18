@@ -154,7 +154,7 @@ func TestAPIUnknownShapes(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	hash := strings.Trim(createTestBin(t, s, "test-key"), "/")
 
-	for _, p := range []string{"/api", "/api/", "/api/bins/", "/api/bins/" + hash + "/", "/api/keyextra"} {
+	for _, p := range []string{"/api/", "/api/bins/", "/api/bins/" + hash + "/", "/api/keyextra"} {
 		rec := get(t, s, p)
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("GET %s = %d, want %d; body %q", p, rec.Code, http.StatusNotFound, rec.Body.String())
@@ -1716,6 +1716,7 @@ func TestAPIRouteTableIsPublishedSurface(t *testing.T) {
 	mux, methods := s.newAPIRoutes()
 
 	want := map[string][]string{
+		"/api":             {http.MethodGet, http.MethodHead},
 		"/api/key":         {http.MethodPost},
 		"/api/health":      {http.MethodGet, http.MethodHead},
 		"/api/bins":        {http.MethodGet, http.MethodPost},

@@ -171,10 +171,10 @@ func TestOpenAPISpecMatchesRouteTable(t *testing.T) {
 }
 
 // TestOpenAPISecurityMatchesWrapper pins the document's security story to the code's: the
-// five withAPIKey-wrapped operations carry exactly the apiKey requirement, the three
-// key-free operations (health GET+HEAD and the document itself) carry none, inspect carries
-// the optional-Basic pair the bin gate really is, and the two schemes are spelled exactly as
-// the decision doc pins them.
+// five withAPIKey-wrapped operations carry exactly the apiKey requirement, the five key-free
+// operations (the index GET+HEAD, health GET+HEAD and the document itself) carry none,
+// inspect carries the optional-Basic pair the bin gate really is, and the two schemes are
+// spelled exactly as the decision doc pins them.
 func TestOpenAPISecurityMatchesWrapper(t *testing.T) {
 	doc := openapiSpec(t)
 
@@ -201,6 +201,8 @@ func TestOpenAPISecurityMatchesWrapper(t *testing.T) {
 	}
 
 	keyFree := []struct{ path, method string }{
+		{"/api", http.MethodGet},
+		{"/api", http.MethodHead},
 		{"/api/health", http.MethodGet},
 		{"/api/health", http.MethodHead},
 		{"/openapi.json", http.MethodGet},

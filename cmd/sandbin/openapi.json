@@ -14,6 +14,38 @@
     }
   },
   "paths": {
+    "/api": {
+      "get": {
+        "summary": "Index of this API: every published endpoint in one JSON body.",
+        "description": "Answers 200 application/json with the server's version stamp, every published endpoint with a full URL built from the request's own host and scheme and a description for each method, and an openapi sibling pointing at this document. Needs no API key, touches no store and charges nothing, so it answers even while the requesting address is blocked.",
+        "operationId": "apiIndex",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The API index: the server's version stamp, its published endpoints with a description per method and a full URL built from the request's own context, and an openapi pointer to this document."
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      },
+      "head": {
+        "summary": "Index of this API: every published endpoint in one JSON body.",
+        "description": "Answers 200 with no body. Needs no API key, touches no store and charges nothing, so it answers even while the requesting address is blocked.",
+        "operationId": "headAPIIndex",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": []
+      }
+    },
     "/api/bins": {
       "get": {
         "summary": "List this instance's bins, newest first.",

@@ -1,6 +1,6 @@
 # Post-generation corrections for cmd/sandbin/openapi.json (plan 0030, ruling R4).
 # `make openapi` pipes apispec v0.5.11 through this filter because the generator
-# verifiably cannot express these fourteen things itself:
+# verifiably cannot express these seventeen things itself:
 #
 # 1. Drop the document-level `security` block. It was an inheritance device, never
 #    sanctioned by docs/decisions/0030-api-servemux-openapi.md; security belongs on
@@ -57,6 +57,16 @@
 #     config Schema type rejects a boolean additionalProperties outright (the yaml load
 #     fails), so the flag that mirrors decodeBinRequest's DisallowUnknownFields — an
 #     unrecognized field really is a 400 — can only land in this filter.
+# 15. Spell both /api index operations with explicit `security: []` — the index registers a
+#     bare handler, exactly correction 2's family (docs/decisions/0031-api-index-endpoint.md).
+# 16. Replace each /api index operation's phantom `default` response with the pinned 200 —
+#     correction 8's reason again: apiIndex is outside the response-pattern scan. The GET 200
+#     carries a placeholder `application/json` `type: object` schema on purpose: plan 0031's
+#     second task promotes it to a real component schema and adds the live-body honesty pin,
+#     so this clause is deliberately transient. The HEAD 200 carries no content: HEAD answers
+#     no body.
+# 17. Name the two index operations in the correction 10 style: client-facing summaries and
+#     descriptions, and the operationIds apiIndex and headAPIIndex.
 
 def op($id; $summary; $description):
   .operationId = $id | .summary = $summary | .description = $description;
@@ -72,6 +82,8 @@ def retryAfter: {
 };
 
 del(.security)
+| .paths["/api"].get.security = []
+| .paths["/api"].head.security = []
 | .paths["/api/health"].get.security = []
 | .paths["/api/health"].head.security = []
 | .paths["/openapi.json"].get.security = []
@@ -93,6 +105,24 @@ del(.security)
       }
     }
   }
+| .paths["/api"].get.responses = {
+    "200": {
+      "description": "OK",
+      "content": {
+        "application/json": {
+          "schema": {
+            "type": "object",
+            "description": "The API index: the server's version stamp, its published endpoints with a description per method and a full URL built from the request's own context, and an openapi pointer to this document."
+          }
+        }
+      }
+    }
+  }
+| .paths["/api"].head.responses = {
+    "200": {
+      "description": "OK"
+    }
+  }
 | .components.schemas.archiveAnswer = {
     "type": "object",
     "description": "archiveAnswer is the JSON a successful archive upload answers: the store's own created and replaced counts for the extracted entries.",
@@ -112,8 +142,16 @@ del(.security)
 | walk(if type == "object" and has("Extensions") and .Extensions == null
        then del(.Extensions) else . end)
 
-# Correction 10: the nine operations, in the document's own path order. Each summary is
-# one client-facing line; each description states the contract the handler keeps.
+# Corrections 10 and 17: the eleven operations, in the document's own path order. Each summary
+# is one client-facing line; each description states the contract the handler keeps.
+| .paths["/api"].get |= op(
+    "apiIndex";
+    "Index of this API: every published endpoint in one JSON body.";
+    "Answers 200 application/json with the server's version stamp, every published endpoint with a full URL built from the request's own host and scheme and a description for each method, and an openapi sibling pointing at this document. Needs no API key, touches no store and charges nothing, so it answers even while the requesting address is blocked.")
+| .paths["/api"].head |= op(
+    "headAPIIndex";
+    "Index of this API: every published endpoint in one JSON body.";
+    "Answers 200 with no body. Needs no API key, touches no store and charges nothing, so it answers even while the requesting address is blocked.")
 | .paths["/api/bins"].post |= op(
     "createBin";
     "Create a bin from a JSON body.";
