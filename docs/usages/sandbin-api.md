@@ -42,8 +42,8 @@ path is a `400`.
 rejected path or metadata value; `401` a missing or wrong bin password; `403` a bad API key;
 `404` an unknown bin or path; `405` a method the route does not answer; `413` an oversized
 body; `429` an address blocked for bad API keys. `HEAD` is a `405` everywhere except
-`/api/health` and `/robots.txt`; to read a `GET`'s headers instead, use `curl -s -D - -o
-/dev/null <url>`.
+`/api/health`, `/api`, and `/robots.txt`; to read a `GET`'s headers instead, use `curl -s -D -
+-o /dev/null <url>`.
 
 The examples below chain: first create a public bin — its hash comes out as `abc1234` — and a
 protected one — `def5678`; every later example works against those, apart from the bin
@@ -54,6 +54,35 @@ protected one — `def5678`; every later example works against those, apart from
 The root answers `GET` alone: the branded landing page, which is not part of this API
 ([the serve page](sandbin-serve.md) covers it). Creating a bin lives at `POST /api/bins`
 below, and every method the root does not answer — `POST` included — is a `405`.
+
+## `/api` — the API index
+
+The bare route answers `GET` and `HEAD`; `POST`, `PUT`, `PATCH` and `DELETE` against it are
+the plain `405` `method not allowed`, and the trailing-slash spelling `/api/` is the plain
+`404` `unknown bin` whatever the key.
+
+`GET` answers `200` `application/json` with the live map of this instance's published JSON
+API: every published endpoint, each with its methods and a one-line description; an
+`openapi` sibling pointing at the machine-readable `/openapi.json` document and a `version`
+stamp naming the server answering it; `HEAD` answers the same `200` with no body. The index
+needs no API key, charges nothing, and answers even while the requesting address is blocked.
+Every `url` in it is a full URL built from the request's own host and scheme — a direct read
+names this server's own address, a read through a trusted proxy names the public address that
+proxy fronts — so every entry reads as a URL its reader can fetch as it stands. The per-bin
+entry keeps its hash slot as the literal `{hash}` template, the same spelling the OpenAPI
+document uses. The map is built from the same route table the dispatch itself runs on, so it
+can never disagree with the server, and it does not list itself: the index *is* `/api`.
+
+```sh
+curl -s {{ .Instance.URL }}/api
+```
+
+It answers the index — here its opening, the surface's first and last endpoint rows with the
+ones between them elided, and the document pointer, the elided parts marked with `…`:
+
+```text
+{"version":"v0.4.4","endpoints":[{"url":"{{ .Instance.URL }}/api/key","methods":[ … ]}, … ,{"url":"{{ .Instance.URL }}/api/bins/{hash}","methods":[ … ]}],"openapi":{"url":"{{ .Instance.URL }}/openapi.json", … }}
+```
 
 ## `/api/bins` — create and list bins
 
@@ -299,9 +328,9 @@ The document route answers `GET` alone; `HEAD` and every other method — `POST`
 are the plain `405`, and the trailing-slash spelling `/openapi.json/` is the plain `404`.
 
 Answers `200` `application/json` with the OpenAPI 3.1 document: the machine-readable
-description of the `/api` JSON surface — `/api/bins`, `/api/bins/{hash}`, `/api/key`,
-`/api/health`, and this route itself. It needs no API key and charges nothing, so it
-answers even while its address is blocked. The document is generated from the server's own
+description of the `/api` JSON surface — the `/api` index, `/api/bins`, `/api/bins/{hash}`,
+`/api/key`, `/api/health`, and this route itself. It needs no API key and charges nothing, so
+it answers even while its address is blocked. The document is generated from the server's own
 route table and committed with the source; a self-builder regenerates it with `make openapi`.
 
 Bin-content paths — every path under `/{hash}/` — are not in the document: a path of
@@ -324,6 +353,7 @@ own order, the elided parts marked with `…`:
     …
   },
   "paths": {
+    "/api": { … },
     "/api/bins": { … },
     "/api/bins/{hash}": { … },
     "/api/health": { … },

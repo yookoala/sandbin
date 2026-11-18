@@ -417,6 +417,7 @@ func TestDocsAPIPageIsSwaggerStyle(t *testing.T) {
 	for _, want := range []string{
 		"<h2 id=\"conventions\">Conventions</h2>",
 		"<code>export API_KEY=your-key</code>",
+		"id=\"" + githubSlugForTest("/api — the API index") + "\"",
 		"id=\"" + githubSlugForTest("/api/bins — create and list bins") + "\"",
 		"id=\"" + githubSlugForTest("POST — create a bin") + "\"",
 		"id=\"" + githubSlugForTest("GET — list bins") + "\"",
@@ -444,6 +445,7 @@ func TestDocsAPIPageIsSwaggerStyle(t *testing.T) {
 	h2texts := []string{
 		"Conventions",
 		"/ — the instance root",
+		"/api — the API index",
 		"/api/bins — create and list bins",
 		"/api/bins/{hash} — inspect, update, delete",
 		"/api/key — check the API key",
@@ -480,6 +482,25 @@ func TestDocsOpenAPIDocSection(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the API page's /openapi.json section misses %q in:\n%s", want, body[:min(len(body), 400)])
+		}
+	}
+}
+
+// TestDocsAPIIndexSection pins the /api index section's content points on the API page: the new
+// h2 itself (its placement is pinned by the swagger-style h2 order), the sentence that the index
+// needs no key and charges nothing, the sentence that every entry's url is built from the
+// request's own host and scheme, and the sentence pointing at the machine-readable document.
+func TestDocsAPIIndexSection(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	body := get(t, h, "/docs/sandbin-api.html").Body.String()
+	for _, want := range []string{
+		"id=\"" + githubSlugForTest("/api — the API index") + "\"",
+		"needs no API key, charges nothing, and answers even while the requesting address is blocked",
+		"is a full URL built from the request's own host and scheme",
+		"<code>openapi</code> sibling pointing at the machine-readable <code>/openapi.json</code> document",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the API page's /api index section misses %q in:\n%s", want, body[:min(len(body), 400)])
 		}
 	}
 }
