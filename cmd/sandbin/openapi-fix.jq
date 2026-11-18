@@ -66,8 +66,9 @@
 #     same writeJSON call to the HEAD 200 — but HEAD answers no body (docs/decisions/0031-api-index-
 #     endpoint.md), and apispec cannot know a handler's marshaled body is not written on one of the
 #     registrations it shares.
-# 17. Name the two index operations in the correction 10 style: client-facing summaries and
-#     descriptions, and the operationIds apiIndex and headAPIIndex.
+# 17. Name the two index operations in the correction 10 style: client-facing summaries — the
+#     GET's names the JSON body, the HEAD's says it answers headers only — descriptions, and
+#     the operationIds apiIndex and headAPIIndex.
 # 18. Write `additionalProperties: false` into the four apiIndex components (apiIndexDoc,
 #     apiIndexEndpoint, apiIndexMethod, apiIndexLink): apispec emits no such flag for a generated
 #     component, and the config cannot demand it — a `schema: additionalProperties` entry is read
@@ -147,7 +148,7 @@ del(.security)
     "Answers 200 application/json with the server's version stamp, every published endpoint with a full URL built from the request's own host and scheme and a description for each method, and an openapi sibling pointing at this document. Needs no API key, touches no store and charges nothing, so it answers even while the requesting address is blocked.")
 | .paths["/api"].head |= op(
     "headAPIIndex";
-    "Index of this API: every published endpoint in one JSON body.";
+    "Index of this API — headers only.";
     "Answers 200 with no body. Needs no API key, touches no store and charges nothing, so it answers even while the requesting address is blocked.")
 | .paths["/api/bins"].post |= op(
     "createBin";

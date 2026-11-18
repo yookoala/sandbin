@@ -34,7 +34,7 @@
         "security": []
       },
       "head": {
-        "summary": "Index of this API: every published endpoint in one JSON body.",
+        "summary": "Index of this API — headers only.",
         "description": "Answers 200 with no body. Needs no API key, touches no store and charges nothing, so it answers even while the requesting address is blocked.",
         "operationId": "headAPIIndex",
         "responses": {
