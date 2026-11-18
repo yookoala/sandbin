@@ -136,3 +136,23 @@ vendored multi-megabyte JS bundle conflicts with the self-contained culture; and
 a browser "Try it" panel charges wrong-key lockout steps against its visitor. If
 a tester is ever wanted, the repo-shaped form is a hand-rolled page over the
 six JSON endpoints, as its own decision.
+
+## Addendum — executed corrections (recorded 2026-11-18, during plan 0031)
+
+What execution found out about the design above, kept here because the plan and reviews
+argued from it:
+
+- `apispec` v0.5.11 reached the index DTOs after all: joining `apiIndex` to the
+  `writeJSON` `responsePattern` config made the generator emit the four components
+  (`apiIndexDoc`, `apiIndexEndpoint`, `apiIndexMethod`, `apiIndexLink`) with required lists
+  that match the un-`omitempty` json tags exactly, so `GET /api`'s 200 `$ref`s a generated
+  schema. Only `additionalProperties: false` still needs the jq filter — that config family
+  is verified inert on v0.5.11 (the RawMessage precedent).
+- A HEAD operation registered through a handler that writes bodies gets apispec's body
+  schema misattributed onto its 200; filter correction 16 strips it from `HEAD /api`, and a
+  pin in `TestOpenAPIBodySchemasMatchLiveAnswers` now fails if the committed document ever
+  gives that 200 a content map again. The same pass gave `HEAD /api` its own summary
+  ("Index of this API — headers only.") because the generator copies the GET's.
+- `httptest.NewRequest`'s default socket is `192.0.2.1:1234` (TEST-NET, untrusted by
+  `frontBase`'s rule); tests exercising forwarded-host contexts must pin a loopback
+  `RemoteAddr`, as `handlers_test.go` already does (ruling P3).

@@ -1,9 +1,24 @@
 # The /api index endpoint — Implementation Plan
 
-Status: planned 2026-11-18. Spec: `docs/decisions/0031-api-index-endpoint.md` — the binding
-design, including the partner-approved index format, the owner-approved pin moves, and what
-was declined. Baseline HEAD `ed04371` (`cmd/sandbin` 253 tests, `cmd/sandbin-client` 111,
-`internal/frontpage` 17, `internal/robots` 2, `internal/version` 6, all five gates green).
+Status: implemented and closed 2026-11-18. Eleven commits, `5ada92c` (decision+plan)
+through `d701c43` (mock elision tidy): Tasks 1–4 at `f2c8035`, `9335434`, `b0e2484`,
+`a48b51c`, with the preflight plan corrections `332bec0` (rulings P1–P2) and `9334bea`
+(ruling P3), the decision-doc path-count correction `adbcc1d`, and the final polish wave
+`fee34fd`+`6308f4c`+`d701c43`. Spec: `docs/decisions/0031-api-index-endpoint.md` (including
+its execution addendum). Review outcome: every task passed an independent task-scoped review
+**first time** — Tasks 1, 2 and 3 each zero Critical/Important; the whole-branch review
+(`ed04371..a48b51c`) verdict "Ready to merge: Yes" with no Critical or Important findings and
+four Minors; the single polish wave closed the two recommended ones (HEAD's own summary in the
+document; a pin that the index HEAD answers headers only) plus the mock spacing, its scoped
+re-review verdict was all ADDRESSED with no new breakage. Controller rulings P1–P3 all
+honored; exactly the two owner-ruled pre-existing assertions moved (bare-`/api` 404 dropped
+from the unknown-shape loop; the route-table pin gained `/api: [GET HEAD]`), every other test
+change additive; final gates green at `d701c43` with `cmd/sandbin` 260, `cmd/sandbin-client`
+111, `internal/frontpage` 17, `internal/robots` 2, `internal/version` 6. Carried Minors parked
+with rulings in the SDD ledger (half-literal `openapi` sibling URL — drift caught by the
+golden; `writeJSON` post-200 path — inert; correction 16 silent-class now fenced by the new
+pin and the Makefile version assert; component descriptions carry Go source line wraps —
+house precedent; the headers-only pin's empty-`content`-map edge).
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
