@@ -405,6 +405,17 @@ func TestOpenAPIBodySchemasMatchLiveAnswers(t *testing.T) {
 	}
 	validateBodyAgainst(t, "index 200", indexDoc, rec.Body.Bytes())
 
+	// The HEAD side of the same endpoint: its 200 in the committed document carries no content
+	// map. The HEAD 200 must answer headers only, and filter correction 16 keeps it that way —
+	// this pin notices if a generated body schema ever lands back on it.
+	headResp := openapiOperation(t, doc, "/api", http.MethodHead).Responses.Value("200")
+	if headResp == nil || headResp.Value == nil {
+		t.Fatalf("the document names no 200 response for HEAD /api")
+	}
+	if len(headResp.Value.Content) != 0 {
+		t.Errorf("the document's HEAD /api 200 carries a content map of %d media types; the HEAD 200 must answer headers only — filter correction 16 keeps it that way", len(headResp.Value.Content))
+	}
+
 	// The three nested DTO levels, read through the component's own references — named
 	// components or resolved inline spellings, either way the document's own schemas.
 	endpoints := indexDoc.Properties["endpoints"]
