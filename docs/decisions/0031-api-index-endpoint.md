@@ -126,7 +126,7 @@ public hit renders `https://your.domain/…`.
 operationIds (`apiIndex`, `headAPIIndex`), and `GET /api`'s 200 carries a
 component schema describing the index body — the honesty pins then validate the
 live index body against the document itself. The cross-check equality test now
-pins five paths.
+pins six table keys — four endpoint paths, `/api` itself, and `/openapi.json`.
 
 ## Declined for now
 
