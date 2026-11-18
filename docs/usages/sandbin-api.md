@@ -81,7 +81,7 @@ It answers the index — here its opening, the surface's first and last endpoint
 ones between them elided, and the document pointer, the elided parts marked with `…`:
 
 ```text
-{"version":"v0.4.4","endpoints":[{"url":"{{ .Instance.URL }}/api/key","methods":[ … ]}, … ,{"url":"{{ .Instance.URL }}/api/bins/{hash}","methods":[ … ]}],"openapi":{"url":"{{ .Instance.URL }}/openapi.json", … }}
+{"version":"v0.4.4","endpoints":[{"url":"{{ .Instance.URL }}/api/key","methods":[ … ]}, …, {"url":"{{ .Instance.URL }}/api/bins/{hash}","methods":[ … ]}],"openapi":{"url":"{{ .Instance.URL }}/openapi.json", … }}
 ```
 
 ## `/api/bins` — create and list bins
