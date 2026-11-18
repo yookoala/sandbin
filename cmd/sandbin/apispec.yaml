@@ -119,7 +119,7 @@ framework:
       deref: true
       callerPkgPatterns:
         - github\.com/yookoala/sandbin/cmd/sandbin$
-      functionNameRegex: ^(apiHealth|apiCreateBin|apiListBins|apiInspectBin|apiPatchBin|apiDeleteBin)$
+      functionNameRegex: ^(apiHealth|apiCreateBin|apiListBins|apiInspectBin|apiPatchBin|apiDeleteBin|apiIndex)$
     - callRegex: ^WriteHeader$
       recvTypeRegex: ^net/http\.ResponseWriter$
       statusFromArg: true

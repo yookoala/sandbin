@@ -25,8 +25,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The API index: the server's version stamp, its published endpoints with a description per method and a full URL built from the request's own context, and an openapi pointer to this document."
+                  "$ref": "#/components/schemas/apiIndexDoc"
                 }
               }
             }
@@ -691,6 +690,84 @@
             "type": "string"
           }
         },
+        "additionalProperties": false
+      },
+      "apiIndexDoc": {
+        "type": "object",
+        "description": "apiIndexDoc is the GET /api answer: the stamped version, the endpoint rows enumerated from\nthe route table, and the openapi sibling pointing at the machine-readable contract.",
+        "properties": {
+          "endpoints": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/apiIndexEndpoint"
+            }
+          },
+          "openapi": {
+            "$ref": "#/components/schemas/apiIndexLink"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "endpoints",
+          "openapi"
+        ],
+        "additionalProperties": false
+      },
+      "apiIndexEndpoint": {
+        "type": "object",
+        "description": "apiIndexEndpoint is one row of the index: the URL as the visitor can fetch it — the literal\n{hash} spelling for the per-bin row, same as the OpenAPI document uses — and every method the\nroute table allows on that path, in the table's canonical order.",
+        "properties": {
+          "methods": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/apiIndexMethod"
+            }
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "methods"
+        ],
+        "additionalProperties": false
+      },
+      "apiIndexLink": {
+        "type": "object",
+        "description": "apiIndexLink is a pointer to a document: its full URL and one sentence about it.",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "description"
+        ],
+        "additionalProperties": false
+      },
+      "apiIndexMethod": {
+        "type": "object",
+        "description": "apiIndexMethod is one published method on one endpoint, with the decision doc's sentence for\nit.",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "method",
+          "description"
+        ],
         "additionalProperties": false
       },
       "binDetailJSON": {

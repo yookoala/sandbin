@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"go/parser"
 	"go/token"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -349,8 +350,9 @@ func TestOpenAPINeverCharges(t *testing.T) {
 
 // TestOpenAPIBodySchemasMatchLiveAnswers validates bodies the real server answered against
 // the committed document's schemas — create, inspect, list, the single-file PUT's stored row
-// (fileJSON, the document's own spelling of every listed file) and the archive PUT's counts
-// (the pinned archiveAnswer) — through kin-openapi's own schema validation.
+// (fileJSON, the document's own spelling of every listed file), the archive PUT's counts (the
+// pinned archiveAnswer) and the GET /api index (the named apiIndexDoc component, pinned as the
+// closed DTO the handler marshals) — through kin-openapi's own schema validation.
 func TestOpenAPIBodySchemasMatchLiveAnswers(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	doc := openapiSpec(t)
@@ -386,6 +388,59 @@ func TestOpenAPIBodySchemasMatchLiveAnswers(t *testing.T) {
 		t.Fatalf("PUT bundle.zip = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
 	}
 	validateBodyAgainst(t, "archive PUT 201", componentSchema(t, doc, "archiveAnswer"), rec.Body.Bytes())
+
+	// The index itself: a live GET /api — no key asked, the index charges nothing — must pass
+	// the document's own spelling of the index body. That spelling is the named component
+	// apiIndexDoc the 200 references: a placeholder object would accept any object-shaped body
+	// and pin nothing. And the component is the closed DTO the handler marshals — every field
+	// required (its json tags carry no omitempty), exactly the properties the DTO has, and
+	// additionalProperties: false at every object level, because the DTOs are closed.
+	rec = get(t, s, "/api")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	indexDoc := componentSchema(t, doc, "apiIndexDoc")
+	if responseJSONSchema(t, doc, "/api", http.MethodGet, "200") != indexDoc {
+		t.Errorf("the GET /api 200 schema is not the document's named component apiIndexDoc; the response must reference it")
+	}
+	validateBodyAgainst(t, "index 200", indexDoc, rec.Body.Bytes())
+
+	// The three nested DTO levels, read through the component's own references — named
+	// components or resolved inline spellings, either way the document's own schemas.
+	endpoints := indexDoc.Properties["endpoints"]
+	if endpoints == nil || endpoints.Value == nil || endpoints.Value.Items == nil || endpoints.Value.Items.Value == nil {
+		t.Fatalf("apiIndexDoc spells endpoints as no array of item objects")
+	}
+	methods := endpoints.Value.Items.Value.Properties["methods"]
+	if methods == nil || methods.Value == nil || methods.Value.Items == nil || methods.Value.Items.Value == nil {
+		t.Fatalf("apiIndexEndpoint spells methods as no array of item objects")
+	}
+	link := indexDoc.Properties["openapi"]
+	if link == nil || link.Value == nil {
+		t.Fatalf("apiIndexDoc names no openapi object")
+	}
+	for _, level := range []struct {
+		what       string
+		schema     *openapi3.Schema
+		properties []string
+	}{
+		{"apiIndexDoc", indexDoc, []string{"endpoints", "openapi", "version"}},
+		{"apiIndexEndpoint", endpoints.Value.Items.Value, []string{"methods", "url"}},
+		{"apiIndexMethod", methods.Value.Items.Value, []string{"description", "method"}},
+		{"apiIndexLink", link.Value, []string{"description", "url"}},
+	} {
+		gotProps := slices.Sorted(maps.Keys(level.schema.Properties))
+		if !slices.Equal(gotProps, level.properties) {
+			t.Errorf("properties of %s = %v, want %v: the handler marshals exactly those and nothing else", level.what, gotProps, level.properties)
+		}
+		gotRequired := slices.Sorted(slices.Values(level.schema.Required))
+		if !slices.Equal(gotRequired, level.properties) {
+			t.Errorf("required of %s = %v, want every property it has: no json tag of the DTO carries omitempty", level.what, gotRequired)
+		}
+		if ap := level.schema.AdditionalProperties; ap.Has == nil || *ap.Has || ap.Schema != nil {
+			t.Errorf("%s is not additionalProperties: false; the marshaled DTO is closed", level.what)
+		}
+	}
 }
 
 // TestKinOpenapiStaysTestOnly guards the dependency rule: kin-openapi enters the module to
