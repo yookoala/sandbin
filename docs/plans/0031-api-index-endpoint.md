@@ -116,9 +116,11 @@ test-only.
   - `apiRoutes` and `newAPIRoutes` doc comments updated to name the index as a published
     pattern (the "table names the request, then the mux answers" rule is unchanged).
 - Tests in `api_index_test.go` (all new; exact names pinned):
-  - `TestAPIIndexBodyIsThePublishedSurface` — golden body against a pinned direct-Host context
-    (expected JSON assembled in-test from the table + descriptions + `version.Value`, so it
-    reads as a contract view, not a byte-for-byte copy of the prose);
+  - `TestAPIIndexBodyIsThePublishedSurface` — golden body against a pinned direct-Host context:
+    the expected JSON embeds the paths, methods, full URLs and description strings as **literal
+    test-side copies of the decision doc's wording**; only `version.Value` interpolates. A
+    description rewording must consciously move this test along with the map — a golden assembled
+    from the map itself would pin nothing about wording.
   - `TestAPIIndexURLsFollowRequestContext` — trusted loopback socket with
     `X-Forwarded-Host`/`X-Forwarded-Proto: https` renders `https://…`, a Host failing
     `frontHostRE` renders `https://this.host/…`;
@@ -143,8 +145,9 @@ test-only.
 
 - [ ] **Step 1: Write the new tests** (`api_index_test.go` — they fail to compile until the
   interfaces exist) **and make the two ruled `api_test.go` moves.**
-- [ ] **Step 2: Run, verify failure** (`go test ./cmd/sandbin -run 'TestAPIIndex'` compile
-  failure; `TestAPIUnknownShapes` still red until the drop lands).
+- [ ] **Step 2: Run, verify failure** (`go test ./cmd/sandbin -run 'TestAPIIndex'` fails to
+  compile; `TestAPIRouteTableIsPublishedSurface` goes red against the `/api` entry added ahead
+  of the implementation — that is the behavioral RED for the registrations).
 - [ ] **Step 3: Implement** `api_index.go` + `api.go` registrations + doc comments.
 - [ ] **Step 4: Regenerate:** `make openapi`; iterate `openapi-fix.jq` until
   `TestOpenAPISpecMatchesRouteTable`, the security test, and the golden-bytes test are green.
