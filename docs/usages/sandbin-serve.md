@@ -75,7 +75,7 @@ The rest of `serve`'s core settings are flags with environment fallbacks:
 | `--api-key` | `$SANDBIN_API_KEY` | the write key every key-checked request must present |
 | `--db` | `sandbin.db` | the sqlite file holding every bin and file |
 | `--addr` | `:8080` | the address to listen on |
-| `--socket` | `$SANDBIN_SOCKET`, else the `--db` path plus `.sock` | the control socket the `ip` family drives (see [IP Address Blocking](sandbin-ip-blocking.md)) |
+| `--socket` | `$SANDBIN_SOCKET`, else the `--db` path plus `.sock` — on the defaults, `sandbin.db.sock` | the control socket the `ip` family drives (see [IP Address Blocking](sandbin-ip-blocking.md)) |
 | `--trusted-proxy` | `$SANDBIN_TRUSTED_PROXIES` | proxy addresses and CIDRs whose `X-Forwarded-For` is believed (see [Trusted proxies](sandbin-ip-blocking.md#trusted-proxies)) |
 | `--trusted-proxy-file` | `$SANDBIN_TRUSTED_PROXIES_FILE` | the same proxy list, one entry per line in a file |
 

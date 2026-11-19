@@ -522,7 +522,8 @@ func TestDocsNoRetiredSpellings(t *testing.T) {
 }
 
 // TestDocsServePageCarriesTheCoreSettings pins the rebuilt serve page: the new download and
-// build sections, the key precedence sentence, and the --version section gone from it.
+// build sections, the key precedence sentence, the control socket's default path, and the
+// --version section gone from it.
 func TestDocsServePageCarriesTheCoreSettings(t *testing.T) {
 	h := newTestServer(t, "test-key")
 	body := get(t, h, "/docs/sandbin-serve.html").Body.String()
@@ -536,6 +537,7 @@ func TestDocsServePageCarriesTheCoreSettings(t *testing.T) {
 		"<code>git checkout v0.4.3</code>",
 		"<code>make release TAG=v0.4.3</code>",
 		"The flag wins over the variable, and with neither set the server refuses to start.",
+		"sandbin.db.sock",
 		"curl http://127.0.0.1:8080/api/health",
 		"<code>GET /api/health</code>",
 	} {
