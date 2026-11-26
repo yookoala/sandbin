@@ -161,6 +161,12 @@ $ curl -s -H "X-API-Key: walk-0032-key" http://127.0.0.1:18080/api/bins | grep -
 1
 ```
 
+The `FAILURES 3` row counts three charged attempts and only two are transcribed here: the step-6
+wrong key, and the blocked listing above. The third is a second `GET /api/bins` attempt the walk
+made with the correct key while the address was still blocked, answered 429 like the first — the
+walk record in `.superpowers/sdd/0032-client-env-only-settings/task-4-report.md` logs two such
+blocked attempts before the unblock (1 wrong key + 2 attempts while blocked = 3).
+
 Then the server was sent SIGTERM and `127.0.0.1:18080` answered connection-refused; nothing was
 created outside `/tmp/opencode/sandbin-0032-walk`.
 
@@ -185,7 +191,7 @@ Carried findings — six task-review Minors, deliberately deferred, none blockin
 
 **Goal:** Let `sandbin-client` work from `SANDBIN_URL` and `SANDBIN_API_KEY` alone — refusing loudly and naming `init` when no server url comes from anywhere, and never writing a setting into `.sandbin.yaml` that the environment supplied.
 
-**Architecture:** Two code tasks, both inside `cmd/sandbin-client`. Task 1 takes the environment away from the flag parser (`EnvVars` off the two settings flags) and puts one refusal in `readSettings`, which every verb already reads settings through, so the four verbs inherit it. Task 2 changes only what `init` writes, plus `omitempty` on the two `clientConfig` fields; `resolveBin`'s write keeps today's behavior because a bin must be stored with the url it belongs to. Task 3 rewrites the instructions agents actually read. Task 4 walks the flow against a real server and records the outcome.
+**Architecture:** Two code tasks, both inside `cmd/sandbin-client`. Task 1 takes the environment away from the flag parser (`EnvVars` off the two settings flags) and puts one refusal in `readSettings`, which every verb already reads settings through, so the four verbs inherit it. Task 2 changes only what `init` writes, plus `omitempty` on all four `clientConfig` fields; `resolveBin`'s write keeps today's behavior because a bin must be stored with the url it belongs to. Task 3 rewrites the instructions agents actually read. Task 4 walks the flow against a real server and records the outcome.
 
 **Tech stack:** Go 1.26.10+ (`go.mod`), `github.com/urfave/cli/v2` v2.27.7 (flags, no `EnvVars` after Task 1), `gopkg.in/yaml.v3`, stdlib `os`/`errors`. No new dependency. The client's own fake-server harness (`newFake`, `newFakeAt`, `runClient`, `ttyReader`, `initConfig`, `readConfigFile`, `gitignoreBytes`, `noInitFiles` in `cmd/sandbin-client/*_test.go`) is the test surface.
 

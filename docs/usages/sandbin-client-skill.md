@@ -30,8 +30,10 @@ the installer says so, exits 0 anyway, and the skill builds the client on first 
 With the client binary in place the installer also initializes the current directory. At a
 terminal with `/dev/tty` available it runs `sandbin-client init --url {{ .Instance.URL }}`
 against the serving address, so the single question it asks is the API key — the url arrives
-with the installer. The re-initialization guard question for an already initialized project
-arrives the same way: answering `n` leaves that project alone and the install still stands; a
+with the installer, and in a fresh directory with `SANDBIN_API_KEY` already exported it asks
+nothing and stores only `sandbin_url`, the key staying in the environment. The
+re-initialization guard question for an already initialized project arrives the same way:
+answering `n` leaves that project alone and the install still stands; a
 failed init prints a `sandbin-installer:` warning naming the command and `--reinit` and still
 exits 0, because the skill files are installed regardless. Without a terminal nothing is asked
 and the command is printed instead:

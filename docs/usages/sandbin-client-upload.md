@@ -15,8 +15,10 @@ project.
 
 Three settings feed every verb: `SANDBIN_URL`, `SANDBIN_API_KEY` and `SANDBIN_BIN_PASSWORD`.
 `--url` and `--api-key` are flags on every verb and override their variables, and the
-`.sandbin.yaml` in the working directory carries the url and key for a whole project (see
-[Building and Config](sandbin-client-init.md) for the file and the full precedence). A url
+`.sandbin.yaml` in the working directory carries what this project chose to store: the url,
+and a key only where a person or an `init` prompt chose one, because the environment may
+update a field the file already has but never creates one (see [Building and
+Config](sandbin-client-init.md) for the file and the full precedence). A url
 missing from flag, environment and file alike is a startup error that makes no request at all:
 `no server URL: pass --url, set SANDBIN_URL or run sandbin-client init`. A key missing from
 flag, environment and file alike is a startup error too, and its message names `--api-key`,

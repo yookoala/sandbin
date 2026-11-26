@@ -103,8 +103,7 @@ initialized {{ .Instance.URL }}
 
 In a script, a CI job or an agent nobody is there to answer, so the same verb reads flags and
 variables; a url missing from both is not a fallback but a refusal — `init` answers
-`no server URL: pass --url or set SANDBIN_URL`, having asked nothing and requested nothing —
-and a missing key is a refusal naming `--api-key`, `SANDBIN_API_KEY` and the prompt:
+`no server URL: pass --url or set SANDBIN_URL`, having asked nothing and requested nothing:
 
 ```sh
 sandbin-client init
@@ -113,6 +112,9 @@ sandbin-client init
 ```text
 sandbin-client: no server URL: pass --url or set SANDBIN_URL
 ```
+
+A missing key is refused the same way, naming `--api-key`, `SANDBIN_API_KEY` and the prompt:
+`no API key: pass --api-key, set SANDBIN_API_KEY or answer the init prompt`.
 
 With both variables exported the run works from them alone:
 

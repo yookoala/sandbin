@@ -22,12 +22,14 @@ Always invoke `"$SKILL/sandbin-client"` by that full path — never a bare `sand
 
 ## First-time setup in this directory
 
+If `SANDBIN_URL` and `SANDBIN_API_KEY` are already in the environment, upload directly — `init` is unnecessary there; `init` is how a human's own machine saves a key. Where they are not, run:
+
 ```sh
 "$SKILL/sandbin-client" init --url {{.Base}} --api-key your-key
 # initialized {{.Base}}
 ```
 
-If `SANDBIN_URL` and `SANDBIN_API_KEY` are already in the environment, upload directly — `init` is unnecessary there; `init` is how a human's own machine saves a key. Get `your-key` from the human; `--api-key` may be left out at an interactive terminal, where `init` prompts instead, but a non-terminal session must pass it or set `SANDBIN_API_KEY` — otherwise the run stops with `no API key: pass --api-key, set SANDBIN_API_KEY or answer the init prompt` and writes nothing.
+Get `your-key` from the human; `--api-key` may be left out at an interactive terminal, where `init` prompts instead, but a non-terminal session must pass it or set `SANDBIN_API_KEY` — otherwise the run stops with `no API key: pass --api-key, set SANDBIN_API_KEY or answer the init prompt` and writes nothing.
 
 `init` checks the key against the server first: a wrong key answers `server rejected this API key` and writes nothing. It saves the url and key this run was given — a flag, a typed answer, or a field the file already had — in a mode-`0600` `.sandbin.yaml` the `.gitignore` covers; a value carried only by the environment is used and never written, so an `init` fed only by the environment leaves an empty mapping and re-runs cleanly, and its first upload fills in `sandbin_url` and `bin` — `protected` too when the bin has a password — never a new `api_key`. A verb run with no url from flag, environment or file answers `no server URL: pass --url, set SANDBIN_URL or run sandbin-client init` and makes no request; a refusal is answered by doing what it names. Resolution order is flag > environment > file: `--url` > `SANDBIN_URL` > `sandbin_url`, `--api-key` > `SANDBIN_API_KEY` > `api_key`. An already initialized directory (the file holds both `sandbin_url` and `api_key`) refuses a plain `init` with `.sandbin.yaml is already initialized for <url>: pass --reinit to overwrite it, or delete the file to start over` — pass `--reinit` when the overwrite is intended, or delete `.sandbin.yaml` to start over; at an interactive terminal `init` asks `re-initialize? [y/N]: ` instead. A stdin redirected from `/dev/null` still reads as a terminal but answers that question with nothing: the run cancels as `no` and leaves the file untouched, so a script that means to re-initialize must pass `--reinit` deliberately.
 

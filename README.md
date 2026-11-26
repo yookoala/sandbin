@@ -56,8 +56,10 @@ curl -fsSL http://your-server:8080/skills/sandbin-preview/install.sh | bash
 
 It installs the agent skill into `$HOME/.agents/skills/sandbin-preview`, builds
 `sandbin-client` next to it, and at a terminal asks for the API key once, saving it and
-the server address into that directory's `.sandbin.yaml`. (Piped without a terminal it
-prints the `init` command to finish instead.)
+the server address into that directory's `.sandbin.yaml` — unless `SANDBIN_API_KEY` is
+already exported there, in which case a fresh directory is initialized without any question
+and the file saves only the server address, the key staying in the environment. (Piped
+without a terminal it prints the `init` command to finish instead.)
 
 **3. Upload a preview** from that project directory:
 
