@@ -18,8 +18,9 @@ import (
 // Auth now.
 const apiKeyHeader = "X-API-Key"
 
-// apiError is a non-2xx answer: the status, the plain-text body the server wrote,
-// and for a 429 the seconds it asked us to wait.
+// apiError is a non-2xx answer: the status, the server's own sentence for what went
+// wrong (the message of its JSON error envelope, or the plain body when the answer is not
+// one), and for a 429 the seconds it asked us to wait.
 type apiError struct {
 	status     int
 	message    string
@@ -35,8 +36,15 @@ func (e *apiError) Error() string {
 
 // newAPIError keeps what the client reports about a refused request.
 func newAPIError(resp *http.Response, body []byte) *apiError {
-	// http.Error writes "<message>\n", so the trimmed body is the message itself.
-	message := strings.TrimSpace(string(body))
+	// The server's refusals are the JSON error envelope: {"status":"error","code":<status>,
+	// "message":<sentence>}. Its message is what this client relays. Anything that is not
+	// that shape — the plain-text body an older server or a proxy writes, a page, an empty
+	// body — reads the way it always did: the trimmed body, or the status text when there is
+	// no body to read.
+	message := envelopeMessage(body)
+	if message == "" {
+		message = strings.TrimSpace(string(body))
+	}
 	if message == "" {
 		message = resp.Status
 	}
@@ -47,6 +55,22 @@ func newAPIError(resp *http.Response, body []byte) *apiError {
 		retryAfter, _ = strconv.Atoi(raw)
 	}
 	return &apiError{status: resp.StatusCode, message: message, retryAfter: retryAfter}
+}
+
+// envelopeMessage reads the message out of the JSON error envelope, and answers the empty
+// string for every body that is not one: a plain-text line, a page, or no body at all.
+func envelopeMessage(body []byte) string {
+	var envelope struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return ""
+	}
+	if envelope.Status != "error" {
+		return ""
+	}
+	return envelope.Message
 }
 
 // client talks to one server with one API key. Every call is exactly one attempt:

@@ -269,7 +269,7 @@ func TestOpenAPIServedBytesMatchTheCommittedFile(t *testing.T) {
 }
 
 // TestOpenAPIServeShapes pins the endpoint's shapes: the route table names GET only, so HEAD
-// and POST are the plain 405 the table gives every named path on a method it does not list,
+// and POST are the envelope 405 the table gives every named path on a method it does not list,
 // and every spelling the table does not name — the trailing slash, a near-miss name — is the
 // plain 404 unknown bin.
 func TestOpenAPIServeShapes(t *testing.T) {
@@ -278,15 +278,15 @@ func TestOpenAPIServeShapes(t *testing.T) {
 	req := httptest.NewRequest(http.MethodHead, "/openapi.json", nil)
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
-	if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != "method not allowed\n" {
-		t.Errorf("HEAD /openapi.json = %d, body %q; want 405 method not allowed", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != apiEnvelope(405, "method not allowed") {
+		t.Errorf("HEAD /openapi.json = %d, body %q; want 405 with the method not allowed envelope", rec.Code, rec.Body.String())
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/openapi.json", nil)
 	rec = httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
-	if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != "method not allowed\n" {
-		t.Errorf("POST /openapi.json = %d, body %q; want 405 method not allowed", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != apiEnvelope(405, "method not allowed") {
+		t.Errorf("POST /openapi.json = %d, body %q; want 405 with the method not allowed envelope", rec.Code, rec.Body.String())
 	}
 
 	rec = get(t, s, "/openapi.json/")

@@ -60,6 +60,12 @@ func createdBin(t *testing.T, rec *httptest.ResponseRecorder) binAnswer {
 	return b
 }
 
+// apiEnvelope spells the exact body a dispatcher refusal answers: the status just answered as
+// the code, the sentence, in the pinned field order, with the trailing newline.
+func apiEnvelope(status int, message string) string {
+	return fmt.Sprintf(`{"status":"error","code":%d,"message":%q}`, status, message) + "\n"
+}
+
 // TestAPIKeyCheck is POST /api/key, the retired verify-key's replacement: the correct key
 // answers 204 with an empty body, a wrong key answers 403 and records the failure, and the
 // blocked-IP refusal with its Retry-After is carried over: an attempt while blocked is
@@ -79,8 +85,8 @@ func TestAPIKeyCheck(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("POST /api/key with a wrong key = %d, want %d; body %q", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "invalid API key\n" {
-		t.Errorf("403 body = %q, want the invalid API key message", got)
+	if got := rec.Body.String(); got != apiEnvelope(403, "invalid API key") {
+		t.Errorf("403 body = %q, want the invalid API key envelope", got)
 	}
 	if failures, dur := storedBlock(t, s, "198.51.100.62"); failures != 1 || dur != blockStep {
 		t.Errorf("after a wrong key = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
@@ -147,9 +153,10 @@ func TestAPIHealth(t *testing.T) {
 }
 
 // TestAPIUnknownShapes keeps the /api surface to what it answers: a spelling it does not own —
-// trailing-slash variants included — is the plain 404 unknown bin, and a known path on a wrong
-// method is the plain 405. The collection /api/bins answers POST and GET only: its DELETE is
-// the 405 pinned here, while DELETE with a hash belongs to the apiBinPathRE spelling.
+// trailing-slash variants included — is the 404 envelope API endpoint not found, and a known
+// path on a wrong method is the 405 envelope method not allowed. The collection /api/bins
+// answers POST and GET only: its DELETE is the 405 pinned here, while DELETE with a hash
+// belongs to the apiBinPathRE spelling.
 func TestAPIUnknownShapes(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	hash := strings.Trim(createTestBin(t, s, "test-key"), "/")
@@ -160,8 +167,8 @@ func TestAPIUnknownShapes(t *testing.T) {
 			t.Errorf("GET %s = %d, want %d; body %q", p, rec.Code, http.StatusNotFound, rec.Body.String())
 			continue
 		}
-		if rec.Body.String() != "unknown bin\n" {
-			t.Errorf("GET %s body = %q, want the unknown bin message", p, rec.Body.String())
+		if rec.Body.String() != apiEnvelope(404, "API endpoint not found") {
+			t.Errorf("GET %s body = %q, want the endpoint envelope", p, rec.Body.String())
 		}
 	}
 
@@ -176,8 +183,8 @@ func TestAPIUnknownShapes(t *testing.T) {
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s %s = %d, want %d; body %q", c.method, c.path, rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
 		}
-		if rec.Body.String() != "method not allowed\n" {
-			t.Errorf("%s %s body = %q, want the method not allowed message", c.method, c.path, rec.Body.String())
+		if rec.Body.String() != apiEnvelope(405, "method not allowed") {
+			t.Errorf("%s %s body = %q, want the 405 envelope", c.method, c.path, rec.Body.String())
 		}
 	}
 }
@@ -373,8 +380,8 @@ func TestAPICreateBinPassword(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("POST /api/bins with a 73 byte password = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "bin password too long\n" {
-		t.Errorf("body = %q, want the bin password too long message", got)
+	if got := rec.Body.String(); got != apiEnvelope(400, "bin password too long") {
+		t.Errorf("body = %q, want the bin password too long envelope", got)
 	}
 	if after := storedBinCount(t, s); after != before+3 {
 		t.Errorf("bins after these creates = %d, want the %d the accepted bodies made only", after, before+3)
@@ -397,9 +404,9 @@ func TestAPICreateBinRefusals(t *testing.T) {
 		{`"bare string"`, "could not read the request\n"},
 		{`{"title":5}`, "could not read the request\n"},
 		{`{"password":5}`, "could not read the request\n"},
-		{`{"title":"` + strings.Repeat("t", maxTitleBytes+1) + `"}`, "title over 200 bytes\n"},
-		{`{"description":"` + strings.Repeat("d", maxDescriptionBytes+1) + `"}`, "description over 2000 bytes\n"},
-		{`{"title":"a\nb"}`, "title may not contain control characters\n"},
+		{`{"title":"` + strings.Repeat("t", maxTitleBytes+1) + `"}`, apiEnvelope(400, "title over 200 bytes")},
+		{`{"description":"` + strings.Repeat("d", maxDescriptionBytes+1) + `"}`, apiEnvelope(400, "description over 2000 bytes")},
+		{`{"title":"a\nb"}`, apiEnvelope(400, "title may not contain control characters")},
 	} {
 		rec := postAPIBins(t, s, addr, "test-key", c.body)
 		if rec.Code != http.StatusBadRequest {
@@ -425,8 +432,8 @@ func TestAPICreateBinRefusals(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("POST /api/bins with a wrong key = %d, want %d; body %q", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "invalid API key\n" {
-		t.Errorf("403 body = %q, want the invalid API key message", got)
+	if got := rec.Body.String(); got != apiEnvelope(403, "invalid API key") {
+		t.Errorf("403 body = %q, want the invalid API key envelope", got)
 	}
 	if failures, dur := storedBlock(t, s, "198.51.100.74"); failures != 1 || dur != blockStep {
 		t.Errorf("after a wrong key = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
@@ -697,8 +704,8 @@ func TestAPIInspectBin(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("GET the protected bin without Basic = %d, want %d; body %q", rec.Code, http.StatusUnauthorized, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "bin password required\n" {
-		t.Errorf("401 body = %q, want the bin password required message", got)
+	if got := rec.Body.String(); got != apiEnvelope(401, "bin password required") {
+		t.Errorf("401 body = %q, want the bin password required envelope", got)
 	}
 	if www := rec.Header().Get("WWW-Authenticate"); !strings.HasPrefix(www, "Basic") {
 		t.Errorf("WWW-Authenticate = %q, want a Basic challenge", www)
@@ -789,8 +796,8 @@ func TestAPIPatchJSON(t *testing.T) {
 		// A stray closing bracket trails the object just like a second one, and is
 		// refused the same way.
 		{`{"title":"a"}]`, "could not read the request\n"},
-		{`{"title":"` + strings.Repeat("t", maxTitleBytes+1) + `"}`, "title over 200 bytes\n"},
-		{`{"title":"a\nb"}`, "title may not contain control characters\n"},
+		{`{"title":"` + strings.Repeat("t", maxTitleBytes+1) + `"}`, apiEnvelope(400, "title over 200 bytes")},
+		{`{"title":"a\nb"}`, apiEnvelope(400, "title may not contain control characters")},
 	} {
 		rec := patchBinsJSON(t, s, addr, "/api/bins/"+hash, "test-key", c.body, "", "")
 		if rec.Code != http.StatusBadRequest {
@@ -858,8 +865,8 @@ func TestAPIPatchPassword(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("rotate with %s = %d, want %d; body %q", attempt.why, rec.Code, http.StatusUnauthorized, rec.Body.String())
 		}
-		if got := rec.Body.String(); got != "bin password required\n" {
-			t.Errorf("401 body = %q, want the bin password required message", got)
+		if got := rec.Body.String(); got != apiEnvelope(401, "bin password required") {
+			t.Errorf("401 body = %q, want the bin password required envelope", got)
 		}
 		if _, ok := ipBlockRow(t, s.store, "198.51.100.81"); ok {
 			t.Fatalf("rotate with %s charged 198.51.100.81, want no row in ip_blocks", attempt.why)
@@ -884,8 +891,8 @@ func TestAPIPatchPassword(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("rotate with a 73-byte password with %s = %d, want %d; body %q", attempt.why, rec.Code, http.StatusBadRequest, rec.Body.String())
 		}
-		if got := rec.Body.String(); got != "bin password too long\n" {
-			t.Errorf("body = %q, want the bin password too long message", got)
+		if got := rec.Body.String(); got != apiEnvelope(400, "bin password too long") {
+			t.Errorf("body = %q, want the bin password too long envelope", got)
 		}
 	}
 
@@ -976,12 +983,13 @@ func TestAPIPatchShapes(t *testing.T) {
 		}
 	}
 
-	// Unknown bins are the plain 404; so are the trailing-slash and non-hash spellings.
-	for _, c := range []struct{ method, path string }{
-		{http.MethodPatch, "/api/bins/deadbeef"},
-		{http.MethodPatch, "/api/bins/" + hash + "/"},
-		{http.MethodPatch, "/api/bins/notahash"},
-		{http.MethodGet, "/api/bins/deadbeef"},
+	// Unknown bins answer the envelope "bin not found"; the trailing-slash and non-hash
+	// spellings are not bins at all, so they answer "API endpoint not found".
+	for _, c := range []struct{ method, path, want string }{
+		{http.MethodPatch, "/api/bins/deadbeef", apiEnvelope(404, "bin not found")},
+		{http.MethodPatch, "/api/bins/" + hash + "/", apiEnvelope(404, "API endpoint not found")},
+		{http.MethodPatch, "/api/bins/notahash", apiEnvelope(404, "API endpoint not found")},
+		{http.MethodGet, "/api/bins/deadbeef", apiEnvelope(404, "bin not found")},
 	} {
 		req := httptest.NewRequest(c.method, c.path, strings.NewReader(`{"title":"x"}`))
 		req.RemoteAddr = addr
@@ -992,8 +1000,8 @@ func TestAPIPatchShapes(t *testing.T) {
 			t.Errorf("%s %s = %d, want %d; body %q", c.method, c.path, rec.Code, http.StatusNotFound, rec.Body.String())
 			continue
 		}
-		if rec.Body.String() != "unknown bin\n" {
-			t.Errorf("%s %s body = %q, want the unknown bin message", c.method, c.path, rec.Body.String())
+		if rec.Body.String() != c.want {
+			t.Errorf("%s %s body = %q, want %q", c.method, c.path, rec.Body.String(), c.want)
 		}
 	}
 
@@ -1015,15 +1023,15 @@ func TestAPIPatchShapes(t *testing.T) {
 		t.Errorf("body = %q, want the unrecognized field message", got)
 	}
 
-	// A known bin path on a method the dispatch does not name is the plain 405. DELETE is
+	// A known bin path on a method the dispatch does not name is the envelope 405. DELETE is
 	// no longer one of these: TestAPIDeleteBinShapes owns its answer now.
 	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodHead} {
 		req := httptest.NewRequest(m, "/api/bins/"+hash, nil)
 		req.RemoteAddr = addr
 		rec := httptest.NewRecorder()
 		s.ServeHTTP(rec, req)
-		if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != "method not allowed\n" {
-			t.Errorf("%s /api/bins/%s = %d, body %q; want 405 method not allowed", m, hash, rec.Code, rec.Body.String())
+		if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != apiEnvelope(405, "method not allowed") {
+			t.Errorf("%s /api/bins/%s = %d, body %q; want 405 with the method not allowed envelope", m, hash, rec.Code, rec.Body.String())
 		}
 	}
 
@@ -1101,15 +1109,21 @@ func TestAPIDeleteBin(t *testing.T) {
 		t.Errorf("204 Content-Type = %q, want it unset", ct)
 	}
 
-	// Every face of the bin now says it is gone.
-	for _, p := range []string{base, base + "notes.md", base + "drafts/one.md", "/api/bins/" + hash} {
-		rec = get(t, s, p)
+	// Every face of the bin now says it is gone: the bin paths keep the plain unknown bin,
+	// the API path answers the envelope.
+	for _, c := range []struct{ path, want string }{
+		{base, "unknown bin\n"},
+		{base + "notes.md", "unknown bin\n"},
+		{base + "drafts/one.md", "unknown bin\n"},
+		{"/api/bins/" + hash, apiEnvelope(404, "bin not found")},
+	} {
+		rec = get(t, s, c.path)
 		if rec.Code != http.StatusNotFound {
-			t.Errorf("after the delete, GET %s = %d, want %d; body %q", p, rec.Code, http.StatusNotFound, rec.Body.String())
+			t.Errorf("after the delete, GET %s = %d, want %d; body %q", c.path, rec.Code, http.StatusNotFound, rec.Body.String())
 			continue
 		}
-		if rec.Body.String() != "unknown bin\n" {
-			t.Errorf("after the delete, GET %s body = %q, want the unknown bin message", p, rec.Body.String())
+		if rec.Body.String() != c.want {
+			t.Errorf("after the delete, GET %s body = %q, want %q", c.path, rec.Body.String(), c.want)
 		}
 	}
 
@@ -1149,8 +1163,8 @@ func TestAPIDeleteBinProtected(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("DELETE a protected bin without Basic = %d, want %d; body %q", rec.Code, http.StatusUnauthorized, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "bin password required\n" {
-		t.Errorf("401 body = %q, want the bin password required message", got)
+	if got := rec.Body.String(); got != apiEnvelope(401, "bin password required") {
+		t.Errorf("401 body = %q, want the bin password required envelope", got)
 	}
 	if www := rec.Header().Get("WWW-Authenticate"); !strings.HasPrefix(www, "Basic") {
 		t.Errorf("WWW-Authenticate = %q, want a Basic challenge", www)
@@ -1163,8 +1177,8 @@ func TestAPIDeleteBinProtected(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("DELETE with the wrong Basic = %d, want %d; body %q", rec.Code, http.StatusUnauthorized, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "bin password required\n" {
-		t.Errorf("wrong-Basic 401 body = %q, want the bin password required message", got)
+	if got := rec.Body.String(); got != apiEnvelope(401, "bin password required") {
+		t.Errorf("wrong-Basic 401 body = %q, want the bin password required envelope", got)
 	}
 	if _, found, err := s.store.GetBin(hash); err != nil || !found {
 		t.Fatalf("the bin after the wrong-Basic 401: found=%v err=%v, want it intact", found, err)
@@ -1192,8 +1206,9 @@ func TestAPIDeleteBinProtected(t *testing.T) {
 }
 
 // TestAPIDeleteBinShapes keeps the delete surface to its pinned spellings: the trailing-slash
-// variant and a hash the store does not hold are the plain 404 the dispatch answers before any
-// key or bin work, HEAD on the known path stays the plain 405, and a missing or wrong API key
+// variant and a non-hash are the dispatch's 404 "API endpoint not found" answers, a hash the
+// store does not hold is the handler's 404 "bin not found" answer, HEAD on the known path is
+// the envelope 405, and a missing or wrong API key
 // is the 403 requireKey charges — before any bin lookup happens. The known bin took none of it.
 func TestAPIDeleteBinShapes(t *testing.T) {
 	s := newTestServer(t, "test-key")
@@ -1201,25 +1216,29 @@ func TestAPIDeleteBinShapes(t *testing.T) {
 	hash := strings.Trim(base, "/")
 	const addr = "198.51.100.86:1234"
 
-	for _, p := range []string{"/api/bins/" + hash + "/", "/api/bins/deadbeef", "/api/bins/notahash"} {
-		rec := deleteBinFrom(t, s, addr, p, "test-key", "", "")
+	for _, c := range []struct{ path, want string }{
+		{"/api/bins/" + hash + "/", apiEnvelope(404, "API endpoint not found")},
+		{"/api/bins/deadbeef", apiEnvelope(404, "bin not found")},
+		{"/api/bins/notahash", apiEnvelope(404, "API endpoint not found")},
+	} {
+		rec := deleteBinFrom(t, s, addr, c.path, "test-key", "", "")
 		if rec.Code != http.StatusNotFound {
-			t.Errorf("DELETE %s = %d, want %d; body %q", p, rec.Code, http.StatusNotFound, rec.Body.String())
+			t.Errorf("DELETE %s = %d, want %d; body %q", c.path, rec.Code, http.StatusNotFound, rec.Body.String())
 			continue
 		}
-		if rec.Body.String() != "unknown bin\n" {
-			t.Errorf("DELETE %s body = %q, want the unknown bin message", p, rec.Body.String())
+		if rec.Body.String() != c.want {
+			t.Errorf("DELETE %s body = %q, want %q", c.path, rec.Body.String(), c.want)
 		}
 	}
 
-	// HEAD on the known path stays the plain 405.
+	// HEAD on the known path is the envelope 405.
 	req := httptest.NewRequest(http.MethodHead, "/api/bins/"+hash, nil)
 	req.RemoteAddr = addr
 	req.Header.Set("X-API-Key", "test-key")
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
-	if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != "method not allowed\n" {
-		t.Errorf("HEAD /api/bins/%s = %d, body %q; want 405 method not allowed", hash, rec.Code, rec.Body.String())
+	if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != apiEnvelope(405, "method not allowed") {
+		t.Errorf("HEAD /api/bins/%s = %d, body %q; want 405 with the method not allowed envelope", hash, rec.Code, rec.Body.String())
 	}
 
 	// None of those keyed refusals touched the stored state.
@@ -1232,8 +1251,8 @@ func TestAPIDeleteBinShapes(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("DELETE with no key = %d, want %d; body %q", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "invalid API key\n" {
-		t.Errorf("no-key body = %q, want the invalid API key message", got)
+	if got := rec.Body.String(); got != apiEnvelope(403, "invalid API key") {
+		t.Errorf("no-key body = %q, want the invalid API key envelope", got)
 	}
 	if failures, dur := storedBlock(t, s, "198.51.100.87"); failures != 1 || dur != blockStep {
 		t.Errorf("after a keyless DELETE = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
@@ -1414,15 +1433,15 @@ func TestAPIListBins(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("GET /api/bins with a wrong key = %d, want %d; body %q", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "invalid API key\n" {
-		t.Errorf("403 body = %q, want the invalid API key message", got)
+	if got := rec.Body.String(); got != apiEnvelope(403, "invalid API key") {
+		t.Errorf("403 body = %q, want the invalid API key envelope", got)
 	}
 	if failures, dur := storedBlock(t, s, "198.51.100.92"); failures != 1 || dur != blockStep {
 		t.Errorf("after a wrong key = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
 	}
 
 	// No key at all is the same refusal.
-	if rec := get(t, s, "/api/bins"); rec.Code != http.StatusForbidden || rec.Body.String() != "invalid API key\n" {
+	if rec := get(t, s, "/api/bins"); rec.Code != http.StatusForbidden || rec.Body.String() != apiEnvelope(403, "invalid API key") {
 		t.Errorf("GET /api/bins without the header = %d, body %q; want 403 invalid API key", rec.Code, rec.Body.String())
 	}
 
@@ -1505,8 +1524,8 @@ func TestAPIListBinsLimits(t *testing.T) {
 			t.Errorf("GET /api/bins%s = %d, want %d; body %q", q, rec.Code, http.StatusBadRequest, rec.Body.String())
 			continue
 		}
-		if got := rec.Body.String(); got != "invalid limit\n" {
-			t.Errorf("GET /api/bins%s body = %q, want the invalid limit message", q, got)
+		if got := rec.Body.String(); got != apiEnvelope(400, "invalid limit") {
+			t.Errorf("GET /api/bins%s body = %q, want the invalid limit envelope", q, got)
 		}
 	}
 	if after := storedBinCount(t, s); after != before {
@@ -1565,8 +1584,8 @@ func TestAPIListBinsCursorIntegrity(t *testing.T) {
 			t.Errorf("cursor %q = %d, want %d; body %q", c, rec.Code, http.StatusBadRequest, rec.Body.String())
 			continue
 		}
-		if got := rec.Body.String(); got != "invalid cursor\n" {
-			t.Errorf("cursor %q body = %q, want the invalid cursor message", c, got)
+		if got := rec.Body.String(); got != apiEnvelope(400, "invalid cursor") {
+			t.Errorf("cursor %q body = %q, want the invalid cursor envelope", c, got)
 		}
 	}
 
@@ -1753,38 +1772,143 @@ func TestAPIRouteTableIsPublishedSurface(t *testing.T) {
 	}
 }
 
-// TestAPILiteralBraceSpellingIsPlainFourOhFour is ruling R3's parity pin: the table's
+// TestAPILiteralBraceSpellingIsAPINotFound is ruling R3's parity pin: the table's
 // wildcard key /api/bins/{hash} names only hex spellings through the apiBinPathRE gate, so
 // the literal spelling itself — raw braces, or percent-encoded, both parsing to URL.Path
-// "/api/bins/{hash}" — is the plain 404 unknown bin on every method, and a wrong key
-// through it charges nothing, exactly like the retired switch never named it.
-func TestAPILiteralBraceSpellingIsPlainFourOhFour(t *testing.T) {
+// "/api/bins/{hash}" — is the 404 envelope API endpoint not found on every method, and a wrong
+// key through it charges nothing, exactly like the retired switch never named it.
+func TestAPILiteralBraceSpellingIsAPINotFound(t *testing.T) {
 	s := newTestServer(t, "test-key")
 
 	for _, spelling := range []string{"/api/bins/{hash}", "/api/bins/%7Bhash%7D"} {
 		rec := get(t, s, spelling)
-		if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown bin\n" {
-			t.Errorf("GET %s = %d, body %q; want 404 unknown bin", spelling, rec.Code, rec.Body.String())
+		if rec.Code != http.StatusNotFound || rec.Body.String() != apiEnvelope(404, "API endpoint not found") {
+			t.Errorf("GET %s = %d, body %q; want 404 API endpoint not found", spelling, rec.Code, rec.Body.String())
 		}
 
 		req := httptest.NewRequest(http.MethodHead, spelling, nil)
 		rec = httptest.NewRecorder()
 		s.ServeHTTP(rec, req)
-		if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown bin\n" {
-			t.Errorf("HEAD %s = %d, body %q; want 404 unknown bin, not a 405", spelling, rec.Code, rec.Body.String())
+		if rec.Code != http.StatusNotFound || rec.Body.String() != apiEnvelope(404, "API endpoint not found") {
+			t.Errorf("HEAD %s = %d, body %q; want 404 API endpoint not found, not a 405", spelling, rec.Code, rec.Body.String())
 		}
 
 		const addr = "198.51.100.97:1234"
 		rec = patchBinsJSON(t, s, addr, spelling, "wrong-key", "{}", "", "")
-		if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown bin\n" {
-			t.Errorf("PATCH %s with a wrong key = %d, body %q; want 404 unknown bin", spelling, rec.Code, rec.Body.String())
+		if rec.Code != http.StatusNotFound || rec.Body.String() != apiEnvelope(404, "API endpoint not found") {
+			t.Errorf("PATCH %s with a wrong key = %d, body %q; want 404 API endpoint not found", spelling, rec.Code, rec.Body.String())
 		}
 		rec = deleteBinFrom(t, s, addr, spelling, "wrong-key", "", "")
-		if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown bin\n" {
-			t.Errorf("DELETE %s with a wrong key = %d, body %q; want 404 unknown bin", spelling, rec.Code, rec.Body.String())
+		if rec.Code != http.StatusNotFound || rec.Body.String() != apiEnvelope(404, "API endpoint not found") {
+			t.Errorf("DELETE %s with a wrong key = %d, body %q; want 404 API endpoint not found", spelling, rec.Code, rec.Body.String())
 		}
 		if failures, ok := ipBlockRow(t, s.store, "198.51.100.97"); ok || failures != 0 {
 			t.Errorf("the wrong-key literal-brace attempts charged 198.51.100.97 = failures %d, row present=%v; want 0 failures, no row", failures, ok)
 		}
+	}
+}
+
+// TestAPIErrorEnvelopeShape is the envelope's pinned shape on a refusal the dispatcher answers:
+// Content-Type application/json and exactly {"status":"error","code":<the status just
+// answered>,"message":"<the existing sentence>"} in that field order, with the trailing
+// newline. The 400 half of POST /api/bins' title cap is a dispatcher refusal; the decode half
+// of create's 400s joins in a later task and is not this pin's.
+func TestAPIErrorEnvelopeShape(t *testing.T) {
+	s := newTestServer(t, "test-key")
+
+	rec := postAPIBins(t, s, "198.51.100.71:1234", "test-key", `{"title":"`+strings.Repeat("t", maxTitleBytes+1)+`"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /api/bins with an over-long title = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	want := "{\"status\":\"error\",\"code\":400,\"message\":\"title over 200 bytes\"}\n"
+	if got := rec.Body.String(); got != want {
+		t.Errorf("400 body = %q, want the envelope %q", got, want)
+	}
+}
+
+// TestAPIEndpointNotFoundPair is the 404 pair: a path the API table does not name answers the
+// envelope with API endpoint not found, and an endpoint whose hash the store does not hold
+// answers the envelope with bin not found.
+func TestAPIEndpointNotFoundPair(t *testing.T) {
+	s := newTestServer(t, "test-key")
+
+	for _, p := range []string{"/api/bananas", "/api/bins/"} {
+		rec := get(t, s, p)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want %d; body %q", p, rec.Code, http.StatusNotFound, rec.Body.String())
+			continue
+		}
+		want := "{\"status\":\"error\",\"code\":404,\"message\":\"API endpoint not found\"}\n"
+		if got := rec.Body.String(); got != want {
+			t.Errorf("GET %s body = %q, want the endpoint envelope %q", p, got, want)
+		}
+	}
+
+	rec := get(t, s, "/api/bins/deadbeef")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /api/bins/deadbeef = %d, want %d; body %q", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	want := "{\"status\":\"error\",\"code\":404,\"message\":\"bin not found\"}\n"
+	if got := rec.Body.String(); got != want {
+		t.Errorf("GET /api/bins/deadbeef body = %q, want the resource envelope %q", rec.Body.String(), want)
+	}
+}
+
+// TestKeyRefusalIsEnvelope keeps the key guard's story inside the envelope: a wrong key is the
+// 403 envelope invalid API key and still charges, and the lockout refusal 429 keeps its
+// Retry-After header next to the envelope.
+func TestKeyRefusalIsEnvelope(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	const addr = "198.51.100.77:1234"
+
+	rec := postAPIBins(t, s, addr, "wrong", "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("POST /api/bins with a wrong key = %d, want %d; body %q", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("403 Content-Type = %q, want application/json", ct)
+	}
+	want := "{\"status\":\"error\",\"code\":403,\"message\":\"invalid API key\"}\n"
+	if got := rec.Body.String(); got != want {
+		t.Errorf("403 body = %q, want the key envelope %q", got, want)
+	}
+	if failures, dur := storedBlock(t, s, "198.51.100.77"); failures != 1 || dur != blockStep {
+		t.Errorf("after the envelope 403 = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
+	}
+
+	rec = postAPIBins(t, s, addr, "test-key", "")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("blocked POST /api/bins = %d, want %d; body %q", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+	}
+	want = "{\"status\":\"error\",\"code\":429,\"message\":\"too many bad API keys\"}\n"
+	if got := rec.Body.String(); got != want {
+		t.Errorf("429 body = %q, want the lockout envelope %q", got, want)
+	}
+	if ra := retryAfter(t, rec); ra <= 1800-30 || ra > 1800 {
+		t.Errorf("Retry-After = %d, want the first block's 1800 seconds less the elapsed time", ra)
+	}
+}
+
+// TestProtectedBinAPI401IsEnvelope proves the envelope does not disturb what the 401 means:
+// PATCH of a protected bin without Basic answers the envelope bin password required and keeps
+// the WWW-Authenticate challenge.
+func TestProtectedBinAPI401IsEnvelope(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBinWithPassword(t, s, "sesame")
+	hash := strings.Trim(base, "/")
+
+	rec := patchBinsJSON(t, s, "198.51.100.78:1234", "/api/bins/"+hash, "test-key", `{"title":"x"}`, "", "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("PATCH the protected bin without Basic = %d, want %d; body %q", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+	want := "{\"status\":\"error\",\"code\":401,\"message\":\"bin password required\"}\n"
+	if got := rec.Body.String(); got != want {
+		t.Errorf("401 body = %q, want the bin-password envelope %q", got, want)
+	}
+	if www := rec.Header().Get("WWW-Authenticate"); www != `Basic realm="sandbin"` {
+		t.Errorf("WWW-Authenticate = %q, want the Basic realm challenge", www)
 	}
 }

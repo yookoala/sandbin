@@ -144,8 +144,8 @@ func TestAPIIndexURLsFollowRequestContext(t *testing.T) {
 // TestAPIIndexShapes keeps the index's own dispatch shapes pinned: HEAD /api answers 200 —
 // status and headers pinned, because httptest.NewRecorder keeps HEAD bodies and only the
 // real server strips them, so the empty-body fact belongs to the scratch curl walk —
-// POST, PUT, PATCH and DELETE on the bare /api are the plain 405 the table gives every named
-// path on a method it does not list, and /api/ stays the plain 404: the mux's would-be 301 is
+// POST, PUT, PATCH and DELETE on the bare /api are the envelope 405 the table gives every named
+// path on a method it does not list, and /api/ is the envelope 404: the mux's would-be 301 is
 // cut off by the classification like every other trailing-slash spelling.
 func TestAPIIndexShapes(t *testing.T) {
 	s := newTestServer(t, "test-key")
@@ -164,14 +164,14 @@ func TestAPIIndexShapes(t *testing.T) {
 		req := httptest.NewRequest(method, "/api", nil)
 		rec := httptest.NewRecorder()
 		s.ServeHTTP(rec, req)
-		if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != "method not allowed\n" {
-			t.Errorf("%s /api = %d, body %q; want 405 method not allowed", method, rec.Code, rec.Body.String())
+		if rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != apiEnvelope(405, "method not allowed") {
+			t.Errorf("%s /api = %d, body %q; want 405 with the method not allowed envelope", method, rec.Code, rec.Body.String())
 		}
 	}
 
 	rec = get(t, s, "/api/")
-	if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown bin\n" {
-		t.Errorf("GET /api/ = %d, body %q; want 404 unknown bin, not the mux's 301", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound || rec.Body.String() != apiEnvelope(404, "API endpoint not found") {
+		t.Errorf("GET /api/ = %d, body %q; want 404 API endpoint not found, not the mux's 301", rec.Code, rec.Body.String())
 	}
 }
 

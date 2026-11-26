@@ -202,6 +202,7 @@ func (s *server) binRoutes(w http.ResponseWriter, r *http.Request, hash, sub str
 // with 429 and a Retry-After — an attempt while blocked is itself a failure, so hammering
 // walks the penalty up — and a wrong or missing key charges the lockout and answers 403. ok
 // reports whether the request may proceed; when it is false the refusal is already written.
+// Every route it guards answers JSON on success, so its refusals carry the JSON error envelope.
 func (s *server) requireKey(w http.ResponseWriter, r *http.Request) bool {
 	ip := clientIP(r, s.trustedProxies)
 	if until, blocked := s.store.IsBlocked(ip, time.Now()); blocked {
@@ -210,7 +211,7 @@ func (s *server) requireKey(w http.ResponseWriter, r *http.Request) bool {
 		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
 			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
 		}
-		http.Error(w, "too many bad API keys", http.StatusTooManyRequests)
+		s.writeAPIError(w, http.StatusTooManyRequests, "too many bad API keys")
 		return false
 	}
 
@@ -218,7 +219,7 @@ func (s *server) requireKey(w http.ResponseWriter, r *http.Request) bool {
 		if _, err := s.store.RecordFailure(ip, time.Now()); err != nil {
 			log.Printf("record auth failure for %s: %v", ip, err) // never fail the request over this
 		}
-		http.Error(w, "invalid API key", http.StatusForbidden)
+		s.writeAPIError(w, http.StatusForbidden, "invalid API key")
 		return false
 	}
 	return true
@@ -243,7 +244,7 @@ func (s *server) getFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 		http.Error(w, "unknown bin", http.StatusNotFound)
 		return
 	}
-	if !s.binAuthorized(w, r, bin) {
+	if !s.binAuthorized(w, r, bin, false) {
 		return
 	}
 
@@ -332,7 +333,7 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 		http.Error(w, "unknown bin", http.StatusNotFound)
 		return
 	}
-	if !s.binAuthorized(w, r, bin) {
+	if !s.binAuthorized(w, r, bin, false) {
 		return
 	}
 
@@ -471,7 +472,7 @@ func (s *server) deletePath(w http.ResponseWriter, r *http.Request, hash, sub st
 		http.Error(w, "unknown bin", http.StatusNotFound)
 		return
 	}
-	if !s.binAuthorized(w, r, bin) {
+	if !s.binAuthorized(w, r, bin, false) {
 		return
 	}
 
@@ -532,25 +533,28 @@ func checkBinText(name, raw string, maxBytes int) error {
 }
 
 // binAuthorized answers 401 itself when the bin has a password the request does
-// not carry. bcrypt.CompareHashAndPassword is constant time on its own.
-func (s *server) binAuthorized(w http.ResponseWriter, r *http.Request, bin Bin) bool {
+// not carry. bcrypt.CompareHashAndPassword is constant time on its own. envelope
+// says which half of the surface this call belongs to: true answers the refusal in
+// the JSON error envelope, false keeps the plain-text http.Error answer.
+func (s *server) binAuthorized(w http.ResponseWriter, r *http.Request, bin Bin, envelope bool) bool {
 	if bin.PasswordHash == "" {
 		return true
 	}
 	// The user name is conventionally the bin hash, but any name works.
 	_, password, ok := r.BasicAuth()
-	if !ok || len(password) > 72 {
-		// bcrypt silently compares only the first 72 bytes, so a longer candidate
-		// could match a shorter stored password.
-		w.Header().Set("WWW-Authenticate", `Basic realm="sandbin"`)
-		http.Error(w, "bin password required", http.StatusUnauthorized)
-		return false
-	}
-	if bcrypt.CompareHashAndPassword([]byte(bin.PasswordHash), []byte(password)) == nil {
+	// bcrypt silently compares only the first 72 bytes, so a longer candidate
+	// could match a shorter stored password: it is refused without comparing.
+	if ok && len(password) <= 72 &&
+		bcrypt.CompareHashAndPassword([]byte(bin.PasswordHash), []byte(password)) == nil {
 		return true
 	}
+	// The challenge header is set the same way whichever half answers.
 	w.Header().Set("WWW-Authenticate", `Basic realm="sandbin"`)
-	http.Error(w, "bin password required", http.StatusUnauthorized)
+	if envelope {
+		s.writeAPIError(w, http.StatusUnauthorized, "bin password required")
+	} else {
+		http.Error(w, "bin password required", http.StatusUnauthorized)
+	}
 	return false
 }
 

@@ -1712,14 +1712,14 @@ func TestPostRefusesBadMetadata(t *testing.T) {
 	for _, bad := range []struct {
 		title, description, want string
 	}{
-		{strings.Repeat("t", maxTitleBytes+1), "", "title over 200 bytes\n"},
+		{strings.Repeat("t", maxTitleBytes+1), "", apiEnvelope(400, "title over 200 bytes")},
 		// 101 two-byte characters are 202 bytes, so the cap counts bytes and not characters.
-		{strings.Repeat("é", maxTitleBytes/2+1), "", "title over 200 bytes\n"},
-		{"", strings.Repeat("d", maxDescriptionBytes+1), "description over 2000 bytes\n"},
-		{"a\nb", "", "title may not contain control characters\n"},
-		{"a\tb", "", "title may not contain control characters\n"},
-		{"a\x7fb", "", "title may not contain control characters\n"},
-		{"fine title", "a\nb", "description may not contain control characters\n"},
+		{strings.Repeat("é", maxTitleBytes/2+1), "", apiEnvelope(400, "title over 200 bytes")},
+		{"", strings.Repeat("d", maxDescriptionBytes+1), apiEnvelope(400, "description over 2000 bytes")},
+		{"a\nb", "", apiEnvelope(400, "title may not contain control characters")},
+		{"a\tb", "", apiEnvelope(400, "title may not contain control characters")},
+		{"a\x7fb", "", apiEnvelope(400, "title may not contain control characters")},
+		{"fine title", "a\nb", apiEnvelope(400, "description may not contain control characters")},
 	} {
 		rec := postAPIBins(t, s, "", "test-key", createBodyJSON(t, bad.title, bad.description, ""))
 		if rec.Code != http.StatusBadRequest {
@@ -1833,16 +1833,16 @@ func TestPatchOverLongMetadataChangesNothing(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("PATCH with over-long metadata = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "title over 200 bytes\n" {
-		t.Errorf("body = %q, want the title refusal", got)
+	if got := rec.Body.String(); got != apiEnvelope(400, "title over 200 bytes") {
+		t.Errorf("body = %q, want the title refusal envelope", got)
 	}
 
 	rec = patchBinsJSON(t, s, "198.51.100.14:1234", "/api/bins/"+hash, "test-key", `{"title":"a\nnewline"}`, "", "")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("PATCH with a control character = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "title may not contain control characters\n" {
-		t.Errorf("body = %q, want the control character refusal", got)
+	if got := rec.Body.String(); got != apiEnvelope(400, "title may not contain control characters") {
+		t.Errorf("body = %q, want the control character refusal envelope", got)
 	}
 
 	if title, description := storedMeta(t, s, base); title != "kept title" || description != "kept description" {
@@ -2580,15 +2580,15 @@ func TestDeleteChargesWrongKeyLikeOtherWrites(t *testing.T) {
 	const addr = "203.0.113.41:1234"
 
 	rec := delFrom(t, s, addr, base+"notes.md", "wrong")
-	if rec.Code != http.StatusForbidden || rec.Body.String() != "invalid API key\n" {
-		t.Fatalf("DELETE with a wrong key = %d, body %q; want 403 invalid API key", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusForbidden || rec.Body.String() != apiEnvelope(403, "invalid API key") {
+		t.Fatalf("DELETE with a wrong key = %d, body %q; want 403 with the invalid API key envelope", rec.Code, rec.Body.String())
 	}
 	if failures, dur := storedBlock(t, s, "203.0.113.41"); failures != 1 || dur != blockStep {
 		t.Errorf("after a wrong-key DELETE = failures %d, block %v; want 1 failure, %v", failures, dur, blockStep)
 	}
 
 	rec = delFrom(t, s, addr, base+"notes.md", "test-key")
-	if rec.Code != http.StatusTooManyRequests || rec.Body.String() != "too many bad API keys\n" {
+	if rec.Code != http.StatusTooManyRequests || rec.Body.String() != apiEnvelope(429, "too many bad API keys") {
 		t.Fatalf("DELETE from the blocked address = %d, body %q; want 429", rec.Code, rec.Body.String())
 	}
 	if ra := retryAfter(t, rec); ra <= 1800-30 || ra > 1800 {

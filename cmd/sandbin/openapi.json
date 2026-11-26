@@ -2,7 +2,7 @@
   "openapi": "3.1.1",
   "info": {
     "title": "sandbin HTTP API",
-    "description": "The sandbin JSON API: keys, bins and bin metadata under /api. Errors answer plain text with a fixed sentence; successes answer JSON.",
+    "description": "The sandbin JSON API: keys, bins and bin metadata under /api. Errors answer the JSON envelope {\"status\":\"error\",\"code\":<status>,\"message\":<sentence>}; successes answer JSON.",
     "version": "1.0.0",
     "contact": {
       "name": "sandbin",
@@ -80,16 +80,24 @@
           "400": {
             "description": "Bad Request",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
                 },
                 "examples": {
                   "invalid-limit": {
-                    "value": "invalid limit"
+                    "value": {
+                      "status": "error",
+                      "code": 400,
+                      "message": "invalid limit"
+                    }
                   },
                   "invalid-cursor": {
-                    "value": "invalid cursor"
+                    "value": {
+                      "status": "error",
+                      "code": 400,
+                      "message": "invalid cursor"
+                    }
                   }
                 }
               }
@@ -98,22 +106,38 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
                 },
-                "example": "invalid API key"
+                "examples": {
+                  "invalid-api-key": {
+                    "value": {
+                      "status": "error",
+                      "code": 403,
+                      "message": "invalid API key"
+                    }
+                  }
+                }
               }
             }
           },
           "429": {
             "description": "Too Many Requests",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
                 },
-                "example": "too many bad API keys"
+                "examples": {
+                  "too-many-bad-keys": {
+                    "value": {
+                      "status": "error",
+                      "code": 429,
+                      "message": "too many bad API keys"
+                    }
+                  }
+                }
               }
             },
             "headers": {
@@ -128,9 +152,18 @@
           "500": {
             "description": "Internal Server Error",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
+                },
+                "examples": {
+                  "could-not-list-bins": {
+                    "value": {
+                      "status": "error",
+                      "code": 500,
+                      "message": "could not list bins"
+                    }
+                  }
                 }
               }
             }
@@ -189,21 +222,48 @@
                   },
                   "unrecognized-field": {
                     "value": "unrecognized field in the request"
-                  },
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/apiErrorBody"
+                },
+                "examples": {
                   "title-over-limit": {
-                    "value": "title over 200 bytes"
+                    "value": {
+                      "status": "error",
+                      "code": 400,
+                      "message": "title over 200 bytes"
+                    }
                   },
                   "title-control-characters": {
-                    "value": "title may not contain control characters"
+                    "value": {
+                      "status": "error",
+                      "code": 400,
+                      "message": "title may not contain control characters"
+                    }
                   },
                   "description-over-limit": {
-                    "value": "description over 2000 bytes"
+                    "value": {
+                      "status": "error",
+                      "code": 400,
+                      "message": "description over 2000 bytes"
+                    }
                   },
                   "description-control-characters": {
-                    "value": "description may not contain control characters"
+                    "value": {
+                      "status": "error",
+                      "code": 400,
+                      "message": "description may not contain control characters"
+                    }
                   },
                   "password-over-limit": {
-                    "value": "bin password too long"
+                    "value": {
+                      "status": "error",
+                      "code": 400,
+                      "message": "bin password too long"
+                    }
                   }
                 }
               }
@@ -212,22 +272,38 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
                 },
-                "example": "invalid API key"
+                "examples": {
+                  "invalid-api-key": {
+                    "value": {
+                      "status": "error",
+                      "code": 403,
+                      "message": "invalid API key"
+                    }
+                  }
+                }
               }
             }
           },
           "429": {
             "description": "Too Many Requests",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
                 },
-                "example": "too many bad API keys"
+                "examples": {
+                  "too-many-bad-keys": {
+                    "value": {
+                      "status": "error",
+                      "code": 429,
+                      "message": "too many bad API keys"
+                    }
+                  }
+                }
               }
             },
             "headers": {
@@ -242,9 +318,32 @@
           "500": {
             "description": "Internal Server Error",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
+                },
+                "examples": {
+                  "could-not-create-bin": {
+                    "value": {
+                      "status": "error",
+                      "code": 500,
+                      "message": "could not create bin"
+                    }
+                  },
+                  "could-not-set-the-bin-password": {
+                    "value": {
+                      "status": "error",
+                      "code": 500,
+                      "message": "could not set the bin password"
+                    }
+                  },
+                  "could-not-answer-the-bin": {
+                    "value": {
+                      "status": "error",
+                      "code": 500,
+                      "message": "could not answer the bin"
+                    }
+                  }
                 }
               }
             }
@@ -286,31 +385,63 @@
           "401": {
             "description": "Unauthorized",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
                 },
-                "example": "bin password required"
+                "examples": {
+                  "bin-password-required": {
+                    "value": {
+                      "status": "error",
+                      "code": 401,
+                      "message": "bin password required"
+                    }
+                  }
+                }
               }
             }
           },
           "404": {
             "description": "Not Found",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
                 },
-                "example": "unknown bin"
+                "examples": {
+                  "bin-not-found": {
+                    "value": {
+                      "status": "error",
+                      "code": 404,
+                      "message": "bin not found"
+                    }
+                  }
+                }
               }
             }
           },
           "500": {
             "description": "Internal Server Error",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
+                },
+                "examples": {
+                  "could-not-list-bin": {
+                    "value": {
+                      "status": "error",
+                      "code": 500,
+                      "message": "could not list bin"
+                    }
+                  },
+                  "could-not-answer-the-bin": {
+                    "value": {
+                      "status": "error",
+                      "code": 500,
+                      "message": "could not answer the bin"
+                    }
+                  }
                 }
               }
             }
@@ -344,44 +475,76 @@
           "401": {
             "description": "Unauthorized",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
                 },
-                "example": "bin password required"
+                "examples": {
+                  "bin-password-required": {
+                    "value": {
+                      "status": "error",
+                      "code": 401,
+                      "message": "bin password required"
+                    }
+                  }
+                }
               }
             }
           },
           "403": {
             "description": "Forbidden",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
                 },
-                "example": "invalid API key"
+                "examples": {
+                  "invalid-api-key": {
+                    "value": {
+                      "status": "error",
+                      "code": 403,
+                      "message": "invalid API key"
+                    }
+                  }
+                }
               }
             }
           },
           "404": {
             "description": "Not Found",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
                 },
-                "example": "unknown bin"
+                "examples": {
+                  "bin-not-found": {
+                    "value": {
+                      "status": "error",
+                      "code": 404,
+                      "message": "bin not found"
+                    }
+                  }
+                }
               }
             }
           },
           "429": {
             "description": "Too Many Requests",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
                 },
-                "example": "too many bad API keys"
+                "examples": {
+                  "too-many-bad-keys": {
+                    "value": {
+                      "status": "error",
+                      "code": 429,
+                      "message": "too many bad API keys"
+                    }
+                  }
+                }
               }
             },
             "headers": {
@@ -396,9 +559,18 @@
           "500": {
             "description": "Internal Server Error",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
+                },
+                "examples": {
+                  "could-not-delete-bin": {
+                    "value": {
+                      "status": "error",
+                      "code": 500,
+                      "message": "could not delete bin"
+                    }
+                  }
                 }
               }
             }
@@ -458,21 +630,48 @@
                   },
                   "unrecognized-field": {
                     "value": "unrecognized field in the request"
-                  },
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/apiErrorBody"
+                },
+                "examples": {
                   "title-over-limit": {
-                    "value": "title over 200 bytes"
+                    "value": {
+                      "status": "error",
+                      "code": 400,
+                      "message": "title over 200 bytes"
+                    }
                   },
                   "title-control-characters": {
-                    "value": "title may not contain control characters"
+                    "value": {
+                      "status": "error",
+                      "code": 400,
+                      "message": "title may not contain control characters"
+                    }
                   },
                   "description-over-limit": {
-                    "value": "description over 2000 bytes"
+                    "value": {
+                      "status": "error",
+                      "code": 400,
+                      "message": "description over 2000 bytes"
+                    }
                   },
                   "description-control-characters": {
-                    "value": "description may not contain control characters"
+                    "value": {
+                      "status": "error",
+                      "code": 400,
+                      "message": "description may not contain control characters"
+                    }
                   },
                   "password-over-limit": {
-                    "value": "bin password too long"
+                    "value": {
+                      "status": "error",
+                      "code": 400,
+                      "message": "bin password too long"
+                    }
                   }
                 }
               }
@@ -481,44 +680,76 @@
           "401": {
             "description": "Unauthorized",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
                 },
-                "example": "bin password required"
+                "examples": {
+                  "bin-password-required": {
+                    "value": {
+                      "status": "error",
+                      "code": 401,
+                      "message": "bin password required"
+                    }
+                  }
+                }
               }
             }
           },
           "403": {
             "description": "Forbidden",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
                 },
-                "example": "invalid API key"
+                "examples": {
+                  "invalid-api-key": {
+                    "value": {
+                      "status": "error",
+                      "code": 403,
+                      "message": "invalid API key"
+                    }
+                  }
+                }
               }
             }
           },
           "404": {
             "description": "Not Found",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
                 },
-                "example": "unknown bin"
+                "examples": {
+                  "bin-not-found": {
+                    "value": {
+                      "status": "error",
+                      "code": 404,
+                      "message": "bin not found"
+                    }
+                  }
+                }
               }
             }
           },
           "429": {
             "description": "Too Many Requests",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
                 },
-                "example": "too many bad API keys"
+                "examples": {
+                  "too-many-bad-keys": {
+                    "value": {
+                      "status": "error",
+                      "code": 429,
+                      "message": "too many bad API keys"
+                    }
+                  }
+                }
               }
             },
             "headers": {
@@ -533,9 +764,32 @@
           "500": {
             "description": "Internal Server Error",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
+                },
+                "examples": {
+                  "could-not-set-the-bin-password": {
+                    "value": {
+                      "status": "error",
+                      "code": 500,
+                      "message": "could not set the bin password"
+                    }
+                  },
+                  "could-not-update-bin": {
+                    "value": {
+                      "status": "error",
+                      "code": 500,
+                      "message": "could not update bin"
+                    }
+                  },
+                  "could-not-answer-the-bin": {
+                    "value": {
+                      "status": "error",
+                      "code": 500,
+                      "message": "could not answer the bin"
+                    }
+                  }
                 }
               }
             }
@@ -566,9 +820,18 @@
           "500": {
             "description": "Internal Server Error",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
+                },
+                "examples": {
+                  "could-not-answer-health": {
+                    "value": {
+                      "status": "error",
+                      "code": 500,
+                      "message": "could not answer health"
+                    }
+                  }
                 }
               }
             }
@@ -594,9 +857,18 @@
           "500": {
             "description": "Internal Server Error",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
+                },
+                "examples": {
+                  "could-not-answer-health": {
+                    "value": {
+                      "status": "error",
+                      "code": 500,
+                      "message": "could not answer health"
+                    }
+                  }
                 }
               }
             }
@@ -618,22 +890,38 @@
           "403": {
             "description": "Forbidden",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
                 },
-                "example": "invalid API key"
+                "examples": {
+                  "invalid-api-key": {
+                    "value": {
+                      "status": "error",
+                      "code": 403,
+                      "message": "invalid API key"
+                    }
+                  }
+                }
               }
             }
           },
           "429": {
             "description": "Too Many Requests",
             "content": {
-              "text/plain; charset=utf-8": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/apiErrorBody"
                 },
-                "example": "too many bad API keys"
+                "examples": {
+                  "too-many-bad-keys": {
+                    "value": {
+                      "status": "error",
+                      "code": 429,
+                      "message": "too many bad API keys"
+                    }
+                  }
+                }
               }
             },
             "headers": {
@@ -906,6 +1194,30 @@
             "type": "integer"
           }
         }
+      },
+      "apiErrorBody": {
+        "description": "A refusal this API answers: the status it answered, said twice (once as the word error, once as the number), and the fixed sentence naming what went wrong. Every /api refusal answers this shape.",
+        "type": "object",
+        "properties": {
+          "status": {
+            "description": "Always the word error.",
+            "type": "string"
+          },
+          "code": {
+            "description": "The HTTP status answered, the same number as the response's status code.",
+            "type": "integer"
+          },
+          "message": {
+            "description": "The fixed sentence naming the refusal.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "code",
+          "message"
+        ],
+        "additionalProperties": false
       }
     },
     "securitySchemes": {

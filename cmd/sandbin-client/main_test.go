@@ -958,6 +958,77 @@ func TestNewFlagCreatesASecondBin(t *testing.T) {
 	}
 }
 
+// runAgainstRefusal runs the client's upload against a server that answers every request with
+// one pinned refusal body, and hands back what the client printed. The bodies are the shapes
+// the real server answers: the plain http.Error text and the JSON error envelope.
+func runAgainstRefusal(t *testing.T, status int, contentType, body string) (string, string, error) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if contentType != "" {
+			w.Header().Set("Content-Type", contentType)
+		}
+		w.WriteHeader(status)
+		if body != "" {
+			io.WriteString(w, body)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("SANDBIN_URL", srv.URL)
+	t.Setenv("SANDBIN_API_KEY", "test-key")
+	t.Setenv("SANDBIN_BIN_PASSWORD", "")
+	t.Chdir(t.TempDir())
+	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
+	return runClient(t, nil, "upload", "index.html")
+}
+
+// TestRelayReadsEnvelopeMessage is the client half of the JSON error envelope: a server
+// answering {"status":"error","code":403,"message":"invalid API key"} relays as exactly the
+// line the plain-text body used to give, never as the JSON itself.
+func TestRelayReadsEnvelopeMessage(t *testing.T) {
+	stdout, stderr, err := runAgainstRefusal(t, http.StatusForbidden, "application/json",
+		`{"status":"error","code":403,"message":"invalid API key"}`+"\n")
+	if err == nil {
+		t.Fatalf("upload against a 403 envelope succeeded, want an error")
+	}
+	if want := "sandbin-client: 403 invalid API key\n"; stderr != want {
+		t.Errorf("stderr = %q, want %q", stderr, want)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want nothing", stdout)
+	}
+}
+
+// TestRelayFallsBackToPlainBody keeps the old reading for every body that is not the envelope:
+// today's plain refusal text, a page from something that is not this server, and an empty body
+// answering the status text instead.
+func TestRelayFallsBackToPlainBody(t *testing.T) {
+	for _, c := range []struct {
+		status      int
+		contentType string
+		body        string
+		want        string
+	}{
+		{http.StatusMethodNotAllowed, "text/plain; charset=utf-8", "method not allowed\n",
+			"sandbin-client: 405 method not allowed\n"},
+		{http.StatusInternalServerError, "text/html; charset=utf-8", "<h1>gone</h1>\n",
+			"sandbin-client: 500 <h1>gone</h1>\n"},
+		{http.StatusBadGateway, "", "",
+			"sandbin-client: 502 502 Bad Gateway\n"},
+	} {
+		stdout, stderr, err := runAgainstRefusal(t, c.status, c.contentType, c.body)
+		if err == nil {
+			t.Errorf("upload against %d %q succeeded, want an error", c.status, c.body)
+			continue
+		}
+		if stderr != c.want {
+			t.Errorf("status %d body %q: stderr = %q, want %q", c.status, c.body, stderr, c.want)
+		}
+		if stdout != "" {
+			t.Errorf("status %d: stdout = %q, want nothing", c.status, stdout)
+		}
+	}
+}
+
 func TestMissingAPIKeyFailsBeforeAnyRequest(t *testing.T) {
 	f := newFake(t, "test-key")
 	t.Setenv("SANDBIN_API_KEY", "")

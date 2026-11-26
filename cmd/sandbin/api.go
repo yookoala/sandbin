@@ -29,11 +29,12 @@ const maxJSONBodyBytes = 64 << 10
 // authoritative route table build lazily inside apiOnce on the first such request, because every
 // server is a composite literal. Dispatch names a request through the table and only then lets
 // the mux answer it: a path the table does not name — trailing-slash variants and non-hash
-// segments under /api/bins/ included — is the plain 404 unknown bin (the bare /api is named
-// now: it answers the API index), and a named path on a method its set does not allow — every
-// method but GET and HEAD on the bare /api, HEAD on the per-bin spelling, HEAD and DELETE on
-// the collection, every method but GET on the document — is the plain 405. Nothing the table
-// does not name reaches the mux, so the mux's built-in 404, 405 and 301 never answer.
+// segments under /api/bins/ included — is the 404 envelope API endpoint not found (the bare
+// /api is named now: it answers the API index), and a named path on a method its set does not
+// allow — every method but GET and HEAD on the bare /api, HEAD on the per-bin spelling, HEAD
+// and DELETE on the collection, every method but GET on the document — is the 405 envelope
+// method not allowed. Nothing the table does not name reaches the mux, so the mux's built-in
+// 404, 405 and 301 never answer.
 func (s *server) apiRoutes(w http.ResponseWriter, r *http.Request) {
 	s.apiOnce.Do(func() {
 		s.apiMux, s.apiMethods = s.newAPIRoutes()
@@ -41,11 +42,11 @@ func (s *server) apiRoutes(w http.ResponseWriter, r *http.Request) {
 
 	allowed := apiLookupMethodSet(s.apiMethods, r.URL.Path)
 	if allowed == nil {
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		s.writeAPIError(w, http.StatusNotFound, "API endpoint not found")
 		return
 	}
 	if !slices.Contains(allowed, r.Method) {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		s.writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	s.apiMux.ServeHTTP(w, r)
@@ -197,12 +198,13 @@ type healthBody struct {
 func (s *server) apiHealth(w http.ResponseWriter, r *http.Request) {
 	if err := writeJSON(w, http.StatusOK, healthBody{Status: "ok"}); err != nil {
 		log.Printf("encode the health answer: %v", err)
-		http.Error(w, "could not answer health", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not answer health")
 	}
 }
 
 // writeJSON answers status with v as JSON plus a trailing newline, the shape every JSON
-// success on /api carries. Refusals stay http.Error plain text; only success bodies are JSON.
+// success on /api carries. Refusals on the API dispatcher's surface answer the JSON envelope
+// through writeAPIError; http.Error stays outside it.
 func writeJSON(w http.ResponseWriter, status int, v any) error {
 	out, err := json.Marshal(v)
 	if err != nil {
@@ -212,6 +214,25 @@ func writeJSON(w http.ResponseWriter, status int, v any) error {
 	w.WriteHeader(status)
 	_, err = w.Write(append(out, '\n'))
 	return err
+}
+
+// apiErrorBody is the envelope every refusal on the API dispatcher's surface answers: status
+// says which half of the contract this body is, code repeats the transport status so the body
+// alone is self-explanatory, message is the human sentence.
+type apiErrorBody struct {
+	Status  string `json:"status"`
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+// writeAPIError answers status with the error envelope plus a trailing newline, the one shape
+// every refusal on the API dispatcher's surface carries. code is always the status just
+// written, so the two can never disagree.
+func (s *server) writeAPIError(w http.ResponseWriter, status int, message string) {
+	out, _ := json.Marshal(apiErrorBody{Status: "error", Code: status, Message: message})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	w.Write(append(out, '\n'))
 }
 
 // binRequest is the JSON body a bin write carries. Every field stays raw so an absent one
@@ -342,18 +363,18 @@ func (s *server) apiCreateBin(w http.ResponseWriter, r *http.Request) {
 	title, _ := fieldValue(req.Title)
 	description, _ := fieldValue(req.Description)
 	if err := checkBinText("title", title, maxTitleBytes); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := checkBinText("description", description, maxDescriptionBytes); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	// An empty password, given or not, leaves the bin open.
 	password, _ := fieldValue(req.Password)
 	if len(password) > 72 {
-		http.Error(w, "bin password too long", http.StatusBadRequest)
+		s.writeAPIError(w, http.StatusBadRequest, "bin password too long")
 		return
 	}
 
@@ -362,7 +383,7 @@ func (s *server) apiCreateBin(w http.ResponseWriter, r *http.Request) {
 		hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 		if err != nil {
 			log.Printf("hash bin password: %v", err)
-			http.Error(w, "could not set the bin password", http.StatusInternalServerError)
+			s.writeAPIError(w, http.StatusInternalServerError, "could not set the bin password")
 			return
 		}
 		passwordHash = string(hashed)
@@ -371,7 +392,7 @@ func (s *server) apiCreateBin(w http.ResponseWriter, r *http.Request) {
 	hash, err := s.store.CreateBin(passwordHash, title, description)
 	if err != nil {
 		log.Printf("create bin: %v", err)
-		http.Error(w, "could not create bin", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not create bin")
 		return
 	}
 
@@ -379,7 +400,7 @@ func (s *server) apiCreateBin(w http.ResponseWriter, r *http.Request) {
 	bin, ok, err := s.store.GetBin(hash)
 	if err != nil || !ok {
 		log.Printf("get bin %q: %v", hash, err)
-		http.Error(w, "could not create bin", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not create bin")
 		return
 	}
 
@@ -387,7 +408,7 @@ func (s *server) apiCreateBin(w http.ResponseWriter, r *http.Request) {
 	created := binToJSON(bin)
 	if err := writeJSON(w, http.StatusCreated, created); err != nil {
 		log.Printf("encode the answer of bin %q: %v", hash, err)
-		http.Error(w, "could not answer the bin", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not answer the bin")
 	}
 }
 
@@ -443,7 +464,7 @@ func (s *server) apiListBins(w http.ResponseWriter, r *http.Request) {
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 1 {
-			http.Error(w, "invalid limit", http.StatusBadRequest)
+			s.writeAPIError(w, http.StatusBadRequest, "invalid limit")
 			return
 		}
 		if n > maxListLimit {
@@ -456,7 +477,7 @@ func (s *server) apiListBins(w http.ResponseWriter, r *http.Request) {
 	if raw := r.URL.Query().Get("cursor"); raw != "" {
 		cursor, err := decodeCursor(raw)
 		if err != nil {
-			http.Error(w, "invalid cursor", http.StatusBadRequest)
+			s.writeAPIError(w, http.StatusBadRequest, "invalid cursor")
 			return
 		}
 		cutoff = &cursor
@@ -465,7 +486,7 @@ func (s *server) apiListBins(w http.ResponseWriter, r *http.Request) {
 	bins, hasMore, err := s.store.ListBins(limit, cutoff)
 	if err != nil {
 		log.Printf("list bins: %v", err)
-		http.Error(w, "could not list bins", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not list bins")
 		return
 	}
 
@@ -480,7 +501,7 @@ func (s *server) apiListBins(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := writeJSON(w, http.StatusOK, answer); err != nil {
 		log.Printf("encode the bins listing: %v", err)
-		http.Error(w, "could not list bins", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not list bins")
 	}
 }
 
@@ -508,21 +529,21 @@ func (s *server) apiInspectBin(w http.ResponseWriter, r *http.Request) {
 	bin, ok, err := s.store.GetBin(hash)
 	if err != nil {
 		log.Printf("get bin %q: %v", hash, err)
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		s.writeAPIError(w, http.StatusNotFound, "bin not found")
 		return
 	}
 	if !ok {
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		s.writeAPIError(w, http.StatusNotFound, "bin not found")
 		return
 	}
-	if !s.binAuthorized(w, r, bin) {
+	if !s.binAuthorized(w, r, bin, true) {
 		return
 	}
 
 	files, err := s.store.ListFiles(hash)
 	if err != nil {
 		log.Printf("list bin %q: %v", hash, err)
-		http.Error(w, "could not list bin", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not list bin")
 		return
 	}
 
@@ -535,7 +556,7 @@ func (s *server) apiInspectBin(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := writeJSON(w, http.StatusOK, detail); err != nil {
 		log.Printf("encode the answer of bin %q: %v", hash, err)
-		http.Error(w, "could not answer the bin", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not answer the bin")
 	}
 }
 
@@ -559,36 +580,36 @@ func (s *server) apiPatchBin(w http.ResponseWriter, r *http.Request) {
 	title, titleGiven := fieldValue(req.Title)
 	if titleGiven {
 		if err := checkBinText("title", title, maxTitleBytes); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			s.writeAPIError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
 	description, descriptionGiven := fieldValue(req.Description)
 	if descriptionGiven {
 		if err := checkBinText("description", description, maxDescriptionBytes); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			s.writeAPIError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
 	password, passwordGiven := fieldValue(req.Password)
 	if passwordGiven && len(password) > 72 {
-		http.Error(w, "bin password too long", http.StatusBadRequest)
+		s.writeAPIError(w, http.StatusBadRequest, "bin password too long")
 		return
 	}
 
 	bin, found, err := s.store.GetBin(hash)
 	if err != nil {
 		log.Printf("get bin %q: %v", hash, err)
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		s.writeAPIError(w, http.StatusNotFound, "bin not found")
 		return
 	}
 	if !found {
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		s.writeAPIError(w, http.StatusNotFound, "bin not found")
 		return
 	}
 	// Clearing or rotating a protected bin's password goes through the same gate as every
 	// other change to it: the current password first, and a 401 that charges nothing.
-	if !s.binAuthorized(w, r, bin) {
+	if !s.binAuthorized(w, r, bin, true) {
 		return
 	}
 
@@ -608,7 +629,7 @@ func (s *server) apiPatchBin(w http.ResponseWriter, r *http.Request) {
 			hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 			if err != nil {
 				log.Printf("hash bin password: %v", err)
-				http.Error(w, "could not set the bin password", http.StatusInternalServerError)
+				s.writeAPIError(w, http.StatusInternalServerError, "could not set the bin password")
 				return
 			}
 			passwordArg = sql.NullString{String: string(hashed), Valid: true}
@@ -618,12 +639,12 @@ func (s *server) apiPatchBin(w http.ResponseWriter, r *http.Request) {
 	updated, err := s.store.UpdateBinMeta(hash, titleArg, descriptionArg, passwordArg)
 	if err != nil {
 		log.Printf("update bin %q: %v", hash, err)
-		http.Error(w, "could not update bin", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not update bin")
 		return
 	}
 	if !updated {
 		// The bin went away between the read and the write.
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		s.writeAPIError(w, http.StatusNotFound, "bin not found")
 		return
 	}
 
@@ -632,19 +653,19 @@ func (s *server) apiPatchBin(w http.ResponseWriter, r *http.Request) {
 	bin, found, err = s.store.GetBin(hash)
 	if err != nil {
 		log.Printf("re-read bin %q after the update: %v", hash, err)
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		s.writeAPIError(w, http.StatusNotFound, "bin not found")
 		return
 	}
 	if !found {
 		// The bin went away between the update and the re-read.
 		log.Printf("re-read bin %q after the update: the bin is gone", hash)
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		s.writeAPIError(w, http.StatusNotFound, "bin not found")
 		return
 	}
 	patched := binToJSON(bin)
 	if err := writeJSON(w, http.StatusOK, patched); err != nil {
 		log.Printf("encode the answer of bin %q: %v", hash, err)
-		http.Error(w, "could not answer the bin", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not answer the bin")
 	}
 }
 
@@ -659,26 +680,26 @@ func (s *server) apiDeleteBin(w http.ResponseWriter, r *http.Request) {
 	bin, found, err := s.store.GetBin(hash)
 	if err != nil {
 		log.Printf("get bin %q: %v", hash, err)
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		s.writeAPIError(w, http.StatusNotFound, "bin not found")
 		return
 	}
 	if !found {
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		s.writeAPIError(w, http.StatusNotFound, "bin not found")
 		return
 	}
-	if !s.binAuthorized(w, r, bin) {
+	if !s.binAuthorized(w, r, bin, true) {
 		return
 	}
 
 	deleted, err := s.store.DeleteBin(hash)
 	if err != nil {
 		log.Printf("delete bin %q: %v", hash, err)
-		http.Error(w, "could not delete bin", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not delete bin")
 		return
 	}
 	if !deleted {
 		// The bin went away between the read and the delete.
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		s.writeAPIError(w, http.StatusNotFound, "bin not found")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
