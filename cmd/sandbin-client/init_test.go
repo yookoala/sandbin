@@ -367,6 +367,23 @@ func TestInitEnvKeyIsUsedButNotStored(t *testing.T) {
 	}
 }
 
+// TestInitEnvKeyReplacesTheStoredKey: a file that already names an api_key, an environment
+// naming a different one, and --reinit consent — the stored field follows the key the server
+// just verified, while the file's url and its bin/protected pair behave as they do today.
+func TestInitEnvKeyReplacesTheStoredKey(t *testing.T) {
+	newFake(t, "test-key")
+	url1 := os.Getenv("SANDBIN_URL")
+	writeWorkDirFile(t, configFileName, "sandbin_url: "+url1+"\napi_key: stored-key\nbin: bin0001\nprotected: true\n")
+
+	if _, stderr, err := runClient(t, nil, "init", "--reinit"); err != nil {
+		t.Fatalf("init with an env key over a stored one: %v; stderr %s", err, stderr)
+	}
+	cfg := initConfig(t)
+	if cfg.URL != url1 || cfg.APIKey != "test-key" || cfg.Bin != "bin0001" || !cfg.Protected {
+		t.Errorf("%s = %+v, want the verified key stored in the field the file already had, and the url, bin and protected kept", configFileName, cfg)
+	}
+}
+
 // TestInitEnvOnlyStoresNeitherSetting: an init fed only by the environment verifies,
 // reports and leaves the file holding neither setting — the empty mapping is the whole
 // file, and the .gitignore line is still written.
