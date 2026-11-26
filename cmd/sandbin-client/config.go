@@ -18,12 +18,13 @@ const (
 // clientConfig is what .sandbin.yaml remembers about this project's sandbin setup.
 // Only init writes an api_key into the file, at the user's explicit request; an
 // ordinary upload run never newly persists a key that came from flag or env. The
-// bin password stays env-only, as before.
+// bin password stays env-only, as before. A field this project does not have is left
+// out of the file rather than written empty.
 type clientConfig struct {
-	URL       string `yaml:"sandbin_url"`
-	APIKey    string `yaml:"api_key"`
-	Bin       string `yaml:"bin"`
-	Protected bool   `yaml:"protected"`
+	URL       string `yaml:"sandbin_url,omitempty"`
+	APIKey    string `yaml:"api_key,omitempty"`
+	Bin       string `yaml:"bin,omitempty"`
+	Protected bool   `yaml:"protected,omitempty"`
 }
 
 // readConfig reads .sandbin.yaml from dir. found is false only when the file is

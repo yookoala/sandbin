@@ -680,10 +680,12 @@ func initCommand(stdin io.Reader, stdout, stderr io.Writer, hook cli.OnUsageErro
 }
 
 // runInit answers init: values come from flag, then env, then the existing file; what is
-// still missing on a terminal is asked, what is missing without one falls back (the url)
-// or refuses (the key). Nothing is written until the server has verified the key, so init
-// never saves a broken setup. A project whose file already holds both a url and a key is
-// re-initialized only by consent: a y at the terminal question, or --reinit for a script.
+// still missing on a terminal is asked, and what is missing without one refuses — the url
+// for its own line, then the key. Nothing is written until the server has verified the
+// key, so init never saves a broken setup, and it stores only what this run chose or what
+// the file already had: a setting the environment alone supplied creates no field. A
+// project whose file already holds both a url and a key is re-initialized only by consent:
+// a y at the terminal question, or --reinit for a script.
 func runInit(c *cli.Context, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	// init reports its own failures without the 401 bin-password hint line: it verifies an
 	// API key, and a bin password has no part in that.
@@ -728,7 +730,10 @@ func runInit(c *cli.Context, stdin io.Reader, stdout, stderr io.Writer) (err err
 
 	// The flag > env > file ladder, same as an upload verb; the flags carry no default
 	// precisely so a value they do not carry can fall through to a prompt. The ladder
-	// reads the environment itself, exactly like readSettings.
+	// reads the environment itself, exactly like readSettings, which is what makes
+	// c.IsSet the straight answer about the command line that the write rule below needs.
+	// A flag answered with the empty string is nothing given, so it is not a choice.
+	flagGiven, keyFlagged := c.IsSet("url") && c.String("url") != "", c.IsSet("api-key") && c.String("api-key") != ""
 	base := c.String("url")
 	if base == "" {
 		base = os.Getenv("SANDBIN_URL")
@@ -744,19 +749,28 @@ func runInit(c *cli.Context, stdin io.Reader, stdout, stderr io.Writer) (err err
 		key = cfg.APIKey
 	}
 
+	// A prompt answer is the human's own choice and so is storable; a bare Enter at the
+	// url prompt is that human taking the address the prompt shows. With no terminal to
+	// ask, a url nobody supplied is a refusal rather than a guess at a server.
+	typedURL, typedKey := false, false
 	if base == "" && isTerminal(stdin) {
 		fmt.Fprintf(stdout, "sandbin_url [%s]: ", defaultURL)
 		line, _ := reader.ReadString('\n')
 		base = strings.TrimRight(line, "\r\n")
+		typedURL = true
+		if base == "" {
+			base = defaultURL
+		}
 	}
 	if base == "" {
-		base = defaultURL
+		return errors.New("no server URL: pass --url or set SANDBIN_URL")
 	}
 	if key == "" && isTerminal(stdin) {
 		// shortcut: visible echo for the key prompt; upgrade with golang.org/x/term ReadPassword if agents ever need masking
 		fmt.Fprint(stdout, "api_key: ")
 		line, _ := reader.ReadString('\n')
 		key = strings.TrimRight(line, "\r\n")
+		typedKey = true
 	}
 	if key == "" {
 		return errors.New("no API key: pass --api-key, set SANDBIN_API_KEY or answer the init prompt")
@@ -770,9 +784,20 @@ func runInit(c *cli.Context, stdin io.Reader, stdout, stderr io.Writer) (err err
 		return err
 	}
 
-	// The file's bin and protected belong to its url: they survive only when that url is
-	// the one being saved. Writing the verified key is init's job and only init's.
-	next := clientConfig{URL: base, APIKey: key, Bin: cfg.Bin, Protected: cfg.Protected}
+	// What gets stored: this run's own choice (a flag, a prompt answer) or a field the
+	// file already had, which follows the verified value. A value that came only from the
+	// environment may update such a field but never creates one, so an env-only init
+	// writes neither and its file is not an initialized one. An empty value is never
+	// stored. The file's bin and protected belong to its url: they survive only when that
+	// url is the one being saved. Writing the verified key is init's job and only init's.
+	next := clientConfig{}
+	if flagGiven || typedURL || (cfgFound && cfg.URL != "") {
+		next.URL = base
+	}
+	if keyFlagged || typedKey || (cfgFound && cfg.APIKey != "") {
+		next.APIKey = key
+	}
+	next.Bin, next.Protected = cfg.Bin, cfg.Protected
 	if !cfgFound || cfg.URL != base {
 		next.Bin, next.Protected = "", false
 	}

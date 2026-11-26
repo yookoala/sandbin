@@ -224,21 +224,24 @@ func TestInitNonTerminalMissingKeyRefuses(t *testing.T) {
 	}
 }
 
-// TestInitNonTerminalUrlTakesDefault: a missing url on a non-terminal quietly falls to
-// the default — the refusal below proves it is the url that was tried.
-func TestInitNonTerminalUrlTakesDefault(t *testing.T) {
-	newFake(t, "test-key")
+// TestInitNonTerminalWithoutAnyURLRefuses: no url in the flag, the environment or the
+// file is a refusal naming both ways in, not a quiet dial of the default address.
+func TestInitNonTerminalWithoutAnyURLRefuses(t *testing.T) {
+	f := newFake(t, "test-key")
 	t.Setenv("SANDBIN_URL", "")
 	t.Setenv("SANDBIN_API_KEY", "")
 
 	_, stderr, err := runClient(t, nil, "init", "--api-key", "test-key")
 	if err == nil {
-		t.Fatalf("init against the default url succeeded, want an error")
+		t.Fatalf("init with no url anywhere succeeded, want the refusal")
 	}
-	if !strings.Contains(stderr, "cannot reach "+defaultURL) {
-		t.Errorf("stderr = %q, want it to name the default url it tried", stderr)
+	if !strings.Contains(stderr, "no server URL: pass --url or set SANDBIN_URL") {
+		t.Errorf("stderr = %q, want the init refusal naming --url and SANDBIN_URL", stderr)
 	}
 	noInitFiles(t)
+	if f.requestsSeen() != 0 {
+		t.Errorf("requests = %d, want none", f.requestsSeen())
+	}
 }
 
 // TestInitWizardPromptsAndWrites drives the whole wizard on a fake terminal: Enter was
@@ -318,9 +321,9 @@ func TestInitWizardEmptyKeyRefuses(t *testing.T) {
 	noInitFiles(t)
 }
 
-// TestInitStoresTheEnvKey: storing a key that came only from the env is init's job —
-// it verifies the key and writes it into the file.
-func TestInitStoresTheEnvKey(t *testing.T) {
+// TestInitEnvKeyIsUsedButNotStored: the env key is verified and used, and the file's own
+// url stays; a file that does not already name an api_key does not gain one.
+func TestInitEnvKeyIsUsedButNotStored(t *testing.T) {
 	newFake(t, "test-key")
 	url1 := os.Getenv("SANDBIN_URL")
 	writeWorkDirFile(t, configFileName, "sandbin_url: "+url1+"\n")
@@ -330,8 +333,132 @@ func TestInitStoresTheEnvKey(t *testing.T) {
 		t.Fatalf("init with an env key: %v; stderr %s", err, stderr)
 	}
 	cfg := initConfig(t)
-	if cfg.APIKey != "test-key" || cfg.URL != url1 {
-		t.Errorf("%s = %+v, want init to store the verified env key next to the url", configFileName, cfg)
+	if cfg.URL != url1 || cfg.APIKey != "" {
+		t.Errorf("%s = %+v, want the file's url kept and the env key not stored", configFileName, cfg)
+	}
+	raw, _ := readConfigFile(t)
+	if strings.Contains(string(raw), "api_key:") {
+		t.Errorf("%s =\n%s\nwant no api_key line: the environment never creates a field", configFileName, raw)
+	}
+}
+
+// TestInitEnvOnlyStoresNeitherSetting: an init fed only by the environment verifies,
+// reports and leaves the file holding neither setting — the empty mapping is the whole
+// file, and the .gitignore line is still written.
+func TestInitEnvOnlyStoresNeitherSetting(t *testing.T) {
+	f := newFake(t, "test-key")
+	url1 := os.Getenv("SANDBIN_URL")
+
+	stdout, stderr, err := runClient(t, nil, "init")
+	if err != nil {
+		t.Fatalf("init on the environment alone: %v; stderr %s", err, stderr)
+	}
+	if want := "initialized " + url1 + "\n"; stdout != want {
+		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want nothing on a successful init", stderr)
+	}
+	raw, _ := readConfigFile(t)
+	if got := strings.TrimSpace(string(raw)); got != "{}" {
+		t.Errorf("%s = %q, want the empty mapping: neither setting stored", configFileName, got)
+	}
+	if cfg := initConfig(t); cfg != (clientConfig{}) {
+		t.Errorf("%s = %+v, want no stored settings", configFileName, cfg)
+	}
+	if got := string(gitignoreBytes(t)); got != configFileName+"\n" {
+		t.Errorf("%s = %q, want the one line naming the config file", gitignoreFileName, got)
+	}
+	if f.requestsSeen() != 1 {
+		t.Errorf("requests = %d, want the one verify request", f.requestsSeen())
+	}
+}
+
+// TestInitEnvOnlyIsNotInitializedSoReRunningIsHarmless: the file an env-only init writes
+// holds neither field, so it is not initialized — the guard never fires, nothing is asked,
+// and re-running init in a CI job is one more verify request against unchanged files.
+func TestInitEnvOnlyIsNotInitializedSoReRunningIsHarmless(t *testing.T) {
+	f := newFake(t, "test-key")
+	url1 := os.Getenv("SANDBIN_URL")
+	if _, stderr, err := runClient(t, nil, "init"); err != nil {
+		t.Fatalf("first init: %v; stderr %s", err, stderr)
+	}
+	cfgRaw, _ := readConfigFile(t)
+	gitRaw := gitignoreBytes(t)
+
+	stdout, stderr, err := runClient(t, nil, "init")
+	if err != nil {
+		t.Fatalf("second init without --reinit: %v; stderr %s", err, stderr)
+	}
+	if want := "initialized " + url1 + "\n"; stdout != want {
+		t.Errorf("stdout = %q, want the ordinary init with no guard wording", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want no warning on a file that is not initialized", stderr)
+	}
+	if strings.Contains(stdout+stderr, "re-initialize") {
+		t.Errorf("stdout %q / stderr %q, want no guard question on an env-only file", stdout, stderr)
+	}
+	if f.requestsSeen() != 2 {
+		t.Errorf("requests = %d, want the second run's own verify request", f.requestsSeen())
+	}
+	assertProjectUntouched(t, cfgRaw, gitRaw)
+}
+
+// TestInitEnvOnlyUploadStillPairsBinWithItsURL: the env-only init leaves a legal empty
+// file, and the upload after it still stores its bin beside the url the bin belongs to —
+// with no api_key line, and no protected line for a bin with no password.
+func TestInitEnvOnlyUploadStillPairsBinWithItsURL(t *testing.T) {
+	newFake(t, "test-key")
+	url1 := os.Getenv("SANDBIN_URL")
+	if _, stderr, err := runClient(t, nil, "init"); err != nil {
+		t.Fatalf("init on the environment alone: %v; stderr %s", err, stderr)
+	}
+	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
+
+	stdout, stderr, err := runClient(t, nil, "upload", "index.html")
+	if err != nil {
+		t.Fatalf("upload after the env-only init: %v; stderr %s", err, stderr)
+	}
+	hash := binHashOf(t, stdout)
+
+	raw, _ := readConfigFile(t)
+	text := string(raw)
+	if !strings.Contains(text, "sandbin_url: "+url1) {
+		t.Errorf("%s =\n%s\nwant the url this bin belongs to", configFileName, text)
+	}
+	if !strings.Contains(text, "bin: "+hash) {
+		t.Errorf("%s =\n%s\nwant the bin %s stored beside it", configFileName, text, hash)
+	}
+	if strings.Contains(text, "api_key:") || strings.Contains(text, "protected:") {
+		t.Errorf("%s =\n%s\nwant no api_key line and no protected line on a bin with no password", configFileName, text)
+	}
+	cfg := initConfig(t)
+	if cfg.URL != url1 || cfg.Bin != hash || cfg.APIKey != "" || cfg.Protected {
+		t.Errorf("%s = %+v, want the url and the bin and nothing else", configFileName, cfg)
+	}
+}
+
+// TestInitEmptyFlagsAreNoChoice: a flag answered with the empty string contributes
+// nothing, so the url and key in use still came only from the environment — and an
+// environment-only run still creates no field.
+func TestInitEmptyFlagsAreNoChoice(t *testing.T) {
+	f := newFake(t, "test-key")
+	url1 := os.Getenv("SANDBIN_URL")
+
+	stdout, stderr, err := runClient(t, nil, "init", "--url", "", "--api-key", "")
+	if err != nil {
+		t.Fatalf("init with empty flags: %v; stderr %s", err, stderr)
+	}
+	if want := "initialized " + url1 + "\n"; stdout != want {
+		t.Errorf("stdout = %q, want %q: the env url is used, the empty flag is not", stdout, want)
+	}
+	raw, _ := readConfigFile(t)
+	if got := strings.TrimSpace(string(raw)); got != "{}" {
+		t.Errorf("%s = %q, want the empty mapping: an empty flag chose nothing", configFileName, got)
+	}
+	if f.requestsSeen() != 1 {
+		t.Errorf("requests = %d, want the one verify request", f.requestsSeen())
 	}
 }
 
@@ -617,8 +744,8 @@ func TestInitReinitOnFreshDirectory(t *testing.T) {
 		t.Errorf("stderr = %q, want nothing", stderr)
 	}
 	cfg := initConfig(t)
-	if cfg.URL != url1 || cfg.APIKey != "test-key" || cfg.Bin != "" || cfg.Protected {
-		t.Errorf("%s = %+v, want the ordinary init's file", configFileName, cfg)
+	if cfg != (clientConfig{}) {
+		t.Errorf("%s = %+v, want the empty mapping: both settings came from the environment", configFileName, cfg)
 	}
 	if got := string(gitignoreBytes(t)); got != configFileName+"\n" {
 		t.Errorf("%s = %q, want the one line naming the config file", gitignoreFileName, got)
@@ -681,8 +808,8 @@ func TestInitPartialConfigIsNotInitialized(t *testing.T) {
 			t.Errorf("stdout %q / stderr %q, want no guard question on a partial file", stdout, stderr)
 		}
 		cfg := initConfig(t)
-		if cfg.URL != url1 || cfg.APIKey != "test-key" {
-			t.Errorf("%s = %+v, want the env key stored next to the file's url", configFileName, cfg)
+		if cfg.URL != url1 || cfg.APIKey != "" {
+			t.Errorf("%s = %+v, want the file's url kept and the env key used but not stored", configFileName, cfg)
 		}
 	})
 	t.Run("key only", func(t *testing.T) {
