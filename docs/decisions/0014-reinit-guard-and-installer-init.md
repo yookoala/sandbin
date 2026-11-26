@@ -16,6 +16,11 @@ only for the API key. Plan in `docs/plans/0014-reinit-guard-and-installer-init.m
 | Non-terminal installer behavior | Agents and CI runs get the hint line `sandbin-installer: run "<path> init --url <base> --api-key YOUR_KEY" to finish setup` on stderr, exit 0. SKILL.md already teaches agents to run init themselves with `--api-key`; the guard wording there tells them about `--reinit` and the delete-the-file path. |
 | Docs ripple | README install section: the installer now initializes the current directory with a single key question, and the non-terminal hint wording. README init section: the guard paragraph with verbatim refusals and `--reinit`. Front page: one clause under the skill install paragraph naming the key-question behavior; `TestFrontPageAtRoot` marker extended. SKILL.md: guard sentence in the init section (`--reinit`, delete-to-start-over). install.sh header comment updated. |
 
+Amended by [0032-client-env-only-settings](0032-client-env-only-settings.md): the guard's code and
+its "the file, not the environment, is the marker" rule stand, and an `init` fed only by the
+environment produces a file that holds neither field and so is not initialized — intended, not a
+hole.
+
 ## Skipped on purpose
 
 Piped `y` answers to the guard question (the user chose the flag instead), remembering consent

@@ -1,5 +1,186 @@
 # Env-only client settings — Implementation Plan
 
+## Status
+
+Status: implemented and closed 2026-11-26. Decision+plan `26ebb70`; Task 1 `70c4998`
+"feat(client): a run with no server url refuses and names the fix"; Task 2 `c4b1218`
+"feat(client): init stops storing settings the environment supplied"; Task 3 `7bd3adf`
+"docs: the client works from the environment and says so when it cannot"; Task 4 closes the plan
+with the three amendments and this record. Task reviews left six Minors, all deliberately deferred,
+listed under Carried findings below; nothing outside the four docs files named in Task 4 changed.
+
+Final gates green — `env -u SANDBIN_API_KEY make test` ran twice in this task, once after the
+amendments and once after this Status was written, both exit 0 (the per-package times below are
+from the first of the two; the re-run was identical apart from timing). The gates are run under
+`env -u SANDBIN_API_KEY` because the shell exports a 66-char quote-wrapped `SANDBIN_API_KEY`
+which otherwise feeds `serve`'s default and breaks `cmd/sandbin`'s `TestServeFlagParsing`, the
+noise Task 1 Step 6 notes: `gofmt -l .` empty, `go vet ./...`,
+`go build ./...`, `go test -count=1 ./...` and `go test -race -count=1 ./...` all ok —
+`cmd/sandbin` 3.237s / 37.483s, `cmd/sandbin-client` 0.382s / 5.015s, `internal/frontpage`
+0.003s / 1.024s, `internal/robots` 0.002s / 1.015s, `internal/version` 0.003s / 1.017s.
+Top-level counts (`go test -list '.+' | grep -c '^Test'`): `cmd/sandbin-client` **119**
+(111 → 115 at Task 1 → 119 at Task 2), `cmd/sandbin` 260, `internal/frontpage` 17,
+`internal/robots` 2, `internal/version` 6 — the last four never moved; no test was deleted.
+
+Assertions that moved, exactly the task-listed ones, each verified against HEAD: Task 1's
+`TestURLPrecedenceFlagEnvFileDefault` → `TestURLPrecedenceFlagEnvFileThenRefusal` with only its
+last block rewritten (verb refusal verbatim, `defaultURL` absent from stderr, config file absent,
+request counts 4/2 kept); Task 2's `TestInitStoresTheEnvKey` → `TestInitEnvKeyIsUsedButNotStored`
+(assert `cfg.APIKey == ""` and no raw `api_key:` line), `TestInitNonTerminalUrlTakesDefault`
+replaced by `TestInitNonTerminalWithoutAnyURLRefuses`, one assertion flipped each in
+`TestInitPartialConfigIsNotInitialized`/`url only` (the `cfg.APIKey` half) and
+`TestInitReinitOnFreshDirectory` (`cfg.URL != url1 || cfg.APIKey != "test-key"` →
+`cfg != clientConfig{}`). New tests: Task 1's four in `main_test.go`
+(`TestNoServerURLRefusesNamingInit`, `TestEveryVerbRefusesWithoutAServerURL`,
+`TestSettingsRefusalDoesNotConsumeStdin`, `TestEmptyFlagURLIsNoURLAtAll`); Task 2's three
+`TestInitEnvOnly*` in `init_test.go` plus the replacement `TestInitNonTerminalWithoutAnyURLRefuses`;
+and the controller-ruled `TestInitEmptyFlagsAreNoChoice` — the spec's "the environment alone adds
+nothing" governs the brief's looser `c.IsSet` pseudo-code.
+
+### The live walk (Task 4)
+
+`make build` produced `dist/sandbin` and `dist/sandbin-client`. The walk ran in
+`/tmp/opencode/sandbin-0032-walk` (scratch project directories `proj1` and `proj2`, one
+`index.html` each) against a live `serve` on `127.0.0.1:18080` with `--db` inside the scratch
+directory, so the db and its control socket stayed in the scratch too. Walk key `walk-0032-key`.
+This shell also exports `SANDBIN_URL=https://preview.yookoala.dev` and the 66-char quoted
+`SANDBIN_API_KEY`; every command below names its own environment explicitly, so no ambient value
+decided any step's output. Server start:
+
+```text
+$ env -u SANDBIN_URL SANDBIN_API_KEY=walk-0032-key dist/sandbin serve --addr 127.0.0.1:18080 --db /tmp/opencode/sandbin-0032-walk/server.db
+2026-11-27 02:13:27 sandbin control socket on /tmp/opencode/sandbin-0032-walk/server.db.sock
+2026-11-27 02:13:27 sandbin listening on 127.0.0.1:18080
+```
+
+1. env-only upload in `proj1` — a `created` line with the bin base last, and the file holds only
+   `sandbin_url` and `bin`: no `api_key`, no `protected` (this bin has no password), and `ls -a`
+   proves no `.gitignore` (only `init` writes one):
+
+```text
+$ env SANDBIN_URL=http://127.0.0.1:18080 SANDBIN_API_KEY=walk-0032-key dist/sandbin-client upload index.html
+created http://127.0.0.1:18080/c5c1d52e/index.html
+http://127.0.0.1:18080/c5c1d52e/
+$ cat .sandbin.yaml
+sandbin_url: http://127.0.0.1:18080
+bin: c5c1d52e
+$ ls -a
+.	..	.sandbin.yaml	index.html
+```
+
+2. the same command again — `updated`, same hash; `grep -c` over `GET /api/bins` proves one bin at
+   the server:
+
+```text
+updated http://127.0.0.1:18080/c5c1d52e/index.html
+http://127.0.0.1:18080/c5c1d52e/
+$ curl -s -H "X-API-Key: walk-0032-key" http://127.0.0.1:18080/api/bins
+{"bins":[{"bin":"c5c1d52e","url":"/c5c1d52e/","title":"","description":"","has_password":false,"created_at":"2026-11-26T18:13:32Z"}]}
+$ curl -s -H "X-API-Key: walk-0032-key" http://127.0.0.1:18080/api/bins | grep -c '"bin"'
+1
+```
+
+3. same directory, url variable cleared — a refusal naming `init`; the file byte-identical
+   (md5 `fda79964fde18d8603e7c20300eeb31c` before and after) and the server still lists one bin:
+
+```text
+$ env -u SANDBIN_URL -u SANDBIN_API_KEY dist/sandbin-client upload index.html; echo "exit=$?"
+sandbin-client: no API key: pass --api-key, set SANDBIN_API_KEY or run sandbin-client init
+exit=1
+```
+
+   Two faithful deviations, recorded as seen. The file pins `sandbin_url`, so the url resolves
+   from it and the refusal printed is the **key** half — the spec's one-refusal-at-a-time rule
+   working as written — which means the plan's step 4 vs step 5 "the same refusal" is really "the
+   same family of refusals naming `init`", not the same line. And `-u SANDBIN_API_KEY` had to be
+   added to the brief's `env -u SANDBIN_URL`: left in place, this shell's ambient quoted 66-char
+   key would have answered the step with a 403 request instead of a refusal — exactly the
+   ambient-value trap Task 1 Step 6 warns about.
+
+4. fresh `proj2` with neither variable — the url refusal verbatim, and nothing written:
+
+```text
+$ env -u SANDBIN_URL -u SANDBIN_API_KEY dist/sandbin-client upload index.html; echo "exit=$?"
+sandbin-client: no server URL: pass --url, set SANDBIN_URL or run sandbin-client init
+exit=1
+$ ls -a
+.	..	index.html
+```
+
+5. env-only `init` in `proj2`, then the identical run again with no `--reinit` — `initialized`, an
+   empty mapping, and the guard never fires:
+
+```text
+$ env SANDBIN_URL=http://127.0.0.1:18080 SANDBIN_API_KEY=walk-0032-key dist/sandbin-client init; echo "exit=$?"
+initialized http://127.0.0.1:18080
+exit=0
+$ cat .sandbin.yaml
+{}
+$ md5sum .sandbin.yaml && ls -a
+8a80554c91d9fca8acb82f023de02f11  .sandbin.yaml
+.	..	.gitignore	.sandbin.yaml	index.html
+$ # identical re-run, no --reinit: same line, no warning, file byte-identical
+$ env SANDBIN_URL=http://127.0.0.1:18080 SANDBIN_API_KEY=walk-0032-key dist/sandbin-client init; echo "exit=$?"
+initialized http://127.0.0.1:18080
+exit=0
+$ md5sum .sandbin.yaml
+8a80554c91d9fca8acb82f023de02f11  .sandbin.yaml
+```
+
+   `init` also created a `.gitignore` holding exactly `.sandbin.yaml` — 0014's existing behavior,
+   untouched by this plan.
+
+6. wrong key in `proj1` (where the file supplies the url) — the client relays the server's own 403
+   wording; the file is byte-identical afterwards, and once the lockout the bad attempt triggers is
+   cleared (next block), `GET /api/bins` still lists exactly one bin, so the rejected upload wrote
+   nothing at the server:
+
+```text
+$ env -u SANDBIN_URL SANDBIN_API_KEY=wrong dist/sandbin-client upload index.html; echo "exit=$?"
+sandbin-client: 403 invalid API key
+exit=1
+```
+
+   The plan's "`server rejected this API key`-family wording *from the server*": the upload path
+   relays the server's body (`403 invalid API key`); `server rejected this API key` is the client's
+   own verify-key wording, which `init` uses. The family holds; the exact line differs by path.
+
+7. the lockout the bad key charged, seen while proving step 6 — an attempt from a blocked address
+   is itself a failure even with the correct key, and the block walks up (`handlers.go:201-214`;
+   the 0003/0005 rule behind never-retry):
+
+```text
+$ curl -s -H "X-API-Key: walk-0032-key" http://127.0.0.1:18080/api/bins
+too many bad API keys
+$ dist/sandbin ip list --db /tmp/opencode/sandbin-0032-walk/server.db
+IP         FAILURES  BLOCKED UNTIL         REMAINING  LAST FAILURE
+127.0.0.1  3         2026-11-26T19:44:27Z  1h30m0s    2026-11-26T18:14:27Z
+$ dist/sandbin ip unblock --db /tmp/opencode/sandbin-0032-walk/server.db 127.0.0.1
+unblocked 127.0.0.1
+$ curl -s -H "X-API-Key: walk-0032-key" http://127.0.0.1:18080/api/bins | grep -c '"bin"'
+1
+```
+
+Then the server was sent SIGTERM and `127.0.0.1:18080` answered connection-refused; nothing was
+created outside `/tmp/opencode/sandbin-0032-walk`.
+
+Carried findings — six task-review Minors, deliberately deferred, none blocking merge:
+
+1. No test pins "bare Enter at a *reachable* `init` url prompt stores `sandbin_url:
+   http://localhost:8080`" — `defaultURL` is a constant (`cmd/sandbin-client/main.go:25`), so the
+   wizard tests cannot reach a successful write.
+2. `cmd/sandbin-client/main.go` has the env-fallback pair twice (`readSettings` ~187-192, `runInit`
+   ~732-740), mirroring the pre-existing ladder duplication.
+3. `docs/usages/sandbin-client-upload.md:18` says the file "carries the url and key for a whole
+   project" — in an env-only project it carries the url and no key.
+4. `skills/sandbin-preview/SKILL.md:32` compresses the env rule, losing the "the environment may
+   update a field the file already has" nuance that `docs/usages/sandbin-client-init.md:203-204`
+   states.
+5. `docs/usages/sandbin-client-init.md:107-115` — a colon promising an `--api-key` refusal is
+   followed by a fence showing the url refusal (correct order, momentarily mismatched prose).
+6. Cosmetic: `runInit`'s `flagGiven, keyFlagged := …` line packs two compound expressions into one
+   ~110-char line.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let `sandbin-client` work from `SANDBIN_URL` and `SANDBIN_API_KEY` alone — refusing loudly and naming `init` when no server url comes from anywhere, and never writing a setting into `.sandbin.yaml` that the environment supplied.

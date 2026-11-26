@@ -20,3 +20,9 @@ revisit them during implementation.
 | Key-check endpoint | `POST /verify-key` and nothing else — 405 for every other method, so a GET cannot probe a key without charging. The guard is the same shape as `createBin`'s: blocked → 429 `too many bad API keys` + RecordFailure; wrong or missing key → 403 `invalid API key` + RecordFailure; match → 200 `key ok`. "verify-key" holds a dash, so it can never name a hex bin hash, same reasoning as `healthz`. No bin is created, no side effect. |
 | Brute force | The endpoint charges wrong attempts exactly like `POST /` does, so the existing lockout is the bound. A friendlier key-check policy (lighter charging for this endpoint) was discussed and is explicitly out of scope. |
 | Key guard wording | The client's "no API key" refusal now also names the file and `init`: `no API key: pass --api-key, set SANDBIN_API_KEY or run sandbin-client init`. |
+
+Amended by [0032-client-env-only-settings](0032-client-env-only-settings.md): precedence is now
+`--url` > `SANDBIN_URL` > `sandbin_url` > refusal, and `--api-key` > `SANDBIN_API_KEY` > `api_key`
+> refusal for the key-needing verbs (`describe` still needs no key); "Env still beats the file"
+stands, and the new half is that the environment may update a field the file has but never create
+one.

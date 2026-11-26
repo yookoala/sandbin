@@ -10,3 +10,7 @@ Date: 2026-11-11. Confirmed with the user before `docs/plans/0005-client-cli.md`
 | Bin password | Supported, through `SANDBIN_BIN_PASSWORD` only, never a flag | Keeps the secret off command lines and out of the state file. |
 | Retrying | Never retry | A bad API key charges the client's address a 30 minute block that grows, so a retrying client digs its own hole. |
 | Output | Plain text URLs, one per line, bin base URL last | An agent can read it and hand it to a human without a parser. |
+
+Amended by [0032-client-env-only-settings](0032-client-env-only-settings.md): the client-side url
+default survives only as `init`'s prompt text, while bin selection through the working directory's
+file, `SANDBIN_BIN_PASSWORD` staying env-only, and never-retry all stand.
