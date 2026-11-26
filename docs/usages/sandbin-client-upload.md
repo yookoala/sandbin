@@ -13,13 +13,15 @@ A bare `sandbin-client`, `--help` and `help` print this verb list on stdout and 
 [Building and Config](sandbin-client-init.md) too; this page assumes you have it and a settled
 project.
 
-Three settings feed every verb: `SANDBIN_URL` (default `http://localhost:8080`),
-`SANDBIN_API_KEY` and `SANDBIN_BIN_PASSWORD`. `--url` and `--api-key` are flags on every verb
-and override their variables, and the `.sandbin.yaml` in the working directory carries the url
-and key for a whole project (see [Building and Config](sandbin-client-init.md) for the file and
-the full precedence). A key missing from flag, environment and file alike is a startup error
-that makes no request at all, and its message names `--api-key`, `SANDBIN_API_KEY` and
-`sandbin-client init` — `describe` is the one verb that asks for no key. `SANDBIN_BIN_PASSWORD`
+Three settings feed every verb: `SANDBIN_URL`, `SANDBIN_API_KEY` and `SANDBIN_BIN_PASSWORD`.
+`--url` and `--api-key` are flags on every verb and override their variables, and the
+`.sandbin.yaml` in the working directory carries the url and key for a whole project (see
+[Building and Config](sandbin-client-init.md) for the file and the full precedence). A url
+missing from flag, environment and file alike is a startup error that makes no request at all:
+`no server URL: pass --url, set SANDBIN_URL or run sandbin-client init`. A key missing from
+flag, environment and file alike is a startup error too, and its message names `--api-key`,
+`SANDBIN_API_KEY` and `sandbin-client init` — `describe` is the one verb that asks for no key.
+`SANDBIN_BIN_PASSWORD`
 has no flag on purpose, so a bin password never lands on a command line: when it is set it goes
 out as the `password` of the create body and as Basic Auth (user name = bin hash) on every
 upload.
@@ -42,9 +44,10 @@ An upload run that is not told otherwise finds its bin first: `--bin` beats the 
 readable `.sandbin.yaml` whose `sandbin_url` matches the url in use comes next, and otherwise
 the run creates a bin and writes the file — the file's shape and writing rules are on
 [Building and Config](sandbin-client-init.md). A corrupt or unreadable `.sandbin.yaml` is an
-error naming the file, never a silent second bin for the same prototype. The file's `bin` and
-`protected` belong to its `sandbin_url`: change the url in use and the file simply stops
-matching — the client makes a new bin for the new url, and the old bin is orphaned — its files
+error naming the file, never a silent second bin for the same prototype. The file names the
+server each stored bin belongs to, and the rule follows from that: the file's `bin` and
+`protected` belong to its `sandbin_url` — change the url in use and the file simply stops
+matching, the client makes a new bin for the new url, and the old bin is orphaned — its files
 stay readable at the old URL, but nothing in this directory points at them any more. A
 `delete` run finds its bin exactly the same way, except that with neither `--bin` nor a
 matching file it is a refusal naming both ways, never a fresh bin.

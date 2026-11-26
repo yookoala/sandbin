@@ -1,11 +1,12 @@
 # Building and Config
 
 `sandbin-client` needs two things before a project can upload: the binary — `cmd/sandbin-client`
-in this repository, one Go program — and one `init` run that settles the directory's connection
-settings. This page covers both: two ways to get the
+in this repository, one Go program — and connection settings for a server, settled in the
+directory by an `init` run or carried by `SANDBIN_URL` and `SANDBIN_API_KEY` in the environment.
+This page covers both: two ways to get the
 binary, then `init` — it collects a url and a key, checks them against the server before
-writing anything, and remembers them in `.sandbin.yaml` next to the work. What the client then
-does with them is [Working with sandbin-client](sandbin-client-upload.md).
+writing anything, and stores in `.sandbin.yaml` next to the work what this project actually
+chose. What the client then does with them is [Working with sandbin-client](sandbin-client-upload.md).
 
 ## Installing with `go install`
 
@@ -101,8 +102,19 @@ initialized {{ .Instance.URL }}
 ### Without a terminal
 
 In a script, a CI job or an agent nobody is there to answer, so the same verb reads flags and
-variables; a missing url falls back to `http://localhost:8080` and a missing key is a refusal
-naming `--api-key`, `SANDBIN_API_KEY` and the prompt:
+variables; a url missing from both is not a fallback but a refusal — `init` answers
+`no server URL: pass --url or set SANDBIN_URL`, having asked nothing and requested nothing —
+and a missing key is a refusal naming `--api-key`, `SANDBIN_API_KEY` and the prompt:
+
+```sh
+sandbin-client init
+```
+
+```text
+sandbin-client: no server URL: pass --url or set SANDBIN_URL
+```
+
+With both variables exported the run works from them alone:
 
 ```sh
 SANDBIN_URL={{ .Instance.URL }} SANDBIN_API_KEY=your-key sandbin-client init
@@ -111,6 +123,10 @@ SANDBIN_URL={{ .Instance.URL }} SANDBIN_API_KEY=your-key sandbin-client init
 ```text
 initialized {{ .Instance.URL }}
 ```
+
+Those values are used and never stored: the file an env-only `init` leaves holds neither a url
+nor a key, so the run is re-runnable without `--reinit` and the guard below never fires on
+that file.
 
 ### Re-initializing a project
 
@@ -151,26 +167,40 @@ comes out byte-identical.
 ### The `.sandbin.yaml` file
 
 The file `init` writes, in the project's working directory, mode `0600` and renamed in from a
-temp file in the same directory:
+temp file in the same directory — here a human answered both prompts at `init`, and the
+project's first upload has since added its `bin`:
 
 ```yaml
 sandbin_url: {{ .Instance.URL }}
 api_key: your-key
 bin: abc1234
-protected: false
 ```
+
+The file carries only what this project actually has: `protected` appears only when the bin
+has a password, and a value the project does not have is left out rather than written empty.
+In a project settled only by the environment the file starts as an empty mapping — `{}`,
+which reads back as "no settings stored" — and its first upload puts `sandbin_url` and `bin`
+in it, still with no `api_key` line.
 
 `init` makes sure the directory's `.gitignore` names `.sandbin.yaml` — creating the file if it
 is absent, appending the line if it is missing, and leaving an existing `.gitignore` exactly as
-written if the line is already there. `init` is the only run that writes an `api_key`, at your
-explicit request; an ordinary upload run writes `sandbin_url`, `bin` and `protected` and keeps
-whatever key the file already holds. The bin password stays env-only, as before. The state
-file earlier versions of this client kept as JSON is gone without migration or fallback: run
-`init` once in a project that has one and delete the old file.
+written if the line is already there — and an env-only `init` does this too, over its empty
+mapping. `init` is the only run that writes an `api_key`, and only what a human chose for it:
+a flag or a typed answer; a key carried by the environment is used and never written. An
+ordinary upload run writes `sandbin_url` and `bin` — `protected` too when the bin has a
+password — and keeps whatever key the file already holds. The bin password stays env-only, as
+before. The state file earlier versions of this client kept as JSON is gone without migration
+or fallback: run `init` once in a project that has one and delete the old file.
 
 ### Settings precedence
 
-Settings resolve flag first, environment second, the file third, the built-in default last:
-`--url` > `SANDBIN_URL` > `sandbin_url` > `http://localhost:8080`, and `--api-key` >
-`SANDBIN_API_KEY` > `api_key`. The environment beating the file is what lets a CI job or an
-agent override a project without editing it.
+Settings resolve flag first, environment second, the file third, a refusal last: `--url` >
+`SANDBIN_URL` > `sandbin_url` > refusal, and `--api-key` > `SANDBIN_API_KEY` > `api_key` >
+refusal for the verbs that need a key. A verb run with no url from any of the three answers
+`no server URL: pass --url, set SANDBIN_URL or run sandbin-client init` and makes no request;
+only `init` asks, and only at a terminal, where a bare Enter at the url prompt is that human
+taking the bracketed `http://localhost:8080` as their own choice. An empty value counts as
+nothing given: `--url ""` or an empty `SANDBIN_URL` falls through to the next rung. The
+environment beating the file is what lets a CI job or an agent override a project without
+editing it — and when `init` stores, the environment may update a field the file already has
+but never creates one.
