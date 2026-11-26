@@ -244,6 +244,31 @@ func TestInitNonTerminalWithoutAnyURLRefuses(t *testing.T) {
 	}
 }
 
+// TestInitDevNullStdinRefusesInsteadOfChoosingTheDefault: a stdin that reads as a terminal
+// but answers nothing — /dev/null — has answered nothing, so the url stays missing and init
+// refuses with its own wording rather than turning the silence into a choice of the shown
+// default. The refusal comes before verifyKey and before any write.
+func TestInitDevNullStdinRefusesInsteadOfChoosingTheDefault(t *testing.T) {
+	f := newFake(t, "test-key")
+	t.Setenv("SANDBIN_URL", "")
+	t.Setenv("SANDBIN_API_KEY", "")
+
+	_, stderr, err := runClient(t, &ttyReader{strings.NewReader("")}, "init", "--api-key", "test-key")
+	if err == nil {
+		t.Fatalf("init on a stdin that answers nothing succeeded, want the refusal")
+	}
+	if !strings.Contains(stderr, "no server URL: pass --url or set SANDBIN_URL") {
+		t.Errorf("stderr = %q, want the init refusal naming --url and SANDBIN_URL", stderr)
+	}
+	if strings.Contains(stderr, defaultURL) {
+		t.Errorf("stderr = %q, want no dial of the prompt default %s", stderr, defaultURL)
+	}
+	noInitFiles(t)
+	if f.requestsSeen() != 0 {
+		t.Errorf("requests = %d, want none", f.requestsSeen())
+	}
+}
+
 // TestInitWizardPromptsAndWrites drives the whole wizard on a fake terminal: Enter was
 // not taken — both values were typed — and the key literal never reaches stdout.
 func TestInitWizardPromptsAndWrites(t *testing.T) {

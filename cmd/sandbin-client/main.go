@@ -751,14 +751,18 @@ func runInit(c *cli.Context, stdin io.Reader, stdout, stderr io.Writer) (err err
 
 	// A prompt answer is the human's own choice and so is storable; a bare Enter at the
 	// url prompt is that human taking the address the prompt shows. With no terminal to
-	// ask, a url nobody supplied is a refusal rather than a guess at a server.
+	// ask, a url nobody supplied is a refusal rather than a guess at a server — and a
+	// stdin that reads as a terminal yet answers nothing (/dev/null, an EOF on an empty
+	// line) has supplied nothing, so it falls through to the refusal too.
 	typedURL, typedKey := false, false
 	if base == "" && isTerminal(stdin) {
 		fmt.Fprintf(stdout, "sandbin_url [%s]: ", defaultURL)
 		line, _ := reader.ReadString('\n')
 		base = strings.TrimRight(line, "\r\n")
 		typedURL = true
-		if base == "" {
+		// Only a read that actually carries the Enter — a line with its newline — is an
+		// answer of "take the default"; an empty read is silence.
+		if base == "" && strings.ContainsAny(line, "\r\n") {
 			base = defaultURL
 		}
 	}
