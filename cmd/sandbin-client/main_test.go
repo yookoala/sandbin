@@ -1364,9 +1364,9 @@ func TestConfigFileForAnotherUrlStartsAFreshBin(t *testing.T) {
 	}
 }
 
-// TestURLPrecedenceFlagEnvFileDefault walks the whole url ladder: the flag beats the
-// env, the env beats the file, the file beats the default.
-func TestURLPrecedenceFlagEnvFileDefault(t *testing.T) {
+// TestURLPrecedenceFlagEnvFileThenRefusal walks the whole url ladder: the flag beats the
+// env, the env beats the file, and nothing anywhere refuses.
+func TestURLPrecedenceFlagEnvFileThenRefusal(t *testing.T) {
 	f1 := newFake(t, "test-key")
 	url1 := os.Getenv("SANDBIN_URL")
 	f2, url2 := newFakeAt(t, "test-key")
@@ -1399,20 +1399,125 @@ func TestURLPrecedenceFlagEnvFileDefault(t *testing.T) {
 		t.Errorf("requests = f1 %d, f2 %d; want the flag's server used", f1.requestsSeen(), f2.requestsSeen())
 	}
 
-	// default: no env, no file, no flag — the refusal names the default url.
+	// no url anywhere: the refusal names the fix, and defaultURL is gone from it.
 	t.Setenv("SANDBIN_URL", "")
 	if err := os.Remove(configFileName); err != nil {
 		t.Fatalf("remove %s: %v", configFileName, err)
 	}
 	_, stderr, err := runClient(t, nil, "upload", "index.html")
 	if err == nil {
-		t.Fatalf("run against the default url succeeded, want an error")
+		t.Fatalf("run with no server url succeeded, want the refusal")
 	}
-	if !strings.Contains(stderr, defaultURL) {
-		t.Errorf("stderr = %q, want it to name %s", stderr, defaultURL)
+	if !strings.Contains(stderr, "no server URL: pass --url, set SANDBIN_URL or run sandbin-client init") {
+		t.Errorf("stderr = %q, want the refusal wording", stderr)
+	}
+	if strings.Contains(stderr, defaultURL) {
+		t.Errorf("stderr = %q, want %s absent from the refusal", stderr, defaultURL)
 	}
 	if f1.requestsSeen() != 4 || f2.requestsSeen() != 2 {
 		t.Errorf("requests = f1 %d, f2 %d; want neither fake server touched", f1.requestsSeen(), f2.requestsSeen())
+	}
+	if _, statErr := os.Stat(configFileName); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("stat %s = %v, want no config file written", configFileName, statErr)
+	}
+}
+
+// TestNoServerURLRefusesNamingInit is the fresh CI directory with neither variable:
+// the upload refuses in one line naming --url, SANDBIN_URL and init, makes no request,
+// and leaves no half-written setup behind.
+func TestNoServerURLRefusesNamingInit(t *testing.T) {
+	f := newFake(t, "test-key")
+	t.Setenv("SANDBIN_URL", "")
+	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
+
+	_, stderr, err := runClient(t, nil, "upload", "index.html")
+	if err == nil {
+		t.Fatalf("upload with no server url succeeded, want the refusal")
+	}
+	want := "sandbin-client: no server URL: pass --url, set SANDBIN_URL or run sandbin-client init\n"
+	if stderr != want {
+		t.Errorf("stderr = %q, want the refusal word-for-word:\n%q", stderr, want)
+	}
+	if f.requestsSeen() != 0 {
+		t.Errorf("requests = %d, want none before the refusal", f.requestsSeen())
+	}
+	if _, err := os.Stat(configFileName); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stat %s = %v, want no config file written", configFileName, err)
+	}
+}
+
+// TestEveryVerbRefusesWithoutAServerURL runs the same fresh-directory setup through
+// delete, describe and list: every verb reads settings before anything else, so each
+// inherits the url refusal. The key is cleared too: describe proves it reaches the url
+// refusal while still needing no key, and the other two name the url first.
+func TestEveryVerbRefusesWithoutAServerURL(t *testing.T) {
+	f := newFake(t, "test-key")
+	t.Setenv("SANDBIN_URL", "")
+	t.Setenv("SANDBIN_API_KEY", "")
+	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
+
+	for _, args := range [][]string{{"delete", "index.html"}, {"describe"}, {"list"}} {
+		_, stderr, err := runClient(t, nil, args...)
+		if err == nil {
+			t.Fatalf("%s with no server url succeeded, want the refusal", args[0])
+		}
+		if !strings.Contains(stderr, "no server URL: pass --url, set SANDBIN_URL or run sandbin-client init") {
+			t.Errorf("%s: stderr = %q, want the url refusal wording", args[0], stderr)
+		}
+		if f.requestsSeen() != 0 {
+			t.Errorf("%s: requests = %d, want none before the refusal", args[0], f.requestsSeen())
+		}
+	}
+}
+
+// TestSettingsRefusalDoesNotConsumeStdin: a piped upload the url refusal stops leaves
+// its stream untouched — reading settings never reads stdin.
+func TestSettingsRefusalDoesNotConsumeStdin(t *testing.T) {
+	f := newFake(t, "test-key")
+	t.Setenv("SANDBIN_URL", "")
+
+	stdin := strings.NewReader("piped body\n")
+	stdout, stderr, err := runClient(t, stdin, "upload", "--name", "build.ansi")
+	if err == nil {
+		t.Fatalf("piped upload with no server url succeeded, want the refusal")
+	}
+	want := "sandbin-client: no server URL: pass --url, set SANDBIN_URL or run sandbin-client init\n"
+	if stderr != want {
+		t.Errorf("stderr = %q, want the refusal line only:\n%q", stderr, want)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want nothing", stdout)
+	}
+	if f.requestsSeen() != 0 {
+		t.Errorf("requests = %d, want none", f.requestsSeen())
+	}
+	if rest, readErr := io.ReadAll(stdin); readErr != nil || string(rest) != "piped body\n" {
+		t.Errorf("stdin left %q (read err %v), want the pipe untouched", rest, readErr)
+	}
+	if _, err := os.Stat(configFileName); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stat %s = %v, want nothing written", configFileName, err)
+	}
+}
+
+// TestEmptyFlagURLIsNoURLAtAll: --url "" contributes nothing, it is not "the empty
+// string is my server".
+func TestEmptyFlagURLIsNoURLAtAll(t *testing.T) {
+	f := newFake(t, "test-key")
+	t.Setenv("SANDBIN_URL", "")
+	writeWorkDirFile(t, "index.html", "<h1>x</h1>")
+
+	_, stderr, err := runClient(t, nil, "upload", "--url", "", "index.html")
+	if err == nil {
+		t.Fatalf(`upload --url "" with no other url succeeded, want the refusal`)
+	}
+	if !strings.Contains(stderr, "no server URL: pass --url, set SANDBIN_URL or run sandbin-client init") {
+		t.Errorf("stderr = %q, want the url refusal wording", stderr)
+	}
+	if f.requestsSeen() != 0 {
+		t.Errorf("requests = %d, want none", f.requestsSeen())
+	}
+	if _, err := os.Stat(configFileName); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stat %s = %v, want nothing written", configFileName, err)
 	}
 }
 

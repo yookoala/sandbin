@@ -147,13 +147,13 @@ func usageError(stderr io.Writer) cli.OnUsageErrorFunc {
 
 // settingFlags are the two settings every verb reads the same ladder by: the flag, then
 // its environment variable, then this directory's config file. The flag carries no default
-// so a value it does not carry can fall through.
+// so a value it does not carry can fall through, and it carries no EnvVars either: the
+// ladder reads the environment itself, which keeps c.IsSet a straight answer about the
+// command line. Each Usage names the variable so --help stays honest.
 func settingFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "url", EnvVars: []string{"SANDBIN_URL"},
-			Usage: "sandbin server base URL"},
-		&cli.StringFlag{Name: "api-key", EnvVars: []string{"SANDBIN_API_KEY"},
-			Usage: "pre-shared API key to send as X-API-Key"},
+		&cli.StringFlag{Name: "url", Usage: "sandbin server base URL ($SANDBIN_URL)"},
+		&cli.StringFlag{Name: "api-key", Usage: "pre-shared API key to send as X-API-Key ($SANDBIN_API_KEY)"},
 	}
 }
 
@@ -184,6 +184,12 @@ func readSettings(c *cli.Context, dir string) (settings, error) {
 	}
 	s.cfg, s.cfgFound = cfg, cfgFound
 	s.baseURL, s.apiKey = c.String("url"), c.String("api-key")
+	if s.baseURL == "" {
+		s.baseURL = os.Getenv("SANDBIN_URL")
+	}
+	if s.apiKey == "" {
+		s.apiKey = os.Getenv("SANDBIN_API_KEY")
+	}
 	if cfgFound {
 		if s.baseURL == "" && cfg.URL != "" {
 			s.baseURL = cfg.URL
@@ -192,8 +198,10 @@ func readSettings(c *cli.Context, dir string) (settings, error) {
 			s.apiKey = cfg.APIKey
 		}
 	}
+	// No url from anywhere is a refusal, not a guess at a server: the line names every
+	// way in, and init is the fix it points at.
 	if s.baseURL == "" {
-		s.baseURL = defaultURL
+		return settings{}, errors.New("no server URL: pass --url, set SANDBIN_URL or run sandbin-client init")
 	}
 	return s, nil
 }
@@ -719,12 +727,19 @@ func runInit(c *cli.Context, stdin io.Reader, stdout, stderr io.Writer) (err err
 	}
 
 	// The flag > env > file ladder, same as an upload verb; the flags carry no default
-	// precisely so a value they do not carry can fall through to a prompt.
+	// precisely so a value they do not carry can fall through to a prompt. The ladder
+	// reads the environment itself, exactly like readSettings.
 	base := c.String("url")
+	if base == "" {
+		base = os.Getenv("SANDBIN_URL")
+	}
 	if base == "" && cfgFound {
 		base = cfg.URL
 	}
 	key := c.String("api-key")
+	if key == "" {
+		key = os.Getenv("SANDBIN_API_KEY")
+	}
 	if key == "" && cfgFound {
 		key = cfg.APIKey
 	}
