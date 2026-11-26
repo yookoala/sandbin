@@ -2,14 +2,31 @@
 
 ## Status
 
-Status: implemented and closed 2026-11-26. Decision+plan `26ebb70`; Task 1 `70c4998`
-"feat(client): a run with no server url refuses and names the fix"; Task 2 `c4b1218`
-"feat(client): init stops storing settings the environment supplied"; Task 3 `7bd3adf`
-"docs: the client works from the environment and says so when it cannot"; Task 4 closes the plan
-with the three amendments and this record. Task reviews left six Minors, all deliberately deferred,
-listed under Carried findings below; nothing outside the four docs files named in Task 4 changed.
+Status: implemented and closed 2026-11-26. Eight commits, `26ebb70` (decision+plan) through `1088e89`
+(the docs half of the fix wave): Tasks 1–4 at `70c4998` ("feat(client): a run with no server url
+refuses and names the fix"), `c4b1218` ("feat(client): init stops storing settings the environment
+supplied"), `7bd3adf` ("docs: the client works from the environment and says so when it cannot") and
+`92f17cd` ("docs: record plan 0032 verification and amend 0005, 0011 and 0014"), then the single fix
+wave `a741630` ("fix(client): an init url prompt that answers nothing refuses, not guesses"),
+`10d2c43` ("test(client): pin that a stored api_key follows the key init verified") and `1088e89`
+("docs: the pages say what an env-supplied key leaves the file holding"). Spec:
+`docs/decisions/0032-client-env-only-settings.md` (including its execution addendum). Review outcome:
+every task passed an independent task-scoped review **first time**, zero Critical and zero Important
+each; the whole-branch review (`26ebb70..92f17cd`) verdict "Ready to merge: With fixes" — zero
+Critical, three Important (`init`'s url prompt guessing `http://localhost:8080` from a stdin that
+answered nothing; the skill page printing the `init` fence above the env-first sentence; this plan's
+Architecture paragraph saying "two `clientConfig` fields" where four shipped) and six Minors. The fix
+wave closed all eight actionable findings and its scoped re-review (`92f17cd..1088e89`) verdict was
+all eight ADDRESSED, with no new Critical or Important breakage and no out-of-scope observation.
+Controller rulings P1–P4 and review rulings F1–F12 all honored: F1–F6 fixed in the wave, F7 rejected,
+F8–F11 deferred, F12 out of scope, each deferral in one clause under Carried findings below. Final
+gates green at `1088e89` under `env -u SANDBIN_API_KEY make test` — `gofmt -l .` empty, `go vet
+./...`, `go build ./...`, `go test -count=1 ./...`, `go test -race -count=1 ./...` — with
+`cmd/sandbin-client` **121**, `cmd/sandbin` 260, `internal/frontpage` 17, `internal/robots` 2,
+`internal/version` 6: no test deleted, three renamed or replaced, ten added (111 → 115 at Task 1 →
+119 at Task 2 → 121 at the fix wave).
 
-Final gates green — `env -u SANDBIN_API_KEY make test` ran twice in this task, once after the
+Task 4's gates green — `env -u SANDBIN_API_KEY make test` ran twice in this task, once after the
 amendments and once after this Status was written, both exit 0 (the per-package times below are
 from the first of the two; the re-run was identical apart from timing). The gates are run under
 `env -u SANDBIN_API_KEY` because the shell exports a 66-char quote-wrapped `SANDBIN_API_KEY`
@@ -18,7 +35,7 @@ noise Task 1 Step 6 notes: `gofmt -l .` empty, `go vet ./...`,
 `go build ./...`, `go test -count=1 ./...` and `go test -race -count=1 ./...` all ok —
 `cmd/sandbin` 3.237s / 37.483s, `cmd/sandbin-client` 0.382s / 5.015s, `internal/frontpage`
 0.003s / 1.024s, `internal/robots` 0.002s / 1.015s, `internal/version` 0.003s / 1.017s.
-Top-level counts (`go test -list '.+' | grep -c '^Test'`): `cmd/sandbin-client` **119**
+Top-level counts at `92f17cd` (`go test -list '.+' | grep -c '^Test'`): `cmd/sandbin-client` **119**
 (111 → 115 at Task 1 → 119 at Task 2), `cmd/sandbin` 260, `internal/frontpage` 17,
 `internal/robots` 2, `internal/version` 6 — the last four never moved; no test was deleted.
 
@@ -35,7 +52,8 @@ replaced by `TestInitNonTerminalWithoutAnyURLRefuses`, one assertion flipped eac
 `TestSettingsRefusalDoesNotConsumeStdin`, `TestEmptyFlagURLIsNoURLAtAll`); Task 2's three
 `TestInitEnvOnly*` in `init_test.go` plus the replacement `TestInitNonTerminalWithoutAnyURLRefuses`;
 and the controller-ruled `TestInitEmptyFlagsAreNoChoice` — the spec's "the environment alone adds
-nothing" governs the brief's looser `c.IsSet` pseudo-code.
+nothing" governs the brief's looser `c.IsSet` pseudo-code. Fix wave, both in `init_test.go`:
+`TestInitDevNullStdinRefusesInsteadOfChoosingTheDefault` and `TestInitEnvKeyReplacesTheStoredKey`.
 
 ### The live walk (Task 4)
 
@@ -170,22 +188,43 @@ blocked attempts before the unblock (1 wrong key + 2 attempts while blocked = 3)
 Then the server was sent SIGTERM and `127.0.0.1:18080` answered connection-refused; nothing was
 created outside `/tmp/opencode/sandbin-0032-walk`.
 
-Carried findings — six task-review Minors, deliberately deferred, none blocking merge:
+Carried findings — the six task-review Minors with their whole-branch rulings, then the review's own
+deferrals; none blocks the merge:
 
 1. No test pins "bare Enter at a *reachable* `init` url prompt stores `sandbin_url:
    http://localhost:8080`" — `defaultURL` is a constant (`cmd/sandbin-client/main.go:25`), so the
-   wizard tests cannot reach a successful write.
+   wizard tests cannot reach a successful write. **Deferred (ruling F8)**: unreachable without a
+   listener on `:8080`; the case a person actually hits is the EOF one `a741630` pins.
 2. `cmd/sandbin-client/main.go` has the env-fallback pair twice (`readSettings` ~187-192, `runInit`
-   ~732-740), mirroring the pre-existing ladder duplication.
+   ~732-740), mirroring the pre-existing ladder duplication. **Rejected (ruling F7)**: no shared
+   helper — `init` needs prompts and provenance the verbs do not, and a helper is the abstraction
+   this plan declined.
 3. `docs/usages/sandbin-client-upload.md:18` says the file "carries the url and key for a whole
-   project" — in an env-only project it carries the url and no key.
-4. `skills/sandbin-preview/SKILL.md:32` compresses the env rule, losing the "the environment may
-   update a field the file already has" nuance that `docs/usages/sandbin-client-init.md:203-204`
-   states.
-5. `docs/usages/sandbin-client-init.md:107-115` — a colon promising an `--api-key` refusal is
-   followed by a fence showing the url refusal (correct order, momentarily mismatched prose).
+   project" — in an env-only project it carries the url and no key. **Closed at `1088e89`**: the page
+   now says the file carries what this project chose to store.
+4. `skills/sandbin-preview/SKILL.md` compresses the env rule, losing the "the environment may update
+   a field the file already has" nuance that `docs/usages/sandbin-client-init.md`'s Settings
+   precedence section states. **Deferred (ruling F9)**: the usage page carries the full rule and the
+   skill page points at it.
+5. `docs/usages/sandbin-client-init.md` — a colon promising an `--api-key` refusal was followed by a
+   fence showing the url refusal (correct order, momentarily mismatched prose). **Closed at
+   `1088e89`**: the fence now sits under the url clause it shows and the key refusal is its own
+   sentence.
 6. Cosmetic: `runInit`'s `flagGiven, keyFlagged := …` line packs two compound expressions into one
-   ~110-char line.
+   ~110-char line. **Stands**: cosmetic only, and the fix wave left it alone.
+
+Parked by the whole-branch review, each in one clause:
+
+7. This Status walk's remaining evidence unevenness — `exit=$?` missing on two blocks, the one-line
+   `.gitignore` stated in prose instead of shown by `cat -A`, and a tab-normalized `ip list` row.
+   **Deferred (ruling F10)**: record style, not record integrity.
+8. `docs/decisions/0011-client-config.md:11,16` keep their superseded-but-live rows beside the
+   amendment at :24. **Deferred (ruling F11)**: 0032 mandates one sentence plus a link, and this repo
+   keeps superseded decision text on purpose.
+9. Out of scope (ruling F12, every one pre-existing at `26ebb70`): the `v0.4.3` strings in
+   `docs/usages/sandbin-client-init.md` pinned by `cmd/sandbin/docs_test.go:534-538`; `delete`
+   validating paths before reading settings; 0011's `POST /verify-key` drift; and the absence of a
+   changelog entry for this user-visible change.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

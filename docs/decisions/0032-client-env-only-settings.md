@@ -51,3 +51,40 @@ decision deliberately keeps writing it.
 - **0014-reinit-guard-and-installer-init**: the guard's code and its "the file, not the environment,
   is the marker" rule stand. Add that an `init` fed only by the environment produces a file that
   holds neither field and so is not initialized, which is intended, not a hole.
+
+## Addendum — executed corrections (recorded 2026-11-26, during plan 0032)
+
+What execution found out about the design above, kept here because the plan and reviews argued
+from it:
+
+- **An unanswered prompt read is not an answer.** "A bare Enter there is a human choosing that
+  address" assumed the Enter was actually read. `isTerminal` (`cmd/sandbin-client/main.go:1192-1199`)
+  counts `/dev/null` as a terminal — it is a character device — so `init` can be facing a "terminal"
+  whose read answers nothing, and its url prompt filled `defaultURL` from that silence: the client
+  guessed a server, and on a machine with something listening on `:8080` it stored the guess in the
+  project's file, which is what this decision exists to stop. Ruling: a bare Enter at a real prompt
+  is the human taking the shown default; a read that carries no text and no newline answers nothing,
+  and `init` refuses with `no server URL: pass --url or set SANDBIN_URL` before verifying or writing
+  (`main.go:765-770`). Pinned by `TestInitDevNullStdinRefusesInsteadOfChoosingTheDefault`
+  (`cmd/sandbin-client/init_test.go`), which was red against the previous behavior by dialing
+  `http://localhost:8080`.
+- **The environment updating a field the file already holds needed a test whose value differs.** The
+  url half was pinned that way (`TestInitEnvUrlOverridesTheFileUrl`); no test ever varied a stored
+  `api_key`. `TestInitEnvKeyReplacesTheStoredKey` (same file) runs `init --reinit` over
+  `api_key: stored-key` with a different key in `SANDBIN_API_KEY`: the stored field follows the key
+  the server just verified (`main.go:801`), while the file's `sandbin_url` and its `bin`/`protected`
+  pair behave as before. It passed against the shipped rule with no code change.
+- **What a person is actually shown when the key is wrong.** A rejected upload prints the server's own
+  relayed line, `sandbin-client: 403 invalid API key` (`cmd/sandbin/handlers.go:221` carried by
+  `apiError`, `cmd/sandbin-client/client.go:29-49`); `server rejected this API key` is `init`'s
+  verify-path wording only (`client.go:373`). And a run in a directory whose file pins `sandbin_url`
+  but holds no key, with `SANDBIN_URL` cleared, answers the **key** refusal —
+  `no API key: pass --api-key, set SANDBIN_API_KEY or run sandbin-client init` — not the url one: the
+  "Refusals are one at a time" row working as decided. Both are transcribed in the plan's Status walk.
+- **A wrong API key costs a lockout step.** `requireKey` charges every wrong key
+  (`cmd/sandbin/handlers.go:217-221`), and an attempt made while the address is blocked is itself a
+  charged failure (`207-214`), so bad-key attempts from one address walk the block up by `blockStep`
+  — 30 minutes per charged failure, `cmd/sandbin/ipblock.go:13` — and later attempts answer
+  `429 too many bad API keys` even with the correct key. The verification walk reached `FAILURES 3`
+  with `1h30m0s remaining` and needed `sandbin ip unblock` (`cmd/sandbin/ipcmd.go:49`) to finish its
+  own proof. Worth knowing before running that walk again.
