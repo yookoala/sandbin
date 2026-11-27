@@ -3542,6 +3542,38 @@ func TestUploadJSONStopsAtFailedStep(t *testing.T) {
 	}
 }
 
+// TestJSONActionRecordsNonJSONBodyAsPlainString pins note()'s non-JSON branch: a server that
+// answers a refusal with a plain-text body (here the harness's injected failure) still leaves one
+// parseable report whose failed action carries that body as a JSON string, not an object — and
+// stdout is never silently empty.
+func TestJSONActionRecordsNonJSONBodyAsPlainString(t *testing.T) {
+	f := newFake(t, "test-key")
+	f.setPutFail(http.StatusForbidden) // no putFailBody: the refusal body is the harness's plain text
+	writeWorkDirFile(t, "a.md", "aaa")
+
+	stdout, stderr, err := runClient(t, nil, "upload", "--json", "a.md")
+	if err == nil {
+		t.Fatalf("upload --json against a refused PUT succeeded, want a non-zero exit")
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want nothing on a jsonMode run", stderr)
+	}
+	if stdout == "" {
+		t.Fatalf("stdout is empty: the report failed to marshal a non-JSON body")
+	}
+	rep, _ := decodeJSONReport(t, stdout)
+	if rep.Status != "error" {
+		t.Errorf("status = %q, want error", rep.Status)
+	}
+	if rep.Message != "injected failure" {
+		t.Errorf("message = %q, want the plain body as the relayed message", rep.Message)
+	}
+	assertActionDescriptions(t, rep, []string{"create the bin", "store a.md"})
+	if got := decodeActionResult(t, rep.Actions[1].Result); !reflect.DeepEqual(got, "injected failure") {
+		t.Errorf("store a.md result = %#v, want the plain body recorded as the JSON string %q", got, "injected failure")
+	}
+}
+
 // TestListJSONActions is the list report: the one GET /api/bins as the list bins action, its
 // raw page body as the result, and no bin or url — a listing worked on no bin.
 func TestListJSONActions(t *testing.T) {
