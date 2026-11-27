@@ -497,8 +497,8 @@ func TestZipSlipRefusedTheWholeArchive(t *testing.T) {
 			t.Errorf("PUT zip with entry %q = %d, want %d; body %q", bad.entry, rec.Code, http.StatusBadRequest, rec.Body.String())
 			continue
 		}
-		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != bad.want {
-			t.Errorf("zip entry %q body = %q, want %q", bad.entry, got, bad.want)
+		if got := rec.Body.String(); got != apiEnvelope(http.StatusBadRequest, bad.want) {
+			t.Errorf("zip entry %q body = %q, want the %q envelope", bad.entry, got, bad.want)
 		}
 		if got := listingPaths(t, s, hash); len(got) != 0 {
 			t.Errorf("zip entry %q stored %v, want the whole archive refused", bad.entry, got)
@@ -536,8 +536,8 @@ func TestTarHostileEntriesRefused(t *testing.T) {
 			t.Errorf("PUT tar.gz with entry %q = %d, want %d; body %q", bad.entry, rec.Code, http.StatusBadRequest, rec.Body.String())
 			continue
 		}
-		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != bad.want {
-			t.Errorf("tar entry %q body = %q, want %q", bad.entry, got, bad.want)
+		if got := rec.Body.String(); got != apiEnvelope(http.StatusBadRequest, bad.want) {
+			t.Errorf("tar entry %q body = %q, want the %q envelope", bad.entry, got, bad.want)
 		}
 		if got := listingPaths(t, s, hash); len(got) != 0 {
 			t.Errorf("tar entry %q stored %v, want the whole archive refused", bad.entry, got)
@@ -573,8 +573,8 @@ func TestNonRegularEntriesRefused(t *testing.T) {
 			t.Errorf("PUT = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
 			continue
 		}
-		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != tc.want {
-			t.Errorf("body = %q, want %q", got, tc.want)
+		if got := rec.Body.String(); got != apiEnvelope(http.StatusBadRequest, tc.want) {
+			t.Errorf("body = %q, want the %q envelope", got, tc.want)
 		}
 		if got := listingPaths(t, s, hash); len(got) != 0 {
 			t.Errorf("refused tar stored %v, want nothing", got)
@@ -591,8 +591,8 @@ func TestNonRegularEntriesRefused(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("PUT zip symlink = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "archive contains a symlink link" {
-		t.Errorf("body = %q, want %q", got, "archive contains a symlink link")
+	if got := rec.Body.String(); got != apiEnvelope(http.StatusBadRequest, "archive contains a symlink link") {
+		t.Errorf("body = %q, want the archive contains a symlink link envelope", got)
 	}
 
 	// An entry zip tools claim to have encrypted is refused before its bytes are read.
@@ -601,8 +601,8 @@ func TestNonRegularEntriesRefused(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("PUT encrypted zip = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "archive contains an encrypted entry secret.txt" {
-		t.Errorf("body = %q, want %q", got, "archive contains an encrypted entry secret.txt")
+	if got := rec.Body.String(); got != apiEnvelope(http.StatusBadRequest, "archive contains an encrypted entry secret.txt") {
+		t.Errorf("body = %q, want the archive contains an encrypted entry envelope", got)
 	}
 }
 
@@ -616,8 +616,8 @@ func TestDuplicateAndEmptyArchivesRefused(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("PUT duplicate zip = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "archive contains duplicate path dup.txt" {
-		t.Errorf("body = %q, want %q", got, "archive contains duplicate path dup.txt")
+	if got := rec.Body.String(); got != apiEnvelope(http.StatusBadRequest, "archive contains duplicate path dup.txt") {
+		t.Errorf("body = %q, want the archive contains duplicate path envelope", got)
 	}
 
 	for _, empty := range [][]byte{
@@ -630,8 +630,8 @@ func TestDuplicateAndEmptyArchivesRefused(t *testing.T) {
 			t.Errorf("PUT empty archive = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
 			continue
 		}
-		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "archive contains no files" {
-			t.Errorf("body = %q, want %q", got, "archive contains no files")
+		if got := rec.Body.String(); got != apiEnvelope(http.StatusBadRequest, "archive contains no files") {
+			t.Errorf("body = %q, want the archive contains no files envelope", got)
 		}
 	}
 	if got := listingPaths(t, s, hash); len(got) != 0 {
@@ -651,8 +651,8 @@ func TestArchiveCapRefusals(t *testing.T) {
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("PUT entry over 1 MiB = %d, want %d; body %q", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
 	}
-	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "extracted file over 1 MiB" {
-		t.Errorf("body = %q, want %q", got, "extracted file over 1 MiB")
+	if got := rec.Body.String(); got != apiEnvelope(http.StatusRequestEntityTooLarge, "extracted file over 1 MiB") {
+		t.Errorf("body = %q, want the extracted file over 1 MiB envelope", got)
 	}
 
 	var many []zipEntry
@@ -667,8 +667,8 @@ func TestArchiveCapRefusals(t *testing.T) {
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("PUT 1001-entry zip = %d, want %d; body %q", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
 	}
-	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "archive has over 1000 files" {
-		t.Errorf("body = %q, want %q", got, "archive has over 1000 files")
+	if got := rec.Body.String(); got != apiEnvelope(http.StatusRequestEntityTooLarge, "archive has over 1000 files") {
+		t.Errorf("body = %q, want the archive has over 1000 files envelope", got)
 	}
 
 	bombBody := bombZipBody(t, maxExtractTotal/(1<<20)+2)
@@ -679,8 +679,8 @@ func TestArchiveCapRefusals(t *testing.T) {
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("PUT bomb = %d, want %d; body %q", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
 	}
-	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "archive unpacks over 32 MiB" {
-		t.Errorf("body = %q, want %q", got, "archive unpacks over 32 MiB")
+	if got := rec.Body.String(); got != apiEnvelope(http.StatusRequestEntityTooLarge, "archive unpacks over 32 MiB") {
+		t.Errorf("body = %q, want the archive unpacks over 32 MiB envelope", got)
 	}
 
 	if got := listingPaths(t, s, hash); len(got) != 0 {
@@ -707,8 +707,8 @@ func TestBombTarStopsAtTheCap(t *testing.T) {
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("PUT tar bomb = %d, want %d; body %q", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
 	}
-	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "archive unpacks over 32 MiB" {
-		t.Errorf("body = %q, want %q", got, "archive unpacks over 32 MiB")
+	if got := rec.Body.String(); got != apiEnvelope(http.StatusRequestEntityTooLarge, "archive unpacks over 32 MiB") {
+		t.Errorf("body = %q, want the archive unpacks over 32 MiB envelope", got)
 	}
 	if got := listingPaths(t, s, hash); len(got) != 0 {
 		t.Errorf("the tar bomb stored %v, want nothing", got)
@@ -740,8 +740,8 @@ func TestCorruptArchivesRefused(t *testing.T) {
 			t.Errorf("PUT %s = %d, want %d; body %q", tc.name, rec.Code, http.StatusBadRequest, rec.Body.String())
 			continue
 		}
-		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != tc.want {
-			t.Errorf("PUT %s body = %q, want %q", tc.name, got, tc.want)
+		if got := rec.Body.String(); got != apiEnvelope(http.StatusBadRequest, tc.want) {
+			t.Errorf("PUT %s body = %q, want the %q envelope", tc.name, got, tc.want)
 		}
 	}
 	if got := listingPaths(t, s, hash); len(got) != 0 {
@@ -790,8 +790,8 @@ func TestArchiveBodyOverTheBodyCap(t *testing.T) {
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("PUT oversized .zip = %d, want %d; body %q", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "body over 1 MiB") {
-		t.Errorf("body = %q, want the plain body over 1 MiB refusal", rec.Body.String())
+	if got := rec.Body.String(); got != apiEnvelope(http.StatusRequestEntityTooLarge, "body over 1 MiB") {
+		t.Errorf("body = %q, want the body over 1 MiB envelope", got)
 	}
 }
 
@@ -954,8 +954,8 @@ func TestEntryNamesJudgedBeforeTheyJoin(t *testing.T) {
 			t.Errorf("PUT %s with entry %q = %d, want %d; body %q", name, tc.entry, rec.Code, http.StatusBadRequest, rec.Body.String())
 			continue
 		}
-		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != tc.want {
-			t.Errorf("%s entry %q body = %q, want %q", tc.kind, tc.entry, got, tc.want)
+		if got := rec.Body.String(); got != apiEnvelope(http.StatusBadRequest, tc.want) {
+			t.Errorf("%s entry %q body = %q, want the %q envelope", tc.kind, tc.entry, got, tc.want)
 		}
 		if got := listingPaths(t, s, hash); len(got) != 0 {
 			t.Errorf("%s entry %q stored %v, want the whole archive refused", tc.kind, tc.entry, got)
@@ -1069,8 +1069,8 @@ func TestUnnamedEntryRefused(t *testing.T) {
 			t.Errorf("PUT %s = %d, want %d; body %q", tc.file, rec.Code, http.StatusBadRequest, rec.Body.String())
 			continue
 		}
-		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != tc.want {
-			t.Errorf("PUT %s body = %q, want %q", tc.file, got, tc.want)
+		if got := rec.Body.String(); got != apiEnvelope(http.StatusBadRequest, tc.want) {
+			t.Errorf("PUT %s body = %q, want the %q envelope", tc.file, got, tc.want)
 		}
 		if got := listingPaths(t, s, hash); len(got) != 0 {
 			t.Errorf("PUT %s stored %v, want nothing", tc.file, got)
@@ -1093,8 +1093,8 @@ func TestNULInEntryNameRefused(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("PUT nul.zip = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "path may not contain control characters" {
-		t.Errorf("zip body = %q, want %q", got, "path may not contain control characters")
+	if got := rec.Body.String(); got != apiEnvelope(http.StatusBadRequest, "path may not contain control characters") {
+		t.Errorf("zip body = %q, want the path may not contain control characters envelope", got)
 	}
 	if got := listingPaths(t, s, hash); len(got) != 0 {
 		t.Errorf("the NUL zip stored %v, want nothing", got)
@@ -1119,8 +1119,8 @@ func TestNULInEntryNameRefused(t *testing.T) {
 			continue
 		}
 		want := `archive contains an entry name with a NUL byte "evil\x00.txt"`
-		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != want {
-			t.Errorf("PUT %s body = %q, want %q", tc.file, got, want)
+		if got := rec.Body.String(); got != apiEnvelope(http.StatusBadRequest, want) {
+			t.Errorf("PUT %s body = %q, want the NUL name refusal envelope", tc.file, got)
 		}
 		if got := listingPaths(t, s, hash); len(got) != 0 {
 			t.Errorf("PUT %s stored %v, want nothing — the entry must not land as the truncated name", tc.file, got)
@@ -1153,8 +1153,8 @@ func TestTarBase256SizeFieldKeepsWalking(t *testing.T) {
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("PUT over.tar.gz = %d, want %d; body %q", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
 	}
-	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "extracted file over 1 MiB" {
-		t.Errorf("over.tar.gz body = %q, want %q", got, "extracted file over 1 MiB")
+	if got := rec.Body.String(); got != apiEnvelope(http.StatusRequestEntityTooLarge, "extracted file over 1 MiB") {
+		t.Errorf("over.tar.gz body = %q, want the extracted file over 1 MiB envelope", got)
 	}
 	if got := listingPaths(t, s, hash); len(got) != 0 {
 		t.Errorf("the over-cap base-256 archive stored %v, want nothing", got)
@@ -1180,8 +1180,8 @@ func TestTarBase256SizeFieldKeepsWalking(t *testing.T) {
 			continue
 		}
 		want := `archive contains an entry name with a NUL byte "evil\x00.txt"`
-		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != want {
-			t.Errorf("PUT %s body = %q, want %q", tc.file, got, want)
+		if got := rec.Body.String(); got != apiEnvelope(http.StatusBadRequest, want) {
+			t.Errorf("PUT %s body = %q, want the NUL name refusal envelope", tc.file, got)
 		}
 		if got := listingPaths(t, s, hash); len(got) != 0 {
 			t.Errorf("PUT %s stored %v, want nothing", tc.file, got)
@@ -1198,8 +1198,8 @@ func TestTarBase256SizeFieldKeepsWalking(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("PUT negative.tar = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "corrupt tar archive" {
-		t.Errorf("negative.tar body = %q, want archive/tar's own verdict %q", got, "corrupt tar archive")
+	if got := rec.Body.String(); got != apiEnvelope(http.StatusBadRequest, "corrupt tar archive") {
+		t.Errorf("negative.tar body = %q, want archive/tar's own verdict in its envelope", got)
 	}
 	if got := listingPaths(t, s, hash); len(got) != 0 {
 		t.Errorf("negative.tar stored %v, want nothing", got)
@@ -1258,8 +1258,8 @@ func TestTarGNUSparseEntriesExtractAsFiles(t *testing.T) {
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("PUT big.tar = %d, want %d; body %q", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
 	}
-	if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != "extracted file over 1 MiB" {
-		t.Errorf("big.tar body = %q, want %q", got, "extracted file over 1 MiB")
+	if got := rec.Body.String(); got != apiEnvelope(http.StatusRequestEntityTooLarge, "extracted file over 1 MiB") {
+		t.Errorf("big.tar body = %q, want the extracted file over 1 MiB envelope", got)
 	}
 
 	// gzipped too, which is the shape a sparse folder upload takes, and under its own
@@ -1376,8 +1376,8 @@ func TestEntryNamesWithinTheirOwnCaps(t *testing.T) {
 			t.Errorf("PUT %sabs.zip with entry %q = %d, want %d; body %q", dir, tc.entry, rec.Code, http.StatusBadRequest, rec.Body.String())
 			continue
 		}
-		if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != tc.want {
-			t.Errorf("entry %q under %s body = %q, want %q", tc.entry, dir, got, tc.want)
+		if got := rec.Body.String(); got != apiEnvelope(http.StatusBadRequest, tc.want) {
+			t.Errorf("entry %q under %s body = %q, want the %q envelope", tc.entry, dir, got, tc.want)
 		}
 	}
 	if got := listingPaths(t, s, hash); len(got) != 2 {

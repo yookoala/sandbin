@@ -136,8 +136,10 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		// "/{hash}" without its trailing slash redirects to "/{hash}/" (301) when that
 		// bin exists, so relative links inside the bin resolve. GitHub does the same for
-		// its pages. Unknown hashes and every method other than GET keep the plain 404:
-		// a redirect would silently change what a PUT or DELETE meant.
+		// its pages. Unknown hashes keep their 404 — the plain one for every method but
+		// PUT and DELETE, which answer the envelope's bin not found — and no method
+		// outside GET redirects: a redirect would silently change what a PUT or DELETE
+		// meant.
 		if r.Method == http.MethodGet {
 			if seg, single := singleSegment(r.URL.Path); single {
 				if _, exists, err := s.store.GetBin(seg); err != nil {
@@ -152,11 +154,21 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		// The PUT/DELETE pair answers the unknown hash with the resource it tried to select;
+		// every other method keeps today's plain unknown bin.
+		if r.Method == http.MethodPut || r.Method == http.MethodDelete {
+			s.writeAPIError(w, http.StatusNotFound, "bin not found")
+		} else {
+			http.Error(w, "unknown bin", http.StatusNotFound)
+		}
 		return
 	}
 	if hash == "." || hash == ".." {
-		http.Error(w, "path must not contain . or ..", http.StatusBadRequest)
+		if r.Method == http.MethodPut || r.Method == http.MethodDelete {
+			s.writeAPIError(w, http.StatusBadRequest, "path must not contain . or ..")
+		} else {
+			http.Error(w, "path must not contain . or ..", http.StatusBadRequest)
+		}
 		return
 	}
 	s.binRoutes(w, r, hash, sub)
@@ -315,25 +327,25 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 	}
 
 	if sub == "" {
-		http.Error(w, "empty path", http.StatusBadRequest)
+		s.writeAPIError(w, http.StatusBadRequest, "empty path")
 		return
 	}
 	sub, err := cleanPath(sub)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	bin, ok, err := s.store.GetBin(hash)
 	if err != nil {
 		log.Printf("get bin %q: %v", hash, err)
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		s.writeAPIError(w, http.StatusNotFound, "bin not found")
 		return
 	} else if !ok {
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		s.writeAPIError(w, http.StatusNotFound, "bin not found")
 		return
 	}
-	if !s.binAuthorized(w, r, bin, false) {
+	if !s.binAuthorized(w, r, bin, true) {
 		return
 	}
 
@@ -342,10 +354,10 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 	if err != nil {
 		var over *http.MaxBytesError
 		if errors.As(err, &over) {
-			http.Error(w, "body over 1 MiB", http.StatusRequestEntityTooLarge)
+			s.writeAPIError(w, http.StatusRequestEntityTooLarge, "body over 1 MiB")
 			return
 		}
-		http.Error(w, "could not read body", http.StatusBadRequest)
+		s.writeAPIError(w, http.StatusBadRequest, "could not read body")
 		return
 	}
 
@@ -355,7 +367,7 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 	if _, keep := r.URL.Query()["raw"]; !keep {
 		kind, err := detectArchive(sub, content)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			s.writeAPIError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if kind != archiveNone {
@@ -367,7 +379,7 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 	replaced, err := s.store.PutFile(hash, sub, content)
 	if err != nil {
 		log.Printf("put %q in bin %q: %v", sub, hash, err)
-		http.Error(w, "could not store file", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not store file")
 		return
 	}
 
@@ -376,7 +388,7 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 	entry, ok, err := s.store.GetFileMeta(hash, sub)
 	if err != nil || !ok {
 		log.Printf("read back %q in bin %q: ok %v, err %v", sub, hash, ok, err)
-		http.Error(w, "could not read file", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not read file")
 		return
 	}
 
@@ -388,7 +400,7 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 	}
 	if err := writeJSON(w, status, fileJSON{Status: "ok", Path: entry.Path, Size: entry.Size, UpdatedAt: entry.UpdatedAt}); err != nil {
 		log.Printf("encode the entry %q in bin %q: %v", sub, hash, err)
-		http.Error(w, "could not answer the upload", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not answer the upload")
 	}
 }
 
@@ -409,18 +421,18 @@ func (s *server) putArchive(w http.ResponseWriter, hash, sub string, kind archiv
 	files, err := extractArchive(kind, sub, body)
 	if err != nil {
 		if status := archiveErrStatus(err); status != http.StatusInternalServerError {
-			http.Error(w, err.Error(), status)
+			s.writeAPIError(w, status, err.Error())
 			return
 		}
 		log.Printf("extract %q in bin %q: %v", sub, hash, err)
-		http.Error(w, "could not extract archive", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not extract archive")
 		return
 	}
 
 	created, replaced, err := s.store.PutFiles(hash, files)
 	if err != nil {
 		log.Printf("put %d extracted files in bin %q: %v", len(files), hash, err)
-		http.Error(w, "could not store file", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not store file")
 		return
 	}
 
@@ -430,7 +442,7 @@ func (s *server) putArchive(w http.ResponseWriter, hash, sub string, kind archiv
 	}
 	if err := writeJSON(w, status, archiveAnswer{Status: "ok", Created: created, Replaced: replaced}); err != nil {
 		log.Printf("encode the counts of %q in bin %q: %v", sub, hash, err)
-		http.Error(w, "could not answer the upload", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not answer the upload")
 	}
 }
 
@@ -456,25 +468,25 @@ func (s *server) deletePath(w http.ResponseWriter, r *http.Request, hash, sub st
 	folder := strings.HasSuffix(sub, "/")
 	sub = strings.TrimSuffix(sub, "/")
 	if sub == "" {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		s.writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	sub, err := cleanPath(sub)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	bin, ok, err := s.store.GetBin(hash)
 	if err != nil {
 		log.Printf("get bin %q: %v", hash, err)
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		s.writeAPIError(w, http.StatusNotFound, "bin not found")
 		return
 	} else if !ok {
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		s.writeAPIError(w, http.StatusNotFound, "bin not found")
 		return
 	}
-	if !s.binAuthorized(w, r, bin, false) {
+	if !s.binAuthorized(w, r, bin, true) {
 		return
 	}
 
@@ -483,7 +495,7 @@ func (s *server) deletePath(w http.ResponseWriter, r *http.Request, hash, sub st
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil || len(body) > 0 {
-		http.Error(w, "delete takes no body", http.StatusBadRequest)
+		s.writeAPIError(w, http.StatusBadRequest, "delete takes no body")
 		return
 	}
 
@@ -499,19 +511,19 @@ func (s *server) deletePath(w http.ResponseWriter, r *http.Request, hash, sub st
 	}
 	if err != nil {
 		log.Printf("delete %q from bin %q: %v", sub, hash, err)
-		http.Error(w, "could not delete file", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not delete file")
 		return
 	}
 	if len(deleted) == 0 {
 		// An unknown file and a folder nothing lives under are the same refusal.
-		http.Error(w, "unknown path", http.StatusNotFound)
+		s.writeAPIError(w, http.StatusNotFound, "path not found")
 		return
 	}
 
 	out, err := json.Marshal(deleteBody{Status: "ok", Deleted: deleted})
 	if err != nil {
 		log.Printf("encode the deleted paths of bin %q: %v", hash, err)
-		http.Error(w, "could not answer the delete", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not answer the delete")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

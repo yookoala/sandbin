@@ -850,8 +850,8 @@ func TestPutUnknownBin(t *testing.T) {
 	h := newTestServer(t, "test-key")
 
 	rec := put(t, h, "/deadbeef/page.html", "test-key", "x")
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("PUT unknown bin = %d, want %d; body %q", rec.Code, http.StatusNotFound, rec.Body.String())
+	if rec.Code != http.StatusNotFound || rec.Body.String() != apiEnvelope(404, "bin not found") {
+		t.Fatalf("PUT unknown bin = %d; body %q, want the bin not found envelope", rec.Code, rec.Body.String())
 	}
 }
 
@@ -905,9 +905,9 @@ func TestMethodNotAllowed(t *testing.T) {
 	}
 
 	// Under a bin a DELETE is answered by the path it names, not by the method: nothing is
-	// stored here, so it is the ordinary 404.
-	if rec := del(t, h, base+"page.html", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
-		t.Errorf("DELETE under a bin = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
+	// stored here, so it is the ordinary 404, in the envelope the JSON pair answers with.
+	if rec := del(t, h, base+"page.html", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != apiEnvelope(404, "path not found") {
+		t.Errorf("DELETE under a bin = %d, body %q; want 404 path not found envelope", rec.Code, rec.Body.String())
 	}
 }
 
@@ -946,8 +946,8 @@ func TestOversizeBody(t *testing.T) {
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("PUT oversized body = %d, want %d; body %q", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "1 MiB") {
-		t.Errorf("body = %q, want it to name the size limit", rec.Body.String())
+	if got := rec.Body.String(); got != apiEnvelope(http.StatusRequestEntityTooLarge, "body over 1 MiB") {
+		t.Errorf("body = %q, want the body over 1 MiB envelope", got)
 	}
 
 	rec = put(t, h, base+"big.txt", "test-key", strings.Repeat("x", 1<<20))
@@ -1207,27 +1207,29 @@ func TestPathTraversal(t *testing.T) {
 	h := newTestServer(t, "test-key")
 	base := createTestBin(t, h, "test-key")
 
-	for _, bad := range []string{
-		"../secret",
-		"a/../../secret",
-		"a/../../x",
-		"..",
-		"../other/page.html",
-		"./x",
-		"a//b",
-		"a/",
-		"a/\\b",
-		"/abs",
-		strings.Repeat("a/", 20) + "x",
-		strings.Repeat("a", maxPathLen+1),
+	for _, bad := range []struct {
+		path, want string
+	}{
+		{"../secret", "path must not escape the bin"},
+		{"a/../../secret", "path must not contain ., .., // or a trailing slash"},
+		{"a/../../x", "path must not contain ., .., // or a trailing slash"},
+		{"..", "path must not escape the bin"},
+		{"../other/page.html", "path must not escape the bin"}, // path.Clean leaves a leading .. alone
+		{"./x", "path must not contain ., .., // or a trailing slash"},
+		{"a//b", "path must not contain ., .., // or a trailing slash"},
+		{"a/", "path must not contain ., .., // or a trailing slash"},
+		{"a/\\b", "path may not contain backslashes"},
+		{"/abs", "path must be relative"},
+		{strings.Repeat("a/", 20) + "x", "path has too many segments"},
+		{strings.Repeat("a", maxPathLen+1), "path too long"},
 	} {
-		rec := put(t, h, base+bad, "test-key", "x")
-		if rec.Code != http.StatusBadRequest {
-			t.Errorf("PUT %q = %d, want %d; body %q", bad, rec.Code, http.StatusBadRequest, rec.Body.String())
+		rec := put(t, h, base+bad.path, "test-key", "x")
+		if rec.Code != http.StatusBadRequest || rec.Body.String() != apiEnvelope(http.StatusBadRequest, bad.want) {
+			t.Errorf("PUT %q = %d; body %q, want the %q envelope", bad.path, rec.Code, rec.Body.String(), bad.want)
 		}
-		rec = get(t, h, base+bad)
+		rec = get(t, h, base+bad.path)
 		if rec.Code != http.StatusBadRequest {
-			t.Errorf("GET %q = %d, want %d", bad, rec.Code, http.StatusBadRequest)
+			t.Errorf("GET %q = %d, want %d", bad.path, rec.Code, http.StatusBadRequest)
 		}
 	}
 }
@@ -2486,8 +2488,8 @@ func TestDeleteFileRoundTrip(t *testing.T) {
 	}
 
 	// A second delete of the same path is a 404 that removed nothing.
-	if rec := del(t, s, base+"notes.md", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
-		t.Errorf("second DELETE notes.md = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
+	if rec := del(t, s, base+"notes.md", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != apiEnvelope(404, "path not found") {
+		t.Errorf("second DELETE notes.md = %d, body %q; want 404 path not found envelope", rec.Code, rec.Body.String())
 	}
 }
 
@@ -2525,16 +2527,16 @@ func TestDeleteFolderRoundTrip(t *testing.T) {
 	}
 
 	// Without the trailing slash a folder name is a plain path lookup: 404, never recursive.
-	if rec := del(t, s, base+"drafts", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
-		t.Errorf("DELETE drafts (no slash) = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
+	if rec := del(t, s, base+"drafts", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != apiEnvelope(404, "path not found") {
+		t.Errorf("DELETE drafts (no slash) = %d, body %q; want 404 path not found envelope", rec.Code, rec.Body.String())
 	}
 	if rec := get(t, s, base+"drafts/one.md"); rec.Code != http.StatusOK {
 		t.Errorf("GET drafts/one.md after the slash-less delete = %d, want 200: the folder was never touched", rec.Code)
 	}
 
 	// A folder nothing lives under is a 404, and the bin is exactly as it was.
-	if rec := del(t, s, base+"nope/", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
-		t.Errorf("DELETE nope/ = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
+	if rec := del(t, s, base+"nope/", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != apiEnvelope(404, "path not found") {
+		t.Errorf("DELETE nope/ = %d, body %q; want 404 path not found envelope", rec.Code, rec.Body.String())
 	}
 }
 
@@ -2544,8 +2546,8 @@ func TestDeleteUnknownBinAndBase(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	base := createTestBin(t, s, "test-key")
 
-	if rec := del(t, s, "/deadbeef/notes.md", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown bin\n" {
-		t.Errorf("DELETE in an unknown bin = %d, body %q; want 404 unknown bin", rec.Code, rec.Body.String())
+	if rec := del(t, s, "/deadbeef/notes.md", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != apiEnvelope(404, "bin not found") {
+		t.Errorf("DELETE in an unknown bin = %d, body %q; want 404 bin not found envelope", rec.Code, rec.Body.String())
 	}
 	for _, p := range []string{base, strings.TrimRight(base, "/")} {
 		rec := del(t, s, p, "test-key")
@@ -2556,9 +2558,10 @@ func TestDeleteUnknownBinAndBase(t *testing.T) {
 			}
 			continue
 		}
-		// a bin named without its trailing slash keeps the answer every method gives there
-		if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown bin\n" {
-			t.Errorf("DELETE %s = %d, body %q; want 404 unknown bin", p, rec.Code, rec.Body.String())
+		// a bin named without its trailing slash keeps the 404, answered there by the
+		// classification in the envelope's bin not found
+		if rec.Code != http.StatusNotFound || rec.Body.String() != apiEnvelope(404, "bin not found") {
+			t.Errorf("DELETE %s = %d, body %q; want 404 bin not found envelope", p, rec.Code, rec.Body.String())
 		}
 	}
 
@@ -2615,8 +2618,8 @@ func TestDeleteChargesWrongKeyLikeOtherWrites(t *testing.T) {
 	// Good key, unknown path: a 404 that leaves no row at all.
 	const cleanAddr = "198.51.100.41:1234"
 	rec = delFrom(t, s, cleanAddr, base+"missing.md", "test-key")
-	if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
-		t.Fatalf("DELETE of an unknown path = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound || rec.Body.String() != apiEnvelope(404, "path not found") {
+		t.Fatalf("DELETE of an unknown path = %d, body %q; want 404 path not found envelope", rec.Code, rec.Body.String())
 	}
 	if _, ok := ipBlockRow(t, s.store, "198.51.100.41"); ok {
 		t.Errorf("a good-key 404 DELETE charged 198.51.100.41, want no row in ip_blocks")
@@ -2649,8 +2652,8 @@ func TestDeleteProtectedBin(t *testing.T) {
 
 	const addr = "198.51.100.42:1234"
 	rec = delFrom(t, s, addr, base+"secret.txt", "test-key")
-	if rec.Code != http.StatusUnauthorized || rec.Body.String() != "bin password required\n" {
-		t.Fatalf("DELETE without the bin password = %d, body %q; want 401", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnauthorized || rec.Body.String() != apiEnvelope(401, "bin password required") {
+		t.Fatalf("DELETE without the bin password = %d, body %q; want 401 envelope", rec.Code, rec.Body.String())
 	}
 	if _, ok := ipBlockRow(t, s.store, "198.51.100.42"); ok {
 		t.Errorf("a missing bin password charged 198.51.100.42, want no row in ip_blocks")
@@ -2696,8 +2699,8 @@ func TestDeleteRefusesABody(t *testing.T) {
 	}
 
 	rec := delWithBody(t, s, base+"notes.md", "test-key", "a body a DELETE refuses")
-	if rec.Code != http.StatusBadRequest || rec.Body.String() != "delete takes no body\n" {
-		t.Errorf("DELETE with a body = %d, body %q; want 400 delete takes no body", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest || rec.Body.String() != apiEnvelope(400, "delete takes no body") {
+		t.Errorf("DELETE with a body = %d, body %q; want 400 delete takes no body envelope", rec.Code, rec.Body.String())
 	}
 	if content, ok, err := s.store.GetFile(hash, "notes.md"); err != nil || !ok || string(content) != "# Notes" {
 		t.Errorf("notes.md after the refused DELETE = ok %v, err %v, content %q; want untouched", ok, err, content)
@@ -2805,9 +2808,10 @@ func TestNotFoundServesTheBinsFallback(t *testing.T) {
 	}
 
 	// A bin whose files include 404.html still answers a DELETE of a missing path with the
-	// plain text refusal, and the fallback itself is an ordinary file.
-	if rec := del(t, s, base+"missing.txt", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
-		t.Errorf("DELETE missing.txt = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
+	// path not found envelope — only the GET half falls back — and the fallback itself is an
+	// ordinary file.
+	if rec := del(t, s, base+"missing.txt", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != apiEnvelope(404, "path not found") {
+		t.Errorf("DELETE missing.txt = %d, body %q; want 404 path not found envelope", rec.Code, rec.Body.String())
 	}
 	rec := get(t, s, base+"404.html")
 	if rec.Code != http.StatusOK || rec.Body.String() != fallbackBody {
@@ -2874,8 +2878,8 @@ func TestFallbackNeverShadowsAnything(t *testing.T) {
 	if rec := patchBinsJSON(t, s, "198.51.100.44:1234", base+"notes.md", "test-key", "", "", ""); rec.Code != http.StatusMethodNotAllowed || rec.Body.String() != "method not allowed\n" {
 		t.Errorf("PATCH a file path in a bin with a fallback = %d, body %q; want 405", rec.Code, rec.Body.String())
 	}
-	if rec := del(t, s, base+"gone.txt", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
-		t.Errorf("DELETE a missing path in a bin with a fallback = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
+	if rec := del(t, s, base+"gone.txt", "test-key"); rec.Code != http.StatusNotFound || rec.Body.String() != apiEnvelope(404, "path not found") {
+		t.Errorf("DELETE a missing path in a bin with a fallback = %d, body %q; want 404 path not found envelope", rec.Code, rec.Body.String())
 	}
 
 	// Delete the index.html and the base is the directory listing, still not the fallback.
@@ -2927,5 +2931,119 @@ func TestFallbackInAProtectedBin(t *testing.T) {
 	s.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound || rec.Body.String() != fallbackBody {
 		t.Errorf("GET a missing path with the bin password = %d, body %q; want 404 and the fallback", rec.Code, rec.Body.String())
+	}
+}
+
+// assertRefusalEnvelope pins one refusal to the exact envelope: the status just answered as
+// its code, the sentence verbatim, the pinned field order, the trailing newline, and the
+// application/json Content-Type the envelope always carries.
+func assertRefusalEnvelope(t *testing.T, what string, rec *httptest.ResponseRecorder, status int, message string) {
+	t.Helper()
+	if rec.Code != status {
+		t.Errorf("%s = %d, want %d; body %q", what, rec.Code, status, rec.Body.String())
+		return
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("%s Content-Type = %q, want application/json", what, ct)
+	}
+	if got := rec.Body.String(); got != apiEnvelope(status, message) {
+		t.Errorf("%s body = %q, want %q", what, got, apiEnvelope(status, message))
+	}
+}
+
+// TestFileRouteRefusalsAreEnvelopes is the outside-/api half of decision 0033: every refusal
+// produced while serving PUT or DELETE on a file route answers the envelope with its existing
+// sentence and its unchanged status — the 404 pair reads bin not found and path not found, and
+// the archive family carries its dynamic 400/413 status inside the code field.
+func TestFileRouteRefusalsAreEnvelopes(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+
+	assertRefusalEnvelope(t, "PUT the bin base", put(t, s, base, "test-key", "x"),
+		http.StatusBadRequest, "empty path")
+	assertRefusalEnvelope(t, "DELETE the bin base", del(t, s, base, "test-key"),
+		http.StatusMethodNotAllowed, "method not allowed")
+	assertRefusalEnvelope(t, "PUT a dot path", put(t, s, base+"./x", "test-key", "x"),
+		http.StatusBadRequest, "path must not contain ., .., // or a trailing slash")
+	assertRefusalEnvelope(t, "PUT an over-1-MiB body", put(t, s, base+"big.txt", "test-key", strings.Repeat("x", maxBodyBytes+1)),
+		http.StatusRequestEntityTooLarge, "body over 1 MiB")
+
+	slip := makeZip(t, zipEntry{name: "../escape", body: "hostile"})
+	assertRefusalEnvelope(t, "PUT a zip whose entry escapes the bin", put(t, s, base+"slip.zip", "test-key", string(slip)),
+		http.StatusBadRequest, "path must not escape the bin")
+	over := makeZip(t, zipEntry{name: "big.txt", body: strings.Repeat("x", maxBodyBytes+1)})
+	assertRefusalEnvelope(t, "PUT a zip with an entry over 1 MiB", put(t, s, base+"over.zip", "test-key", string(over)),
+		http.StatusRequestEntityTooLarge, "extracted file over 1 MiB")
+
+	assertRefusalEnvelope(t, "DELETE a path nothing lives under", del(t, s, base+"gone.txt", "test-key"),
+		http.StatusNotFound, "path not found")
+	assertRefusalEnvelope(t, "PUT into an unknown bin", put(t, s, "/deadbeef/page.html", "test-key", "x"),
+		http.StatusNotFound, "bin not found")
+}
+
+// TestFilePutPassword401IsEnvelope is review focus 3 on the file pair: the wrapped 401 keeps
+// the bin password required wording and its WWW-Authenticate challenge.
+func TestFilePutPassword401IsEnvelope(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBinWithPassword(t, s, "sesame")
+
+	rec := put(t, s, base+"page.html", "test-key", "<p>x</p>")
+	assertRefusalEnvelope(t, "PUT a protected bin without its password", rec,
+		http.StatusUnauthorized, "bin password required")
+	if www := rec.Header().Get("WWW-Authenticate"); www != `Basic realm="sandbin"` {
+		t.Errorf("WWW-Authenticate = %q, want the Basic challenge the envelope must not lose", www)
+	}
+}
+
+// TestFileGetRefusalsStayPlain is the boundary that must not leak: the GET side of the same
+// refused shapes keeps today's plain bodies byte for byte.
+func TestFileGetRefusalsStayPlain(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+
+	rec := get(t, s, "/deadbeef/page.html")
+	if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown bin\n" {
+		t.Errorf("GET unknown bin = %d, body %q; want 404 unknown bin plain", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Errorf("GET unknown bin Content-Type = %q, want the plain text type", ct)
+	}
+
+	rec = get(t, s, base+"gone.txt")
+	if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
+		t.Errorf("GET unknown path = %d, body %q; want 404 unknown path plain", rec.Code, rec.Body.String())
+	}
+
+	protected := createTestBinWithPassword(t, s, "sesame")
+	rec = get(t, s, protected+"page.html")
+	if rec.Code != http.StatusUnauthorized || rec.Body.String() != "bin password required\n" {
+		t.Errorf("GET a protected bin = %d, body %q; want 401 bin password required plain", rec.Code, rec.Body.String())
+	}
+	if www := rec.Header().Get("WWW-Authenticate"); !strings.HasPrefix(www, "Basic") {
+		t.Errorf("WWW-Authenticate = %q, want a Basic challenge", www)
+	}
+}
+
+// TestDotPathRefusalFollowsMethod pins the classification refusals to their method: PUT
+// answers the 400 envelope, GET answers today's plain sentence, on the sub path judged by
+// cleanPath and on the dot spelled as the bin segment itself.
+func TestDotPathRefusalFollowsMethod(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+
+	const escapeSentence = "path must not escape the bin"
+	assertRefusalEnvelope(t, "PUT "+base+"../x", put(t, s, base+"../x", "test-key", "y"),
+		http.StatusBadRequest, escapeSentence)
+	rec := get(t, s, base+"../x")
+	if rec.Code != http.StatusBadRequest || rec.Body.String() != escapeSentence+"\n" {
+		t.Errorf("GET %s../x = %d, body %q; want 400 and the plain sentence unchanged", base, rec.Code, rec.Body.String())
+	}
+
+	const classSentence = "path must not contain . or .."
+	assertRefusalEnvelope(t, "PUT /../x", put(t, s, "/../x", "test-key", "y"),
+		http.StatusBadRequest, classSentence)
+	rec = get(t, s, "/../x")
+	if rec.Code != http.StatusBadRequest || rec.Body.String() != classSentence+"\n" {
+		t.Errorf("GET /../x = %d, body %q; want 400 and the plain sentence unchanged", rec.Code, rec.Body.String())
 	}
 }
