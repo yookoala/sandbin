@@ -325,7 +325,10 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			deleted = []string{sub}
 		}
 		if len(deleted) == 0 {
-			http.Error(w, "unknown path", http.StatusNotFound)
+			// The live server answers an unknown delete path with the envelope.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, `{"status":"error","code":404,"message":"path not found"}`+"\n")
 			return
 		}
 		out, err := json.Marshal(struct {
@@ -2941,8 +2944,8 @@ func TestDeleteUnknownPathNamesThePathAndMakesOneRequest(t *testing.T) {
 	if stdout != "" {
 		t.Errorf("stdout = %q, want nothing from a failed delete run", stdout)
 	}
-	if !strings.Contains(stderr, "missing.txt") || !strings.Contains(stderr, "404 unknown path") {
-		t.Errorf("stderr = %q, want an error naming missing.txt and the server's 404 unknown path", stderr)
+	if !strings.Contains(stderr, "missing.txt") || !strings.Contains(stderr, "404 path not found") {
+		t.Errorf("stderr = %q, want an error naming missing.txt and the server's 404 path not found", stderr)
 	}
 	if f.deletesSeen() != 1 {
 		t.Errorf("DELETEs = %d, want exactly one: the client never retries", f.deletesSeen())
