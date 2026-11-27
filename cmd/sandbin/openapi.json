@@ -2,7 +2,7 @@
   "openapi": "3.1.1",
   "info": {
     "title": "sandbin HTTP API",
-    "description": "The sandbin JSON API: keys, bins and bin metadata under /api. Errors answer the JSON envelope {\"status\":\"error\",\"code\":<status>,\"message\":<sentence>}; successes answer JSON. A path under /api, or the exact /openapi.json, that the server's route table does not name answers 404 API endpoint not found in that envelope; a near-miss path like /openapix.json or /openapi.json/ never reaches the API dispatcher and stays the plain-text bin 404.",
+    "description": "The sandbin JSON API: keys, bins and bin metadata under /api. Errors answer the JSON envelope {\"status\":\"error\",\"code\":<status>,\"message\":<sentence>}; successes answer JSON. A path under /api, or the exact /openapi.json, that the server's route table does not name answers 404 API endpoint not found in that envelope; a near-miss path like /openapix.json or /openapi.json/ never reaches the API dispatcher and stays the plain-text bin 404. A method the route table does not register for a named path — for example HEAD /api/bins, DELETE /api/bins, GET /api/key, or POST or HEAD /openapi.json — answers 405 method not allowed in the same envelope.",
     "version": "1.0.0",
     "contact": {
       "name": "sandbin",
