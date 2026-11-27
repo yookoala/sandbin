@@ -6,7 +6,7 @@ description: Upload files or whole folders to the sandbin server at {{.Base}} so
 # Sandbin preview
 
 `"$SKILL/sandbin-client"` always names its verb — `upload` sends files and folders to the sandbin
-server at {{.Base}}, `delete` takes them back out again, `describe` prints the full inspection of one bin, `list` prints every bin on the server, and `init` settles this directory's settings — and prints preview URLs. `$SKILL` is this skill's directory — the folder holding this SKILL.md, which OpenCode names when it loads the skill; start every shell command for this skill by setting `SKILL=<that directory>`. Replace `your-key` with the real API key; `/<bin>/` is a created bin.
+server at {{.Base}}, `delete` takes them back out again, `describe` prints the full inspection of one bin, `list` prints every bin on the server, and `init` settles this directory's settings — and prints preview URLs. `$SKILL` is this skill's directory — the folder holding this SKILL.md, which OpenCode names when it loads the skill; start every shell command for this skill by setting `SKILL=<that directory>`. Replace `your-key` with the real API key; `/<bin>/` is a created bin. Adding `--json` to an `upload`, `delete`, `describe`, or `list` run makes the client print a machine-readable JSON report of the run to stdout instead of the human lines.
 A bin holding a `404.html` answers every unmatched path under the bin with that file, so a
 one-page app can serve its own routes.
 

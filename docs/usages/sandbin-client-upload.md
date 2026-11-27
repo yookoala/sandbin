@@ -38,7 +38,9 @@ of costing a request. A misused verb reports its misuse followed by its own usag
 bin you already have and `--new` forces a fresh one; `--name <path>` names piped-in stdin, and
 with nothing piped in that is an error, not an empty upload; `--archive <folder>` uploads a
 whole folder as one server-unpacked archive (below); and `--no-extract` uploads every file of
-the run with `?raw=1`, so archive-shaped bodies are stored raw.
+the run with `?raw=1`, so archive-shaped bodies are stored raw. `--json` prints the run as one
+JSON action report ([rules below](#rules-that-hold-for-every-run)) — on `upload`, write it
+before the file arguments.
 
 ### Finding or creating the bin
 
@@ -179,9 +181,11 @@ not flags of `delete`, so a run written with them is a usage error that makes no
 delete run reads no stdin even when a pipe is attached. The names follow the upload name rules,
 with two of their own: a trailing slash on a file argument is a refusal pointing at `--folder`,
 and a trailing slash on `--folder` is a refusal saying the client sends that slash itself.
+`--json` on a delete run reports one `delete <path>` action per file the server accepted, and
+the array stops at the first refusal.
 
-The names are checked against the bin by the server: a path the bin does not hold is a `404`
-naming it, and a folder the bin does not hold is a `404` too. Deletions are sent in the order
+The names are checked against the bin by the server: a path the bin does not hold is refused
+with a `404` `path not found` naming it, and a folder the bin does not hold is a `404` too. Deletions are sent in the order
 written, files before folders, and one failing name stops the run — the deletions already sent
 stay done. Every delete is exactly one `DELETE` request, so a refused run costs nothing. The
 run prints one line per deleted file and ends with the bin URL:
@@ -225,7 +229,8 @@ files:
 The lines are the hash, the title, the description, whether a password guards the bin, the
 created time, and one indented line per stored file — a bin with nothing stored answers
 `files: none`. `describe` takes no arguments at all — file arguments are refused, and `--name`
-and `--archive` are not its flags — so it can only ever read.
+and `--archive` are not its flags — so it can only ever read. `--json` on a describe run reports
+the same inspection as a single `describe the bin` action carrying the inspect answer.
 
 ## list
 
@@ -244,9 +249,33 @@ sandbin-client list
 
 One line per bin: hash, created time, and title — a bin with no title prints without the title
 column — and an instance with nothing to list answers `no bins`. The run walks the server's
-pages on its own; no page size or cursor is ever named on the command line.
+pages on its own; no page size or cursor is ever named on the command line. `--json` on a list
+run reports one `list bins` action per listing page read.
 
 ## Rules that hold for every run
+
+`upload`, `delete`, `describe` and `list` take a `--json` flag; `init` has no `--json` (its
+output is a setup transcript for a person). With it, the run prints one JSON action report on
+stdout instead of its human lines: `status` (`ok` or `error`), `bin` and `url` whenever the
+run worked on a bin, `actions` — the requests the client actually sent to the server, in
+request order, each `{"description": "<fixed sentence>", "result": <that request's raw server
+body unchanged>}` — and `message`, only when `status` is `error`. The `description` sentences
+are fixed: `create the bin`, `store <path>`, `set the bin title and description`,
+`delete <path>`, `describe the bin` and `list bins`. A failed run's array stops at the failed
+step and that step's `result` is the refusal envelope the server answered — the object still
+goes to stdout and the process exits non-zero. Nothing failure-related lands on stderr under
+`--json`: no `sandbin-client:` line, no `set SANDBIN_BIN_PASSWORD` hint — stdout carries the
+whole failure; advisories that are not failures, like the protected-bin warning, still print
+on stderr out of stdout's way. On `upload`, write the flag before the file paths:
+`sandbin-client upload --json file.md`.
+
+```sh
+sandbin-client upload --json notes.md
+```
+
+```text
+{"status":"ok","bin":"abc1234","url":"{{ .Instance.URL }}/abc1234/","actions":[{"description":"create the bin","result":{"status":"ok","bin":"abc1234","url":"/abc1234/","title":"","description":"","has_password":false,"created_at":"2026-11-17T09:14:02Z"}},{"description":"store notes.md","result":{"status":"ok","path":"notes.md","size":7,"updated_at":"2026-11-17T09:15:01Z"}}]}
+```
 
 ### Do not retry a failing run from a script
 

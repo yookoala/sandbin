@@ -507,16 +507,35 @@ func TestDocsAPIIndexSection(t *testing.T) {
 
 // TestDocsNoRetiredSpellings pins the no-shim rule on the hosted pages: the retired
 // header-driven surface appears on no page — no X-Bin-* or X-Extract header, no /verify-key
-// or /healthz route, no `POST /`-creates-a-bin text, and no blanket `GET` is never charged
-// claim that the key-checked listing disproves.
+// or /healthz route, no `POST /`-creates-a-bin text, no blanket `GET` is never charged
+// claim that the key-checked listing disproves, and no plain `204`, whose empty-body
+// answers are retired in favour of the envelope's {"status":"ok"} bodies.
 func TestDocsNoRetiredSpellings(t *testing.T) {
 	h := newTestServer(t, "test-key")
 	for _, name := range wantDocPages {
 		body := get(t, h, "/docs/"+name).Body.String()
-		for _, gone := range []string{"X-Bin-", "X-Extract", "/verify-key", "/healthz", "<code>POST /</code>", "<code>GET</code> is never charged"} {
+		for _, gone := range []string{"X-Bin-", "X-Extract", "/verify-key", "/healthz", "<code>POST /</code>", "<code>GET</code> is never charged", "204"} {
 			if strings.Contains(body, gone) {
 				t.Errorf("%s still carries the retired spelling %q in:\n%s", name, gone, body[:min(len(body), 400)])
 			}
+		}
+	}
+}
+
+// TestDocsEnvelopeSectionNamesBoth404s pins the envelope story the hosted API page must tell:
+// both new 404 sentences with their triggers, and both routes whose empty 204 answers are
+// retired in favour of a 200 that answers {"status":"ok"}.
+func TestDocsEnvelopeSectionNamesBoth404s(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	body := get(t, h, "/docs/sandbin-api.html").Body.String()
+	for _, want := range []string{
+		"<code>API endpoint not found</code>",
+		"<code>bin not found</code>",
+		"a working key answers <code>200</code> with <code>{&quot;status&quot;:&quot;ok&quot;}</code>",
+		"and answers <code>200</code> with <code>{&quot;status&quot;:&quot;ok&quot;}</code>: the empty",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the API page misses %q in:\n%s", want, body[:min(len(body), 400)])
 		}
 	}
 }

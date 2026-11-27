@@ -3,7 +3,9 @@
 This instance ships an agent skill (`skills/sandbin-preview/SKILL.md`) that teaches an agent to
 work with this server through `sandbin-client`: first-time `init` in a project directory,
 uploading files with `upload`, uploading a whole folder with `upload --archive`, reading a bin
-with `describe` and listing the instance's bins with `list`, and what the caps refuse. The
+with `describe` and listing the instance's bins with `list`, and what the caps refuse. A `--json`
+flag on an `upload`, `delete`, `describe` or `list` run makes the client print a machine-readable
+JSON report of the run instead of the human lines. The
 skill keeps its own client binary: it tells the agent to build it into the skill folder with
 `GOBIN="$SKILL" go install
 github.com/yookoala/sandbin/cmd/sandbin-client@latest` and to always run `"$SKILL/sandbin-client"`

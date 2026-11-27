@@ -21,24 +21,48 @@ key-checked read. In the examples the key is always written `$API_KEY`: export i
 running them, with the key this instance was configured with — `export API_KEY=your-key`.
 
 **JSON in, JSON out.** Every `/api/` request that carries data carries it as one JSON object,
-and every success under `/api/` answers a JSON object with snake_case fields; refusals stay
-short plain text (`invalid API key`, `unknown bin`, `bin password required`). A JSON body is
+and every success under `/api/` answers a JSON object with snake_case fields, leading with
+`"status":"ok"`. A nested row is data, not a response: bins listed inside `GET /api/bins`
+and files listed inside a bin's file list carry no `status` of their own. A JSON body is
 capped at 64 KiB, and malformed JSON is a `400`. The bin object names the bin's `bin` hash,
 its base path `url`, its `title` and `description`, whether it `has_password`, and its
 `created_at` (RFC 3339); a bin password is never in any answer.
 
+**Refusals answer JSON wherever successes do.** Every refusal on a JSON-answering route —
+everything the `/api` dispatch serves, and the file `PUT` and `DELETE` pair — answers its
+status with a JSON body naming that status again:
+
+```text
+{"status":"error","code":403,"message":"invalid API key"}
+```
+
+`status` says which half of the contract the body is, `code` is the HTTP status the response
+carries — the two can never disagree — and `message` is the same human sentence the plain
+refusals always used (`invalid API key`, `too many bad API keys`, `bin password required`,
+`method not allowed`, `empty path`, `could not read the request`). A 404 on this surface is
+named by its cause: a path the route table does not name — a trailing-slash spelling, a
+segment that is no eight-hex hash — answers `API endpoint not found`; a named route whose
+`{hash}` resolves to no bin answers `bin not found`; on the `DELETE` file route, a path
+nothing lives under answers `path not found`. Routes that never answered JSON stay plain
+text: a file `GET` (`unknown bin`, `unknown path`), the front page, `/robots.txt`, `/docs`,
+the skill and installer files, near-miss paths that never reach the API dispatch
+(`/openapi.json/` and `/openapix.json` answer `unknown bin`), and `PATCH` on a bin path.
+
 **Protected bins.** A bin created with a `password` in its create body requires that password
 as Basic Auth — user name the bin's hash, e.g. `curl -u "abc1234:sesame"` — on every `GET`,
 `PUT` and `DELETE` under it and on the `GET`, `PATCH` and `DELETE` of its `/api/bins/{hash}`
-route. A missing or wrong password is a `401` that charges nothing. No bin is ever protected
+route. A missing or wrong password is a `401` that charges nothing — the JSON envelope with
+its `WWW-Authenticate` header on the `/api` and `PUT`/`DELETE` routes, plain text on the
+plain `GET` file side. No bin is ever protected
 by an empty password: an empty `password`, given or not, leaves the bin open.
 
 **Bin paths.** The create answer's `url` field already ends in `/`, so append the file name
 directly to it (`{{ .Instance.URL }}/abc1234/notes.md`) and never double the slash: a `//`
-path is a `400`.
+path is a `400` — the plain text on a `GET`, the JSON envelope on a `PUT` or `DELETE`.
 
-**Status codes.** `200` and `201` answer success (`201` when something new was created);
-`204` answers a success with nothing to report; `301` is the bin-base redirect; `400` a
+**Status codes.** `200` and `201` answer success (`201` when something new was created,
+and every success under `/api` now carries a body — the emptiest ones just
+`{"status":"ok"}`); `301` is the bin-base redirect; `400` a
 rejected path or metadata value; `401` a missing or wrong bin password; `403` a bad API key;
 `404` an unknown bin or path; `405` a method the route does not answer; `413` an oversized
 body; `429` an address blocked for bad API keys. `HEAD` is a `405` everywhere except
@@ -58,11 +82,12 @@ below, and every method the root does not answer — `POST` included — is a `4
 ## `/api` — the API index
 
 The bare route answers `GET` and `HEAD`; `POST`, `PUT`, `PATCH` and `DELETE` against it are
-the plain `405` `method not allowed`, and the trailing-slash spelling `/api/` is the plain
-`404` `unknown bin` whatever the key.
+the `405` envelope `method not allowed`, and the trailing-slash spelling `/api/` — a path
+the route table does not name — is the `404` envelope `API endpoint not found` whatever the
+key.
 
 `GET` answers `200` `application/json` with the live map of this instance's published JSON
-API: every published endpoint, each with its methods and a one-line description; an
+API, its own body leading with `"status":"ok"`: every published endpoint, each with its methods and a one-line description; an
 `openapi` sibling pointing at the machine-readable `/openapi.json` document and a `version`
 stamp naming the server answering it; `HEAD` answers the same `200` with no body. The index
 needs no API key, charges nothing, and answers even while the requesting address is blocked.
@@ -81,14 +106,15 @@ It answers the index — here its opening, the surface's first and last endpoint
 ones between them elided, and the document pointer, the elided parts marked with `…`:
 
 ```text
-{"version":"v0.4.4","endpoints":[{"url":"{{ .Instance.URL }}/api/key","methods":[ … ]}, …, {"url":"{{ .Instance.URL }}/api/bins/{hash}","methods":[ … ]}],"openapi":{"url":"{{ .Instance.URL }}/openapi.json", … }}
+{"status":"ok","version":"v0.4.4","endpoints":[{"url":"{{ .Instance.URL }}/api/key","methods":[ … ]}, …, {"url":"{{ .Instance.URL }}/api/bins/{hash}","methods":[ … ]}],"openapi":{"url":"{{ .Instance.URL }}/openapi.json", … }}
 ```
 
 ## `/api/bins` — create and list bins
 
 The collection answers `POST` and `GET`, both key-checked; every other method against it —
-`HEAD` and `DELETE` included — answers `405`, and the trailing-slash spelling `/api/bins/` is
-the plain `404`.
+`HEAD` and `DELETE` included — answers the `405` envelope `method not allowed`, and the
+trailing-slash spelling `/api/bins/` — a path the table names nothing under — answers the
+`404` envelope `API endpoint not found`.
 
 ### `POST` — create a bin
 
@@ -116,7 +142,7 @@ It answers `201` with the new bin's object — here hash `abc1234` — and `Loca
 /api/bins/abc1234`:
 
 ```text
-{"bin":"abc1234","url":"/abc1234/","title":"","description":"","has_password":false,"created_at":"2026-11-17T09:14:02Z"}
+{"status":"ok","bin":"abc1234","url":"/abc1234/","title":"","description":"","has_password":false,"created_at":"2026-11-17T09:14:02Z"}
 ```
 
 ```sh
@@ -131,7 +157,7 @@ curl -s \
 This one answers `201` with the object of a protected bin — here hash `def5678`:
 
 ```text
-{"bin":"def5678","url":"/def5678/","title":"Button grid","description":"A grid of pressable buttons","has_password":true,"created_at":"2026-11-17T09:14:03Z"}
+{"status":"ok","bin":"def5678","url":"/def5678/","title":"Button grid","description":"A grid of pressable buttons","has_password":true,"created_at":"2026-11-17T09:14:03Z"}
 ```
 
 An over-long or control-character-bearing title or description, or a password over 72 bytes,
@@ -158,7 +184,7 @@ It answers `200` with the page of bin objects and, because an older bin follows,
 `next_cursor` naming the walk's position after the page's last one:
 
 ```text
-{"bins":[{"bin":"def5678","url":"/def5678/","title":"Button grid","description":"A grid of pressable buttons","has_password":true,"created_at":"2026-11-17T09:14:03Z"}],"next_cursor":"MjAyNi0xMS0xN1QwOToxNDowM1ofZGVmNTY3OA"}
+{"status":"ok","bins":[{"bin":"def5678","url":"/def5678/","title":"Button grid","description":"A grid of pressable buttons","has_password":true,"created_at":"2026-11-17T09:14:03Z"}],"next_cursor":"MjAyNi0xMS0xN1QwOToxNDowM1ofZGVmNTY3OA"}
 ```
 
 Pass that value back as `?cursor=` to read the next page:
@@ -170,7 +196,7 @@ curl -s \
 ```
 
 ```text
-{"bins":[{"bin":"abc1234","url":"/abc1234/","title":"","description":"","has_password":false,"created_at":"2026-11-17T09:14:02Z"}]}
+{"status":"ok","bins":[{"bin":"abc1234","url":"/abc1234/","title":"","description":"","has_password":false,"created_at":"2026-11-17T09:14:02Z"}]}
 ```
 
 An answer with no `next_cursor` is the end of the walk. A cursor is the unpadded URL-safe
@@ -179,9 +205,11 @@ mid-walk.
 
 ## `/api/bins/{hash}` — inspect, update, delete
 
-The per-bin route answers `GET`, `PATCH` and `DELETE`. An unknown hash is the plain `404`, the
-trailing-slash spelling `/api/bins/abc1234/` is the plain `404` whatever the method, and `HEAD`
-is a `405`.
+The per-bin route answers `GET`, `PATCH` and `DELETE`. An unknown hash answers `404` in the
+envelope — `bin not found`, naming the resource the hash was meant to select; the
+trailing-slash spelling `/api/bins/abc1234/` is a path the route table does not name, so it
+answers `404` `API endpoint not found` whatever the method; and `HEAD` answers the `405`
+envelope `method not allowed`.
 
 ### `GET` — inspect the bin
 
@@ -199,15 +227,19 @@ It answers `200` with the bin object and its `files` array — empty for the fre
 bin; run it again after the uploads below and it names each landed file:
 
 ```text
-{"bin":"abc1234","url":"/abc1234/","title":"","description":"","has_password":false,"created_at":"2026-11-17T09:14:02Z","files":[]}
+{"status":"ok","bin":"abc1234","url":"/abc1234/","title":"","description":"","has_password":false,"created_at":"2026-11-17T09:14:02Z","files":[]}
 ```
 
 ```sh
 curl -u "def5678:sesame" {{ .Instance.URL }}/api/bins/def5678
 ```
 
-It answers `200` for the protected bin with its password given; without it the answer is
-`401 bin password required`.
+It answers `200` for the protected bin with its password given; without it the answer is the
+`401` envelope, the challenge header included:
+
+```text
+{"status":"error","code":401,"message":"bin password required"}
+```
 
 ### `PATCH` — edit title, description, and password
 
@@ -235,7 +267,7 @@ curl -s \
 It answers `200` with the bin object as it now reads:
 
 ```text
-{"bin":"def5678","url":"/def5678/","title":"Button grid","description":"A grid, keyboard, and pointer","has_password":true,"created_at":"2026-11-17T09:14:03Z"}
+{"status":"ok","bin":"def5678","url":"/def5678/","title":"Button grid","description":"A grid, keyboard, and pointer","has_password":true,"created_at":"2026-11-17T09:14:03Z"}
 ```
 
 Rotating the password is the same route with a `password` field — the current one in Basic
@@ -258,8 +290,10 @@ then on. Clearing the password is `"password":null` (or `""`), and the answered 
 ### `DELETE` — remove the bin
 
 Removes a bin and every file in it. Key-checked — plus the current bin password as Basic Auth
-on a protected bin — carries no body, and answers `204` with an empty body. An unknown hash is
-`404`. The example makes its own throwaway bin so the ones above stay readable:
+on a protected bin — carries no body, and answers `200` with `{"status":"ok"}`: the empty
+body this route used to answer is retired by decision, traded on purpose for the one success
+shape every JSON answer on the API carries. An unknown hash answers `404` `bin not found` in
+the envelope. The example makes its own throwaway bin so the ones above stay readable:
 
 ```sh
 curl -s \
@@ -273,7 +307,7 @@ curl -s \
 It answers `201` with a new bin — here hash `9c0ffee0`:
 
 ```text
-{"bin":"9c0ffee0","url":"/9c0ffee0/","title":"Throwaway","description":"","has_password":false,"created_at":"2026-11-17T09:14:40Z"}
+{"status":"ok","bin":"9c0ffee0","url":"/9c0ffee0/","title":"Throwaway","description":"","has_password":false,"created_at":"2026-11-17T09:14:40Z"}
 ```
 
 ```sh
@@ -282,15 +316,18 @@ curl -X DELETE \
   {{ .Instance.URL }}/api/bins/9c0ffee0
 ```
 
-It answers `204`: the bin and its files are gone, and every path under
-`{{ .Instance.URL }}/9c0ffee0/` is a `404` from then on. A protected bin takes the same
+It answers `200` with `{"status":"ok"}`: the bin and its files are gone, and every path under
+`{{ .Instance.URL }}/9c0ffee0/` is a `404` from then on — plain `unknown bin` to a `GET`, the
+envelope's `bin not found` to a `PUT` or `DELETE`. A protected bin takes the same
 `DELETE` with its current password — for `def5678`, add `-u "def5678:sesame"`. Removing files
 one by one stays on the file route below.
 
 ## `/api/key` — check the API key
 
-The key-check route answers `POST` alone and every other method `405`. Key-checked: a working
-key answers `204` with an empty body; a wrong one answers `403 invalid API key` and is charged
+The key-check route answers `POST` alone and every other method with the `405` envelope.
+Key-checked: a working key answers `200` with `{"status":"ok"}` — like the bin `DELETE`, it
+traded its empty body on purpose for the success body every JSON answer carries — and a wrong
+one answers `403 invalid API key` in the envelope and is charged
 exactly like a failed `POST /api/bins` — same lockout accounting — and nothing is created. The
 check stays a `POST` because `GET` never charges: a key check on `GET` would let anyone probe
 keys for free. `sandbin-client init` uses it to check a key before saving it (see [Building
@@ -299,13 +336,17 @@ and Config](sandbin-client-init.md)).
 ```sh
 curl -s \
   -X POST \
-  -o /dev/null \
-  -w "%{http_code}\n" \
   -H "X-API-Key: $API_KEY" \
   {{ .Instance.URL }}/api/key
 ```
 
-It prints `204` for a key that works; a wrong key prints `403` and costs one lockout failure.
+For a key that works:
+
+```text
+{"status":"ok"}
+```
+
+A wrong key answers `403 invalid API key` in the envelope and costs one lockout failure.
 
 ## `/api/health` — the liveness probe
 
@@ -325,7 +366,9 @@ It answers `{"status":"ok"}`.
 ## `/openapi.json` — the machine-readable API document
 
 The document route answers `GET` alone; `HEAD` and every other method — `POST` included —
-are the plain `405`, and the trailing-slash spelling `/openapi.json/` is the plain `404`.
+answer the `405` envelope `method not allowed`, from the same table dispatch that guards the
+`/api` routes. The trailing-slash spelling `/openapi.json/` never reaches that table: it
+falls through to the bin path and stays the plain `404` `unknown bin`, like `/openapix.json`.
 
 Answers `200` `application/json` with the OpenAPI 3.1 document: the machine-readable
 description of the `/api` JSON surface — the `/api` index, `/api/bins`, `/api/bins/{hash}`,
@@ -365,9 +408,12 @@ own order, the elided parts marked with `…`:
 
 ## `/{hash}/` — the bin base
 
-The bin base answers `GET`. An unknown hash is `404`; every other method against the base
-without a path — `PUT`, `DELETE` and `PATCH` included — answers `405`; the bin's metadata is
-edited at `PATCH /api/bins/{hash}` above.
+The bin base answers `GET`. An unknown hash is `404` — plain `unknown bin` to a `GET`, the
+envelope's `bin not found` to a `PUT` or `DELETE`. A method against the base without a path:
+`DELETE` answers the `405` envelope `method not allowed` — a bin is never deleted at its base,
+`DELETE /api/bins/{hash}` above is for that — a `PUT` is the `400` envelope `empty path`,
+because a file `PUT` must name a path, and `POST` and `PATCH` stay the plain `405`; the bin's
+metadata is edited at `PATCH /api/bins/{hash}` above.
 
 ### `GET` — the cover page or listing
 
@@ -415,7 +461,8 @@ Under the bin base, each stored file lives at its own path, answered by `GET`, `
 
 Serves the stored bytes: `text/plain` for text shapes, rendered `text/html` for a `.ansi`
 file, and `text/html` for the bin's own `404.html` treatment described below. An unknown
-path is `404 unknown path`. Needs no key on a public bin.
+path is the plain `404 unknown path` — this plain side keeps its plain text; the `PUT` and
+`DELETE` refusals below answer the JSON envelope. Needs no key on a public bin.
 
 ```sh
 curl {{ .Instance.URL }}/abc1234/notes.md
@@ -429,16 +476,20 @@ curl {{ .Instance.URL }}/abc1234/build.ansi
 
 It answers `200` `text/html` with the ANSI rendered.
 
-A bin whose files include a `404.html` answers every unmatched path under it with that file
-and a `404` status, which lets a single-page app serve its own error page from the bin; a
-bin without one answers the plain `404 unknown path`.
+A bin whose files include a `404.html` answers every `GET` of an unmatched path under it with
+that file and a `404` status, which lets a single-page app serve its own error page from the
+bin; a bin without one answers the plain `404 unknown path`. Only a `GET` gets that
+treatment: a `DELETE` of a path nothing lives under answers the envelope's `path not found`
+and never consults the fallback.
 
 ### `PUT` — upload a file
 
 Key-checked; a protected bin also needs its Basic Auth. Every `PUT` body is capped at 1 MiB —
-over it is `413`. A rejected path (an escaping or malformed name) is `400`. An upload lands
+over it is the `413` envelope `body over 1 MiB`. A rejected path (an escaping or malformed
+name) is the `400` envelope, and a `PUT` at the bare bin base is the `400` envelope `empty
+path`. An upload lands
 as a plain file, except one named as an archive, which unpacks instead: two usages, split
-below. Both answer JSON.
+below. Both answer JSON, refusals included.
 
 #### Plain uploads
 
@@ -456,7 +507,7 @@ curl -X PUT \
 It answers `201` with `Location: /abc1234/index.html` and the file's object:
 
 ```text
-{"path":"index.html","size":13,"updated_at":"2026-11-17T09:15:00Z"}
+{"status":"ok","path":"index.html","size":13,"updated_at":"2026-11-17T09:15:00Z"}
 ```
 
 From then on the bin base serves that file as its cover page.
@@ -515,7 +566,8 @@ Entry names are checked before anything is stored, on the name the archive itsel
   reader's shortened name, judged by the same rules.
 - So an entry can never move a file out of the folder the archive lands in: `sub/../up.txt`
   under `site/bundle.zip` is a refusal, not `site/up.txt`, and `deep/../../evil.txt` never
-  reaches the bin root. Every refusal answers `400` naming the rule (`path must not escape
+  reaches the bin root. Every refusal answers `400` in the envelope naming the rule (`path
+  must not escape
   the bin` and friends) and the bin stays exactly as it was.
 - Symlink, hardlink, device and fifo entries (`archive contains a symlink <path>`) and
   entries a zip claims to have encrypted (`archive contains an encrypted entry <path>`) are
@@ -551,15 +603,16 @@ curl -X PUT \
 It answers `201` with the counts of the two landed files:
 
 ```text
-{"created":2,"replaced":0}
+{"status":"ok","created":2,"replaced":0}
 ```
 
-Re-running the same upload answers `200` with `{"created":0,"replaced":2}`.
+Re-running the same upload answers `200` with `{"status":"ok","created":0,"replaced":2}`.
 
 ### `DELETE` — remove a file
 
-Removes one file. Key-checked like `PUT`, carries no body. A path the bin does not hold is
-`404`.
+Removes one file. Key-checked like `PUT`, carries no body. A path the bin does not hold
+answers `404` in the envelope — `path not found`, the sentence that replaces the old plain
+`unknown path` on this half of the surface.
 
 ```sh
 curl -X DELETE \
@@ -567,7 +620,8 @@ curl -X DELETE \
   {{ .Instance.URL }}/abc1234/build.ansi
 ```
 
-It answers `200` `application/json` listing what was removed — here `{"deleted":["build.ansi"]}`.
+It answers `200` `application/json` listing what was removed — here
+`{"status":"ok","deleted":["build.ansi"]}`.
 
 ## `/{hash}/{folder}/` — a folder in a bin
 
@@ -584,4 +638,4 @@ curl -X DELETE \
   {{ .Instance.URL }}/abc1234/drafts/
 ```
 
-It answers `200` with `{"deleted":["drafts/one.md","drafts/two.md"]}`.
+It answers `200` with `{"status":"ok","deleted":["drafts/one.md","drafts/two.md"]}`.

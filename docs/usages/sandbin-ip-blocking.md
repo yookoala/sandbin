@@ -12,14 +12,16 @@ commands that manage the block table.
 requests. A wrong or missing `X-API-Key` blocks that address from all of them for 30 minutes;
 every further failure adds 30 minutes, capped at 24 hours per block, and the failure count
 survives a restart. While blocked, a key-checked request answers `429` with a `Retry-After`
-(the remaining wait in seconds) and counts as another failure, so hammering only lengthens
+(the remaining wait in seconds) and the JSON error envelope body `too many bad API keys`, and
+counts as another failure, so hammering only lengthens
 the wait. Key-less bin `GET`s are never charged and never blocked: a blocked address can still
 read public bins. Wrong bin passwords (`401`) are not failures here.
 
 `POST /api/key` is the pure key check `sandbin-client init` runs before saving a key: it
-answers `204` for a working key or `403 invalid API key`, charges every failure exactly like
-a failed bin create does, creates nothing, and answers every method but `POST` with `405
-method not allowed`, so no `GET` can probe a key for free.
+answers `200` with `{"status":"ok"}` for a working key or the `403 invalid API key` envelope,
+charges every failure exactly like
+a failed bin create does, creates nothing, and answers every method but `POST` with the `405
+envelope method not allowed`, so no `GET` can probe a key for free.
 
 ## Which address is charged
 

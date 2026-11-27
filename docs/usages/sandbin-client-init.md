@@ -6,7 +6,8 @@ directory by an `init` run or carried by `SANDBIN_URL` and `SANDBIN_API_KEY` in 
 This page covers both: two ways to get the
 binary, then `init` — it collects a url and a key, checks them against the server before
 writing anything, and stores in `.sandbin.yaml` next to the work what this project actually
-chose. What the client then does with them is [Working with sandbin-client](sandbin-client-upload.md).
+chose. `init` takes no `--json`: its output is a setup transcript for a person, not a machine
+report. What the client then does with them is [Working with sandbin-client](sandbin-client-upload.md).
 
 ## Installing with `go install`
 
