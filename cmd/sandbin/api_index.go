@@ -94,6 +94,6 @@ func (s *server) apiIndex(w http.ResponseWriter, r *http.Request) {
 
 	if err := writeJSON(w, http.StatusOK, doc); err != nil {
 		log.Printf("encode the API index: %v", err)
-		http.Error(w, "could not answer the API index", http.StatusInternalServerError)
+		s.writeAPIError(w, http.StatusInternalServerError, "could not answer the API index")
 	}
 }

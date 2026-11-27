@@ -49,8 +49,7 @@
 #     documented non-2xx response, `application/json` carrying it with example values for
 #     the pinned sentences (api.go and handlers.go) that operation can actually answer.
 #     apispec records the status of a writeAPIError call but no body, since the call hands
-#     the message as a string argument and not a type the scan can read. The two 400
-#     sentences decodeBinRequest still answers plain keep their text/plain examples.
+#     the message as a string argument and not a type the scan can read.
 # 12. Spell the Location header on POST /api/bins 201 (the handler sets it to
 #     /api/bins/{hash}): apispec documents request header reads as parameters but
 #     nothing about w.Header().Set on the response side.
@@ -91,14 +90,6 @@ def jsonrefusals($path; $method; $status; $code; $map):
          "schema": { "$ref": "#/components/schemas/apiErrorBody" },
          "examples": envelopeexamples($code; $map)
        });
-def plain400withenvelope($path; $method; $map):
-  .paths[$path][$method].responses["400"].content["text/plain; charset=utf-8"].examples = {
-    "unreadable-request": { "value": "could not read the request" },
-    "unrecognized-field": { "value": "unrecognized field in the request" }
-  } | .paths[$path][$method].responses["400"].content["application/json"] = {
-    "schema": { "$ref": "#/components/schemas/apiErrorBody" },
-    "examples": envelopeexamples(400; $map)
-  };
 def retryAfter: {
   "Retry-After": {
     "description": "Whole seconds until the requesting address's API-key lockout expires.",
@@ -208,9 +199,7 @@ del(.security)
 # on every documented refusal. The scan reads a status off writeAPIError but no body — the call
 # has no value argument to infer a type from — so only this filter can say what an API refusal
 # answers: {"status":"error","code":<the status>,"message":<the fixed sentence>}. Each refusal
-# names, as examples, the exact sentences the handler behind that operation answers with. The
-# two 400 sentences decodeBinRequest still writes plain keep their text/plain examples next to
-# the envelope until that 400 moves.
+# names, as examples, the exact sentences the handler behind that operation answers with.
 | .components.schemas.apiErrorBody = {
     "description": "A refusal this API answers: the status it answered, said twice (once as the word error, once as the number), and the fixed sentence naming what went wrong. Every /api refusal answers this shape.",
     "type": "object",
@@ -242,7 +231,9 @@ del(.security)
 | jsonrefusals("/api/bins"; "get"; "403"; 403; { "invalid-api-key": "invalid API key" })
 | jsonrefusals("/api/bins"; "get"; "429"; 429; { "too-many-bad-keys": "too many bad API keys" })
 | jsonrefusals("/api/bins"; "get"; "500"; 500; { "could-not-list-bins": "could not list bins" })
-| plain400withenvelope("/api/bins"; "post"; {
+| jsonrefusals("/api/bins"; "post"; "400"; 400; {
+    "could-not-read-the-request": "could not read the request",
+    "unrecognized-field-in-the-request": "unrecognized field in the request",
     "title-over-limit": "title over 200 bytes",
     "title-control-characters": "title may not contain control characters",
     "description-over-limit": "description over 2000 bytes",
@@ -267,7 +258,9 @@ del(.security)
 | jsonrefusals("/api/bins/{hash}"; "delete"; "404"; 404; { "bin-not-found": "bin not found" })
 | jsonrefusals("/api/bins/{hash}"; "delete"; "429"; 429; { "too-many-bad-keys": "too many bad API keys" })
 | jsonrefusals("/api/bins/{hash}"; "delete"; "500"; 500; { "could-not-delete-bin": "could not delete bin" })
-| plain400withenvelope("/api/bins/{hash}"; "patch"; {
+| jsonrefusals("/api/bins/{hash}"; "patch"; "400"; 400; {
+    "could-not-read-the-request": "could not read the request",
+    "unrecognized-field-in-the-request": "unrecognized field in the request",
     "title-over-limit": "title over 200 bytes",
     "title-control-characters": "title may not contain control characters",
     "description-over-limit": "description over 2000 bytes",
@@ -283,6 +276,8 @@ del(.security)
     "could-not-update-bin": "could not update bin",
     "could-not-answer-the-bin": "could not answer the bin"
   })
+| jsonrefusals("/api"; "get"; "500"; 500; { "could-not-answer-the-api-index": "could not answer the API index" })
+| jsonrefusals("/api"; "head"; "500"; 500; { "could-not-answer-the-api-index": "could not answer the API index" })
 | jsonrefusals("/api/health"; "get"; "500"; 500; { "could-not-answer-health": "could not answer health" })
 | jsonrefusals("/api/health"; "head"; "500"; 500; { "could-not-answer-health": "could not answer health" })
 | jsonrefusals("/api/key"; "post"; "403"; 403; { "invalid-api-key": "invalid API key" })

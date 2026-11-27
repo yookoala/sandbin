@@ -2,7 +2,7 @@
   "openapi": "3.1.1",
   "info": {
     "title": "sandbin HTTP API",
-    "description": "The sandbin JSON API: keys, bins and bin metadata under /api. Errors answer the JSON envelope {\"status\":\"error\",\"code\":<status>,\"message\":<sentence>}; successes answer JSON.",
+    "description": "The sandbin JSON API: keys, bins and bin metadata under /api. Errors answer the JSON envelope {\"status\":\"error\",\"code\":<status>,\"message\":<sentence>}; successes answer JSON. A path under /api, or the exact /openapi.json, that the server's route table does not name answers 404 API endpoint not found in that envelope; a near-miss path like /openapix.json or /openapi.json/ never reaches the API dispatcher and stays the plain-text bin 404.",
     "version": "1.0.0",
     "contact": {
       "name": "sandbin",
@@ -29,6 +29,25 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/apiErrorBody"
+                },
+                "examples": {
+                  "could-not-answer-the-api-index": {
+                    "value": {
+                      "status": "error",
+                      "code": 500,
+                      "message": "could not answer the API index"
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "security": []
@@ -40,6 +59,25 @@
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/apiErrorBody"
+                },
+                "examples": {
+                  "could-not-answer-the-api-index": {
+                    "value": {
+                      "status": "error",
+                      "code": 500,
+                      "message": "could not answer the API index"
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "security": []
@@ -212,24 +250,25 @@
           "400": {
             "description": "Bad Request",
             "content": {
-              "text/plain; charset=utf-8": {
-                "schema": {
-                  "type": "string"
-                },
-                "examples": {
-                  "unreadable-request": {
-                    "value": "could not read the request"
-                  },
-                  "unrecognized-field": {
-                    "value": "unrecognized field in the request"
-                  }
-                }
-              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/apiErrorBody"
                 },
                 "examples": {
+                  "could-not-read-the-request": {
+                    "value": {
+                      "status": "error",
+                      "code": 400,
+                      "message": "could not read the request"
+                    }
+                  },
+                  "unrecognized-field-in-the-request": {
+                    "value": {
+                      "status": "error",
+                      "code": 400,
+                      "message": "unrecognized field in the request"
+                    }
+                  },
                   "title-over-limit": {
                     "value": {
                       "status": "error",
@@ -620,24 +659,25 @@
           "400": {
             "description": "Bad Request",
             "content": {
-              "text/plain; charset=utf-8": {
-                "schema": {
-                  "type": "string"
-                },
-                "examples": {
-                  "unreadable-request": {
-                    "value": "could not read the request"
-                  },
-                  "unrecognized-field": {
-                    "value": "unrecognized field in the request"
-                  }
-                }
-              },
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/apiErrorBody"
                 },
                 "examples": {
+                  "could-not-read-the-request": {
+                    "value": {
+                      "status": "error",
+                      "code": 400,
+                      "message": "could not read the request"
+                    }
+                  },
+                  "unrecognized-field-in-the-request": {
+                    "value": {
+                      "status": "error",
+                      "code": 400,
+                      "message": "unrecognized field in the request"
+                    }
+                  },
                   "title-over-limit": {
                     "value": {
                       "status": "error",

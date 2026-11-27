@@ -17,8 +17,8 @@
 #   HTTP-looking call site in the analyzed files, including the bin content
 #   handlers (image serving, 301 redirects, 405/413). The replacement sees only
 #   the API surface: JSON successes through writeJSON, JSON refusals through
-#   writeAPIError, the plain-text 400s decodeBinRequest still answers through
-#   http.Error, and the two explicit WriteHeader calls (204).
+#   writeAPIError (the request-shape 400s of decodeBinRequest included), and the
+#   two explicit WriteHeader calls (204).
 # - paramPatterns: the built-in header matchers also fire inside clientIP and
 #   baseURL, which would attach X-Forwarded-* parameters to every operation.
 #   The re-declared built-ins gate header reads to the API handlers.
@@ -27,7 +27,10 @@ info:
   title: sandbin HTTP API
   description: "The sandbin JSON API: keys, bins and bin metadata under /api. Errors
     answer the JSON envelope {\"status\":\"error\",\"code\":<status>,\"message\":<sentence>};
-    successes answer JSON."
+    successes answer JSON. A path under /api, or the exact /openapi.json, that the
+    server's route table does not name answers 404 API endpoint not found in that
+    envelope; a near-miss path like /openapix.json or /openapi.json/ never reaches
+    the API dispatcher and stays the plain-text bin 404."
   version: 1.0.0
   contact:
     name: sandbin
@@ -129,17 +132,19 @@ framework:
       functionNameRegex: ^(apiKeyCheck|apiDeleteBin)$
     # writeAPIError is the API surface's refusal writer: every status it answers carries the
     # JSON envelope {"status":"error","code":<status>,"message":<sentence>}. The call takes no
-    # type argument (typeArgIndex: -1, the shape decodeBinRequest's http.Error half still does
-    # not have until that 400 moves), so the scan can only record the status: openapi-fix.jq
+    # type argument (typeArgIndex: -1), so the scan can only record the status: openapi-fix.jq
     # correction 11 supplies the envelope's component and media type. decodeBinRequest is named
-    # here because its http.Error calls join this entry in the next task.
+    # here because its request-shape 400s answer through it.
     - callRegex: ^writeAPIError$
       recvTypeRegex: github\.com/yookoala/sandbin/cmd/sandbin\.\*server
       statusFromArg: true
       statusArgIndex: 1
       typeArgIndex: -1
       defaultContentType: application/json
-      functionNameRegex: ^(apiRoutes|apiHealth|apiCreateBin|apiListBins|apiInspectBin|apiPatchBin|apiDeleteBin|apiKeyCheck|requireKey|binAuthorized|decodeBinRequest)$
+      functionNameRegex: ^(apiRoutes|apiHealth|apiCreateBin|apiListBins|apiInspectBin|apiPatchBin|apiDeleteBin|apiIndex|apiKeyCheck|requireKey|binAuthorized|decodeBinRequest)$
+    # http.Error survives on the API surface only in binAuthorized's plain-side branch: the
+    # file GET/PUT/DELETE half answers its 401 as text. Every other dispatcher refusal —
+    # decodeBinRequest's request-shape 400s included — goes through writeAPIError now.
     - callRegex: ^Error$
       recvTypeRegex: ^net/http$
       statusFromArg: true
@@ -147,7 +152,7 @@ framework:
       typeFromArg: true
       typeArgIndex: 1
       defaultContentType: text/plain; charset=utf-8
-      functionNameRegex: ^(binAuthorized|decodeBinRequest)$
+      functionNameRegex: ^(binAuthorized)$
   paramPatterns:
     - callRegex: ^FormValue$
       recvType: net/http.*Request

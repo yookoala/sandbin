@@ -276,8 +276,9 @@ func fieldIsJSONText(raw json.RawMessage) bool {
 // struct takes null — which is no object — as an empty request, and takes a second value after
 // the object as noise it may ignore. A field name this API does not have is the loud refusal,
 // and so is anything that is not one JSON object, or a field that is not null or a string.
-// ok says whether the handler may go on; when it is false the refusal is already written.
-func decodeBinRequest(w http.ResponseWriter, r *http.Request, bodyOptional bool) (binRequest, bool) {
+// ok says whether the handler may go on; when it is false the refusal is already written, in
+// the error envelope like every other refusal the API dispatcher answers.
+func decodeBinRequest(s *server, w http.ResponseWriter, r *http.Request, bodyOptional bool) (binRequest, bool) {
 	var req binRequest
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 
@@ -287,11 +288,11 @@ func decodeBinRequest(w http.ResponseWriter, r *http.Request, bodyOptional bool)
 		if errors.Is(err, io.EOF) && bodyOptional {
 			return binRequest{}, true
 		}
-		http.Error(w, "could not read the request", http.StatusBadRequest)
+		s.writeAPIError(w, http.StatusBadRequest, "could not read the request")
 		return binRequest{}, false
 	}
 	if len(body) == 0 || body[0] != '{' {
-		http.Error(w, "could not read the request", http.StatusBadRequest)
+		s.writeAPIError(w, http.StatusBadRequest, "could not read the request")
 		return binRequest{}, false
 	}
 	// The strict end of the stream: a second decode must run into io.EOF, so whitespace
@@ -300,7 +301,7 @@ func decodeBinRequest(w http.ResponseWriter, r *http.Request, bodyOptional bool)
 	// enclosing container this body never had.
 	var trailing json.RawMessage
 	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
-		http.Error(w, "could not read the request", http.StatusBadRequest)
+		s.writeAPIError(w, http.StatusBadRequest, "could not read the request")
 		return binRequest{}, false
 	}
 
@@ -308,15 +309,15 @@ func decodeBinRequest(w http.ResponseWriter, r *http.Request, bodyOptional bool)
 	fields.DisallowUnknownFields()
 	if err := fields.Decode(&req); err != nil {
 		if strings.Contains(err.Error(), "unknown field") {
-			http.Error(w, "unrecognized field in the request", http.StatusBadRequest)
+			s.writeAPIError(w, http.StatusBadRequest, "unrecognized field in the request")
 			return binRequest{}, false
 		}
-		http.Error(w, "could not read the request", http.StatusBadRequest)
+		s.writeAPIError(w, http.StatusBadRequest, "could not read the request")
 		return binRequest{}, false
 	}
 	for _, raw := range []json.RawMessage{req.Title, req.Description, req.Password} {
 		if !fieldIsJSONText(raw) {
-			http.Error(w, "could not read the request", http.StatusBadRequest)
+			s.writeAPIError(w, http.StatusBadRequest, "could not read the request")
 			return binRequest{}, false
 		}
 	}
@@ -353,7 +354,7 @@ func binToJSON(b Bin) binJSON {
 // empty both make an empty value, which is what a bin with nothing to say holds; a password
 // longer than bcrypt can hold is refused before anything is written.
 func (s *server) apiCreateBin(w http.ResponseWriter, r *http.Request) {
-	req, ok := decodeBinRequest(w, r, true)
+	req, ok := decodeBinRequest(s, w, r, true)
 	if !ok {
 		return
 	}
@@ -570,7 +571,7 @@ func (s *server) apiInspectBin(w http.ResponseWriter, r *http.Request) {
 func (s *server) apiPatchBin(w http.ResponseWriter, r *http.Request) {
 	hash := r.PathValue("hash")
 
-	req, ok := decodeBinRequest(w, r, false)
+	req, ok := decodeBinRequest(s, w, r, false)
 	if !ok {
 		return
 	}

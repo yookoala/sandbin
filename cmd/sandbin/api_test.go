@@ -397,13 +397,13 @@ func TestAPICreateBinRefusals(t *testing.T) {
 	before := storedBinCount(t, s)
 
 	for _, c := range []struct{ body, want string }{
-		{`{"passwprd":"x"}`, "unrecognized field in the request\n"},
-		{`{"desc":"x"}`, "unrecognized field in the request\n"},
-		{`not json`, "could not read the request\n"},
-		{`[1]`, "could not read the request\n"},
-		{`"bare string"`, "could not read the request\n"},
-		{`{"title":5}`, "could not read the request\n"},
-		{`{"password":5}`, "could not read the request\n"},
+		{`{"passwprd":"x"}`, apiEnvelope(400, "unrecognized field in the request")},
+		{`{"desc":"x"}`, apiEnvelope(400, "unrecognized field in the request")},
+		{`not json`, apiEnvelope(400, "could not read the request")},
+		{`[1]`, apiEnvelope(400, "could not read the request")},
+		{`"bare string"`, apiEnvelope(400, "could not read the request")},
+		{`{"title":5}`, apiEnvelope(400, "could not read the request")},
+		{`{"password":5}`, apiEnvelope(400, "could not read the request")},
 		{`{"title":"` + strings.Repeat("t", maxTitleBytes+1) + `"}`, apiEnvelope(400, "title over 200 bytes")},
 		{`{"description":"` + strings.Repeat("d", maxDescriptionBytes+1) + `"}`, apiEnvelope(400, "description over 2000 bytes")},
 		{`{"title":"a\nb"}`, apiEnvelope(400, "title may not contain control characters")},
@@ -422,8 +422,8 @@ func TestAPICreateBinRefusals(t *testing.T) {
 	rec := postAPIBins(t, s, addr, "test-key", oversize)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("POST /api/bins with a %d byte body = %d, want %d; body %q", len(oversize), rec.Code, http.StatusBadRequest, rec.Body.String())
-	} else if got := rec.Body.String(); got != "could not read the request\n" {
-		t.Errorf("oversize body answer = %q, want the could not read the request message", got)
+	} else if got := rec.Body.String(); got != apiEnvelope(400, "could not read the request") {
+		t.Errorf("oversize body answer = %q, want the could not read the request envelope", got)
 	}
 
 	// A wrong key through the new route is the retired route's refusal and the retired
@@ -488,8 +488,8 @@ func TestAPICreateBinBodyShapes(t *testing.T) {
 			t.Errorf("POST /api/bins body %s = %d, want %d; body %q", body, rec.Code, http.StatusBadRequest, rec.Body.String())
 			continue
 		}
-		if got := rec.Body.String(); got != "could not read the request\n" {
-			t.Errorf("POST /api/bins body %s = %q, want the could not read the request message", body, got)
+		if got := rec.Body.String(); got != apiEnvelope(400, "could not read the request") {
+			t.Errorf("POST /api/bins body %s = %q, want the could not read the request envelope", body, got)
 		}
 	}
 
@@ -787,15 +787,15 @@ func TestAPIPatchJSON(t *testing.T) {
 	for _, c := range []struct{ body, want string }{
 		// R6 pin: no body at all is not a JSON object — PATCH refuses it, unlike POST,
 		// whose pinned "no body is {}" the create tests hold.
-		{"", "could not read the request\n"},
-		{`{"titel":"x"}`, "unrecognized field in the request\n"},
-		{`not json`, "could not read the request\n"},
-		{`{"title":5}`, "could not read the request\n"},
-		{`null`, "could not read the request\n"},
-		{`{"title":"a"}{"title":"b"}`, "could not read the request\n"},
+		{"", apiEnvelope(400, "could not read the request")},
+		{`{"titel":"x"}`, apiEnvelope(400, "unrecognized field in the request")},
+		{`not json`, apiEnvelope(400, "could not read the request")},
+		{`{"title":5}`, apiEnvelope(400, "could not read the request")},
+		{`null`, apiEnvelope(400, "could not read the request")},
+		{`{"title":"a"}{"title":"b"}`, apiEnvelope(400, "could not read the request")},
 		// A stray closing bracket trails the object just like a second one, and is
 		// refused the same way.
-		{`{"title":"a"}]`, "could not read the request\n"},
+		{`{"title":"a"}]`, apiEnvelope(400, "could not read the request")},
 		{`{"title":"` + strings.Repeat("t", maxTitleBytes+1) + `"}`, apiEnvelope(400, "title over 200 bytes")},
 		{`{"title":"a\nb"}`, apiEnvelope(400, "title may not contain control characters")},
 	} {
@@ -1010,8 +1010,8 @@ func TestAPIPatchShapes(t *testing.T) {
 	rec := patchBinsJSON(t, s, addr, "/api/bins/deadbeef", "test-key", `{"titel":"x"}`, "", "")
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("PATCH an unknown bin with a bad body = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
-	} else if got := rec.Body.String(); got != "unrecognized field in the request\n" {
-		t.Errorf("unknown bin with a bad body = %q, want the unrecognized field message", got)
+	} else if got := rec.Body.String(); got != apiEnvelope(400, "unrecognized field in the request") {
+		t.Errorf("unknown bin with a bad body = %q, want the unrecognized field envelope", got)
 	}
 
 	// A field this API does not have fails loudly.
@@ -1019,8 +1019,8 @@ func TestAPIPatchShapes(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("PATCH with an unknown field = %d, want %d; body %q", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "unrecognized field in the request\n" {
-		t.Errorf("body = %q, want the unrecognized field message", got)
+	if got := rec.Body.String(); got != apiEnvelope(400, "unrecognized field in the request") {
+		t.Errorf("body = %q, want the unrecognized field envelope", got)
 	}
 
 	// A known bin path on a method the dispatch does not name is the envelope 405. DELETE is
@@ -1910,5 +1910,49 @@ func TestProtectedBinAPI401IsEnvelope(t *testing.T) {
 	}
 	if www := rec.Header().Get("WWW-Authenticate"); www != `Basic realm="sandbin"` {
 		t.Errorf("WWW-Authenticate = %q, want the Basic realm challenge", www)
+	}
+}
+
+// TestAPIRequestShapeRefusalsAreEnvelopes is the request-shape 400 family inside the envelope:
+// a body this API cannot read, an unrecognized field, a limit below 1, a malformed cursor and
+// an over-long title each answer the exact envelope — the pinned sentence verbatim as message,
+// code equal to the status, application/json as the media type.
+func TestAPIRequestShapeRefusalsAreEnvelopes(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	const addr = "198.51.100.79:1234"
+
+	for _, c := range []struct{ what, body, want string }{
+		{"malformed JSON", "not json", apiEnvelope(400, "could not read the request")},
+		{"unrecognized field", `{"titel":"x"}`, apiEnvelope(400, "unrecognized field in the request")},
+		{"over-long title", `{"title":"` + strings.Repeat("t", 300) + `"}`, apiEnvelope(400, "title over 200 bytes")},
+	} {
+		rec := postAPIBins(t, s, addr, "test-key", c.body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("POST /api/bins with %s = %d, want %d; body %q", c.what, rec.Code, http.StatusBadRequest, rec.Body.String())
+			continue
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("POST /api/bins with %s Content-Type = %q, want application/json", c.what, ct)
+		}
+		if got := rec.Body.String(); got != c.want {
+			t.Errorf("POST /api/bins with %s body = %q, want the envelope %q", c.what, got, c.want)
+		}
+	}
+
+	for _, c := range []struct{ query, want string }{
+		{"?limit=0", apiEnvelope(400, "invalid limit")},
+		{"?cursor=nonsense", apiEnvelope(400, "invalid cursor")},
+	} {
+		rec := listFrom(t, s, addr, c.query)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("GET /api/bins%s = %d, want %d; body %q", c.query, rec.Code, http.StatusBadRequest, rec.Body.String())
+			continue
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("GET /api/bins%s Content-Type = %q, want application/json", c.query, ct)
+		}
+		if got := rec.Body.String(); got != c.want {
+			t.Errorf("GET /api/bins%s body = %q, want the envelope %q", c.query, got, c.want)
+		}
 	}
 }
