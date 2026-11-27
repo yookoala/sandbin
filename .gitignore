@@ -13,3 +13,6 @@
 # scratch of `make openapi`: apispec's raw output and jq's corrected output before the mv
 /openapi.raw.tmp.json
 /openapi.tmp.json
+
+# development state files
+/.opencode/opencode-loop/
