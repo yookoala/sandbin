@@ -125,3 +125,10 @@ reviews argued from it:
   (`fileJSON`) and archive-count (`archiveAnswer`) answers — schemas only, no new
   paths — so the honesty-pin body tests validate against the committed document rather
   than hand-written mirrors.
+
+Amended by [0033-json-api-responses](0033-json-api-responses.md): the dispatcher's own misses
+are no longer plain — its 404 and 405 answer the JSON error envelope, every documented
+non-2xx response carries the `apiErrorBody` schema (`status`, `code`, `message` all
+required), and because kin-openapi v0.153.0 models no path-level responses while the
+document's operations must stay exactly the route table, the dispatcher's 405s are
+described in the document's `info.description` prose rather than as response entries.

@@ -21,6 +21,12 @@ as five atomic commits in `docs/plans/0013-delete-and-spa.md`.
 |---|---|
 | `GET /{hash}` without its slash | GitHub-style 301 to `/{hash}/`, the query string carried into the `Location`. Only for GET and only when the hash is an existing bin; unknown hashes and every other method (PUT/PATCH/DELETE/HEAD/OPTIONS) keep the old `404 unknown bin` — redirecting a write would silently change what it meant, and answering 301 for unknown hashes too would turn every mistyped URL into a cheaper existence oracle. A protected bin redirects too: its existence is already public at `/{hash}/` (401 against 404), so the redirect leaks nothing new. Nothing charges: the whole feature is GETs and 404s. Lives in `ServeHTTP`'s no-bin-segment branch beside a `singleSegment` helper; static routes and the `.`/`..` refusals keep answering first. |
 
+Amended by [0033-json-api-responses](0033-json-api-responses.md): the write side's
+missing-target 404s are now envelope refusals — `DELETE /{hash}/{path}` where nothing lives
+answers 404 `path not found` and `DELETE /{hash}/` answers 405 `method not allowed` inside
+`{"status":"error","code":…,"message":…}` JSON — while the `GET` side of the same paths
+keeps the plain `unknown path`, and the `404.html` fallback rule stands as written above.
+
 ## Skipped on purpose
 
 Deleting the bin itself (any form), recursive delete without the slash marker, fallback for

@@ -187,3 +187,10 @@ response headers.
 
 This is a breaking API change; when the next release is cut it should carry a minor bump
 (`v0.5.0`), not a patch. Cutting it is a separate decision the partner owns.
+
+Amended by [0033-json-api-responses](0033-json-api-responses.md): errors do not stay plain
+text on these endpoints — every refusal under the API dispatcher now answers the JSON
+envelope `{"status":"error","code":<http status>,"message":"…"}`, the `204` spellings of
+`POST /api/key` and `DELETE /api/bins/{hash}` are retired to 200 + `{"status":"ok"}`,
+success bodies carry `"status":"ok"` at the top level, and a `/api/...` miss answers 404
+`API endpoint not found` or `bin not found` instead of today's plain sentence.

@@ -156,3 +156,8 @@ argued from it:
 - `httptest.NewRequest`'s default socket is `192.0.2.1:1234` (TEST-NET, untrusted by
   `frontBase`'s rule); tests exercising forwarded-host contexts must pin a loopback
   `RemoteAddr`, as `handlers_test.go` already does (ruling P3).
+
+Amended by [0033-json-api-responses](0033-json-api-responses.md): the index's 500
+(`could not answer the API index`) now answers the JSON error envelope and the index body
+gained a top-level `"status":"ok"` as its first key; the `HEAD /api` headers-only 200 and
+its content-map-less pin (correction 16) stand unchanged.

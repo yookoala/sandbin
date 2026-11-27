@@ -80,3 +80,46 @@ do not dispatch from the API table, so they stay plain.
   document is exact and its validation tests keep proving it matches the live answers.
 - Which tests move one-for-one and which new tests pin the envelope, the `404` pair, the `200`
   instead of `204`, and each `--json` shape.
+
+## Addendum — executed corrections (recorded 2026-11-27, during plan 0033)
+
+What execution found out about the design above, kept here because the plan and reviews
+argued from it:
+
+- **The 405 documentation went by prose, because the toolchain cannot express it otherwise.**
+  The row "The OpenAPI document follows" was first ruled to add path-level
+  `responses: {"405": apiErrorBody}` entries to each documented API path. That shape is a
+  dead end on this toolchain: path-level `responses` are an OpenAPI 3.2 Path Item field, the
+  pinned `kin-openapi v0.153.0` `PathItem` struct has no `Responses` field at all, and
+  `TestOpenAPIDocValidatesAsOpenAPI31` rejects the entries as `extra sibling fields:
+  [responses]` whatever the document's version string says — scratch-verified at 3.1.1 and
+  3.2.0. An operation is no better: `TestOpenAPISpecMatchesRouteTable` holds the document's
+  operations to equal the route table exactly, so a wildcard path for the unnamed-404 surface
+  would fail it. Ruling: the dispatcher's 404 pair and its 405s are described in the
+  document's `info.description` prose (commit `1b7406a`), the live 405 envelope bytes stay
+  pinned by `TestOpenAPIServeShapes`, `TestAPIUnknownShapes` and `TestAPIDeleteBinShapes`, and
+  the planned jq-405 correction plus `TestOpenAPIDocumentsDispatcher405s` are cancelled. The
+  row remains honestly true as "described in the document", and 0030 carries the amendment.
+- **A bare-200 `verifyKey` acceptance stands.** The client's key check moved from `case
+  http.StatusNoContent:` to `case http.StatusOK:` without parsing `{"status":"ok"}` from the
+  body. That was reviewed and kept: `POST /api/key` is the only endpoint `verifyKey` calls and
+  it answers 200 only for a good key, and a middlebox answering a bogus 200 is caught by the
+  next call's 403, not silently trusted. Hardening was optional and was not taken.
+- **The relay needed one fix the server never exercises today.** An envelope whose `message`
+  is empty made `newAPIError`'s `envelopeMessage` relay the raw JSON body. Fixed inside Task 5
+  (ruling R5(1)): `envelopeMessage` returns `(msg, isEnvelope)`, and an envelope with an empty
+  message relays the transport's status sentence instead. Pinned by
+  `TestRelayEmptyEnvelopeMessageUsesStatus`; `verifyKey` untouched.
+- **`verify the API key` is a documented action no verb run emits.** The plan's `--json`
+  threading put a `verify the API key` action in upload and delete reports, but only `init`
+  calls `verifyKey` — the four verbs attach the key per request and make no key-check request.
+  Under this decision's ruling that an action is a request the client actually sent, inventing
+  the action would put a lie in the array; the ruling stands, the sentence remains in code
+  (`verifyKey` records it), and the drift is recorded in the plan's closing record rather than
+  papered over.
+- **Two fix waves, recorded one line each.** Task 5: the non-JSON-body branch of the action
+  recorder had no pin — a broken wrap would have made a `--json` run print an empty stdout —
+  closed by `4f72c26` (test-only). Task 6: a working-tree revert un-landed one SKILL.md edit
+  while the client test-fake still answered delete refusals with the retired plain 404, closed
+  by `7dcd6bf` (the live `404 path not found` quote and folder-action wording) and `d885a3d`
+  (the fake answers the envelope; the pin moved with it).

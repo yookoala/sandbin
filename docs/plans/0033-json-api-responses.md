@@ -1,5 +1,152 @@
 # JSON API responses — Implementation Plan
 
+## Status
+
+Status: implemented and closed 2026-11-27. Twelve commits, `085bccf` (decision+plan) through
+this closing `docs:` commit: Task 1 `4454cd5` ("feat: API refusals answer the JSON error
+envelope"), Task 2 `d3f47df` ("feat: request-shape and internal refusals answer the JSON
+envelope too") with its follow-up `1b7406a` ("docs(spec): the generated document's prose
+describes the dispatcher's 405 refusals too"), Task 3 `42bff58` ("feat: every JSON success
+says ok, and the empty 204s become 200 bodies"), Task 4 `5961ff3` ("feat: file PUT and
+DELETE refusals answer the JSON envelope"), Task 5 `5b2069f` ("feat(client): --json prints
+the run as a JSON action report") and its fix wave `4f72c26` ("test(client): pin that --json
+survives a non-JSON refusal body"), and Task 6 `107b98b` ("docs: the API and client pages
+carry the JSON envelope and --json") with its fix wave `7dcd6bf` ("docs: the skill quotes the
+live path not found refusal and folders count as one action") plus `d885a3d` ("test(client):
+the fake answers delete refusals the way the live server does"). Spec:
+`docs/decisions/0033-json-api-responses.md` (including its execution addendum). Review
+outcome: every task passed an independent task-scoped review. Tasks 1–4 were approved first
+time, zero Critical and zero Important each (Task 1's reviewer additionally verified the
+15-tests-moved-beyond-the-named-list claim as sound — every move forced by an exact-body pin
+on a switched call site, sentences verbatim, two pins ended stronger than before). Task 5's
+first pass was "Needs work" — one Important: the non-JSON-body branch of `note()` had no pin
+and a broken wrap would print a `--json` run's stdout empty; the fix wave landed exactly the
+test-only pin asked for (`4f72c26`, micro-RED independently reproduced) and the scoped
+re-review approved with zero new findings. Task 6's first pass was "Needs work" — an
+environment revert had un-landed one SKILL.md edit while the client test-fake still modeled
+the retired plain-404 delete answer, keeping tests green on a stale model; the fix wave
+(`7dcd6bf` + `d885a3d`) landed the skill sentence, the folder-action wording, and a fake that
+answers delete refusals as the live server does, and the scoped re-review approved with zero
+new findings. Controller rulings R1–R5 and the per-task adjudications recorded in
+`.superpowers/sdd/0033-json-api-responses/progress.md` all honored. Final gates
+`env -u SANDBIN_API_KEY make test` green against the tree carrying this Status — `gofmt -l .`
+empty, `go vet ./...`, `go build ./...`, `go test -count=1 ./...` and `go test -race -count=1
+./...` all ok (`cmd/sandbin` 3.610s / 41.825s, `cmd/sandbin-client` 0.512s / 5.824s,
+`internal/frontpage` 0.006s / 1.023s, `internal/robots` 0.004s / 1.014s, `internal/version`
+0.004s / 1.016s) — with `cmd/sandbin` **271**, `cmd/sandbin-client` **132**, `internal/frontpage`
+17, `internal/robots` 2, `internal/version` 6: no test deleted, five renamed (each keeping
+its slot), 22 added — 260/121 at `085bccf` → 264/123 at Task 1 → 265/123 at Task 2 → 266/123
+at Task 3 → 270/123 at Task 4 → 270/131 at Task 5 and 270/132 at its fix wave → 271/132 at
+Task 6; the three `internal/*` counts never moved.
+
+Assertions that moved, exactly the task-listed families, each verified by its task's reviewer
+against the tree and listed with full names in `task-*-report.md`: **Task 1** — one rename
+(`TestAPILiteralBraceSpellingIsPlainFourOhFour` → `TestAPILiteralBraceSpellingIsAPINotFound`)
+plus body-text-only moves in 20 tests (the RED list in the Task 1 report: from
+`TestAPIIndexShapes` through `TestOpenAPIServeShapes`), every sentence verbatim inside the
+exact envelope, statuses and charging assertions untouched. **Task 2** — 17 assertions across
+four tests (`TestAPICreateBinRefusals` 7 cases + the oversize block, `TestAPICreateBinBodyShapes`
+loop want, `TestAPIPatchJSON` 7 cases, `TestAPIPatchShapes` 2 assertions). **Task 3** — the
+four 204 pins renamed (`TestAPIKeyCheck` → `TestAPIKeyCheckAnswersOKBody`, `TestAPIDeleteBin`
+→ `TestAPIDeleteBinAnswersOKBody`, `TestAPIKeyAnswersNoContent` → `TestAPIKeyAnswersOKBody`,
+`TestClientVerifyKey204` → `TestVerifyKeyAcceptsOKBody`) and the golden bodies extended with
+`"status":"ok"` as first key (index body, create pin, 7 PATCH rows, empty-list body, 7 archive
+goldens, the `putEntry` 3→4-key pin, the `deletedBody` helper) plus `openapi_test.go`'s
+`apiIndexDoc` pins. **Task 4** — 34 pins one-for-one: 12 blocks in `handlers_test.go`
+(`TestPutUnknownBin` … `TestFallbackNeverShadowsAnything`) and 22 refusal comparisons in
+`archive_test.go`; only the two decision-named renames (`unknown bin` → `bin not found` on
+the write halves, `unknown path` → `path not found` at `deletePath`), everything else verbatim
+inside the envelope. **Task 5** — no pre-existing client assertion moved: 123 pass
+byte-unchanged, and the reviewer's 20-scenario base-vs-head default-output comparison found
+identical stdout, stderr and exit codes everywhere; the fake gained `putFailBody` /
+`putFailAfter` knobs. **Task 6** — `TestDocsNoRetiredSpellings` gained a plain `204` scan
+(controller ruling over the brief's `204 No Content` wording), and the fix wave moved one pin
+(`TestDeleteUnknownPathNamesThePathAndMakesOneRequest`) together with the fake's answer.
+Every stay-green gate stayed green unchanged: `TestOldRoutesRetired`,
+`TestDocsUnknownPathsArePlainNotFound`, the `/openapi.json/` and `/openapix.json` near-miss
+404 pins, and the plain-side `getFile`/`binRoutes` bodies.
+
+### The live walk (Task 7)
+
+`make build` produced `dist/sandbin` and `dist/sandbin-client`. The walk ran in
+`/tmp/opencode/sandbin-0033-walk` against `serve --addr 127.0.0.1:18084 --db sandbin.db`
+started inside that directory (key `walk-0033-key`; every command names its own environment —
+this shell exports `SANDBIN_URL` at an old production server plus a broken 66-char
+`SANDBIN_API_KEY`, so no ambient value decided any step). Port 18084 rather than 18080
+because four stray `sandbin serve` processes from earlier sessions' scratch work hold
+18080–18083 (found via `/proc/*/cmdline`; left running). Full byte-honest transcripts — every
+`curl` with its `-i` headers, every client run with its exit code and stderr bytes — are in
+`.superpowers/sdd/0033-json-api-responses/task-7-report.md`. Highlights, all as documented:
+
+- `GET /api/bananas` (keyless, uncharged) and `GET /api/bins/` → 404
+  `{"status":"error","code":404,"message":"API endpoint not found"}`;
+  `GET /api/bins/deadbeef` → 404 `bin not found`.
+- Wrong key on `POST /api/bins` → 403 `{"status":"error","code":403,"message":"invalid API
+  key"}`; the next wrong-key attempt answered 429 `{"status":"error","code":429,"message":
+  "too many bad API keys"}` with `Retry-After: 1799`, then 3599, 5399, 7199 — one charged
+  failure blocks the address and every attempt while blocked walks the block up 30 minutes
+  (`ip list` read `FAILURES 5`, `2h30m0s` remaining; `ip unblock` restored service).
+- `PUT` into a password bin without Basic Auth → 401 envelope `bin password required` beside
+  `Www-Authenticate: Basic realm="sandbin"`.
+- `POST /api/key` with the good key → 200 `{"status":"ok"}`; `DELETE /api/bins/{hash}` → 200
+  `{"status":"ok"}`, and the follow-up `GET` reads 404 `bin not found`.
+- `GET /api/bins` → `{"status":"ok","bins":[{…}]}` — top-level `status` first, rows
+  status-free; `PUT /{hash}/` → 400 `empty path` envelope; `DELETE` of a missing path → 404
+  `path not found` envelope; `POST /openapi.json` → 405 envelope, while `/openapix.json` and
+  `/openapi.json/` still answer plain `unknown bin` and `HEAD /api` answers 200 headers-only
+  (`Content-Length: 1301`, no body on the wire).
+- The plain half held at the same paths: `GET /{hash}/gone.txt` plain `unknown path`, `GET`
+  under an unknown hash plain `unknown bin`, a protected bin's GET file plain 401 (still with
+  `Www-Authenticate`), and `PATCH /{hash}/` plain `method not allowed`.
+- Client: `upload --json file.md` printed the full object (create + store actions, `bin` and
+  `url` named, exit 0); `delete --json file.md gone.txt` stopped the array at the failed step
+  (`result` the 404 envelope), `message":"path not found"`, exit 1, **zero bytes on stderr**;
+  the same into a protected bin without `SANDBIN_BIN_PASSWORD` reported the 401 envelope as
+  the step's `result` while the warning line stayed on stderr; `list --json` carried no
+  `bin`/`url` keys; a default-mode `delete gone.txt` printed exactly
+  `sandbin-client: delete "gone.txt": 404 path not found`; `init --help` offers no `--json`
+  and `init --json` answers `Incorrect Usage: flag provided but not defined: -json`.
+- The walk contradicted no documented claim. Two behaviors are live-only observations: the
+  429 ramp above (tests pin the header's presence, not its growth) and `PATCH /{hash}`
+  without its trailing slash answering plain 404 `unknown bin` — 0013's added-after-shipping
+  rule (redirect is GET-only), which the pages quote only in the slash form.
+
+Then the server was sent SIGTERM and `127.0.0.1:18084` answers connection-refused; nothing
+was created outside the scratch directory.
+
+Carried findings — every one adjudicated in the task reviews or this walk; none blocks the
+merge:
+
+1. The fixed action sentence `verify the API key` exists in code and `verifyKey` records it,
+   but no verb run emits it: `verifyKey` is called only by `init`; the four verbs attach the
+   key per request. Plan-vs-actual drift from the brief's example action lists, ruled away in
+   Task 5 (actions are the requests actually made); Task 6 documents only actions that occur.
+2. `verifyKey` accepts a bare `200` without parsing `{"status":"ok"}` — adjudicated
+   spec-true (its only 200-expected endpoint; a bogus 200 is caught by the next call's 403),
+   kept unhardened.
+3. The no-leading-slash bin 404 in `ServeHTTP`'s classification stays plain even for
+   `PUT`/`DELETE` — reachable only in theory (absolute-form request URIs); compliant as
+   scoped, and this walk confirms it is not an inconsistency to flag.
+4. A bin this run created is unnamed in a `--json` report when the `.sandbin.yaml` write
+   fails: `bin`/`url` are absent while `actions[0].result` still carries the hash — cosmetic.
+5. `json.Marshal` HTML-escapes `<`, `>`, `&` inside `result` values — semantically identical
+   JSON, a display detail.
+6. The dispatcher's 404 pair and 405s are described in the generated document's
+   `info.description` prose, not as operations: kin-openapi v0.153.0 models no path-level
+   responses and the operations must equal the route table (`TestOpenAPISpecMatchesRouteTable`
+   rules out a wildcard path). Recorded honestly in 0030's amendment and 0033's addendum.
+7. `HEAD` keeps answering 200 headers-only — the one remaining success with no body, a
+   transport rule rather than a choice, pinned by correction 16.
+8. The 204→200 trade-off, restated: `POST /api/key` and `DELETE /api/bins/{hash}` gave up the
+   empty `204` so every JSON success carries a parseable body.
+9. `writeAPIError` discards marshal/write errors (these DTOs cannot fail to marshal; a failed
+   write means the visitor is already gone) — noted under ruling R5(2), unchanged.
+10. With `--json`, a transport failure's `message` is the client's own wrapped Go sentence
+    (`… connect: connection refused`) and a never-answered step adds no action — the report
+    distinguishes "the server refused step N" from "step N never got an answer".
+11. A non-JSON refusal body rides in `result` as a JSON string (`"result":"invalid API key"`)
+    so the report always parses — pinned by `TestJSONActionRecordsNonJSONBodyAsPlainString`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Every refusal on a JSON-answering route answers `{"status":"error","code":<http status>,"message":"…"}`, every JSON success body carries `"status":"ok"` at its top level, and `sandbin-client` keeps its relayed line while gaining a machine-readable `--json` action report.
