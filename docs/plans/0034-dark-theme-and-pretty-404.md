@@ -308,14 +308,14 @@ trailing-slash redirect on existing bins is untouched; `.`/`..` segments keep th
 
 ## Implementer TODO
 
-- [ ] Task 1 Step 1: frontpage theme tests (red)
-- [ ] Task 1 Step 2: `skill.go` + `internal/frontpage` implementation (green)
-- [ ] Task 1 Step 3: docs theme tests (red)
-- [ ] Task 1 Step 4: `docs.go`/`handlers.go` theme implementation + front page wants (green)
-- [ ] Task 1 Step 5: gates + commit `feat: dark theme for the landing and docs pages`
-- [ ] Task 2 Step 1: pretty-404 tests incl. updates (red)
-- [ ] Task 2 Step 2: `docs.go` pages + `handlers.go` sites + `sandbin-api.md` (green)
-- [ ] Task 2 Step 3: gates + commit `feat: pretty branded 404 pages for the bin and page routes`
+- [x] Task 1 Step 1: frontpage theme tests (red)
+- [x] Task 1 Step 2: `skill.go` + `internal/frontpage` implementation (green)
+- [x] Task 1 Step 3: docs theme tests (red)
+- [x] Task 1 Step 4: `docs.go`/`handlers.go` theme implementation + front page wants (green)
+- [x] Task 1 Step 5: gates + commit `feat: dark theme for the landing and docs pages`
+- [x] Task 2 Step 1: pretty-404 tests incl. updates (red)
+- [x] Task 2 Step 2: `docs.go` pages + `handlers.go` sites + `sandbin-api.md` (green)
+- [x] Task 2 Step 3: gates + commit `feat: pretty branded 404 pages for the bin and page routes`
 
 ## Verification (implementer, after Task 2)
 
@@ -375,3 +375,63 @@ trailing-slash redirect on existing bins is untouched; `.`/`..` segments keep th
   browsing GETs).
 - Serving the light logo at a second route or moving the logo routes — the dark logo gets
   its route only because the light one has one.
+
+## Outcome
+
+Implemented on baseline `9ba9f7c`: the theme in `25c5797`, the 404 pages in `8162c3c`, the
+plan doc in `0969dc4`. Reviewer verdict: APPROVE WITH FINDINGS — no blockers; every
+finding is a nit (F1–F4 below) and none changes behavior.
+
+- Gates: all five gates green at each commit (verified in independent worktrees) and at
+  HEAD.
+- Counts: `cmd/sandbin` 271 → 274, `internal/frontpage` 17 → 18, the rest unchanged
+  (132/2/6). No test removals beyond this plan's named rename
+  `TestDocsUnknownPathsArePlainNotFound` → `TestDocsUnknownPathsAnswerTheNotFoundPage`;
+  additions are `TestPrettyNotFoundPages`, `TestNotFoundPagesCarryTheDocsShellAndTheme`,
+  `TestDocsPagesCarryTheDarkTheme` (cmd/sandbin) and `TestRenderCarriesTheDarkTheme`
+  (frontpage).
+- Scope: name-only diff is the plan's files plus `cmd/sandbin/openapi_test.go` (deviation
+  1); nothing else.
+- Light-mode equivalence (reviewer-verified byte-for-byte): the new `:root` light values
+  equal the pre-change literals one-for-one and no rule keeps a changed light value. The
+  only new light DOM is the hidden dark-logo twin, the toggle button, the head script,
+  and the dark-logo route.
+- Dark mechanics: the head script sets `data-theme` on `<html>` before paint
+  (localStorage `sandbin-theme` first, then `prefers-color-scheme`); the toggle flips and
+  persists; the `.logo-dark`/`.theme-sun`/`.theme-moon` display rules are the plan's six
+  lines; dark `--sandbin-purple` is `#E2C2FF` per the dark logo's own calibration comment
+  and amber stays `#EA9B25` in both themes.
+- 404 matrix (reviewer-verified live): missing bin and its subpaths → `bin not found`;
+  every near-miss first segment (7/9 chars, uppercase, non-hex) → `page not found`;
+  a path inside an existing bin → `bin content not found`; a bin's own `404.html` still
+  wins byte-for-byte; `/docs/…` unknown, `/healthz`, `/openapi.json/`, `/openapix.json`,
+  `/skills/other` → `page not found`; PUT/DELETE keep the JSON envelope, the other
+  methods keep their plain 404s/405s/400s, and the 301 bin-base redirect is intact.
+- `docs/usages/sandbin-api.md`: all six stale plain-404 sentences reworded, no stale
+  sentence remains, the envelope sentences untouched, and the hosted
+  `/docs/sandbin-api.html` renders the rewording with no template breakage.
+- Deviations (all ruled FORCED): the `openapi_test.go` update (plan file-list omission —
+  `TestOpenAPIServeShapes` pinned the two near-miss spellings the behavior change
+  necessarily changes); the test-side `binHashRE` redeclaration removed from
+  `api_test.go` (the production declaration in `handlers.go` shares the package); three
+  unnamed test updates the GET-404 change forces
+  (`TestNotFoundServesTheBinsFallback`, `TestFallbackNeverShadowsAnything`,
+  `TestFileGetRefusalsStayPlain` — their 401/405/400 pins stay byte-for-byte); and the
+  gofmt expansion of the compact `notFoundPageForSegment` if and one compact test struct.
+- Findings (all nits, no behavior change):
+  - F1: the Global Constraints' "HEAD answers outside /api/ stay plain" and Task 2 site 4's
+    "HEAD answers the same 404 with no body" conflict; the implementation follows the
+    specific spec — `HEAD /docs/…` unknown now carries the pretty page's headers
+    (`text/html`, full Content-Length) with no body, as spec'd.
+  - F2: the implementer's deviation list omitted one more forced, in-scope test update:
+    `TestDocsCarryCopyButtonsAndTheLandingDoesNot`'s `.block-copy.copied` pin to the
+    variable form (forced by the plan's own `#2e7d32`→`var(--sb-ok)` mapping).
+  - F3 (pre-existing, not from this plan): the `cmd/sandbin-client` archive tests assert
+    the shared `os.TempDir()` is free of `sandbin-archive-*`, so two concurrent
+    `make test` runs on one host can cross-contaminate.
+  - F4: this plan's step lists name most but not all forced test updates; the file-level
+    lists are exact.
+- Cleanup: no scratch sandbin processes, scratch ports refuse connections, `/tmp/opencode`
+  holds the implementer's two proof dirs (`0034-baseline`, `0034-current`) with the
+  per-package sorted test-name lists, `git status` clean, tags unchanged (ending
+  `v0.7.0`).
