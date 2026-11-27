@@ -147,6 +147,23 @@ func buildDocsHub() hostedPage {
 	return hostedPage{title: "Sandbin usage docs", html: pageHTML, tmpl: parseDocTemplate("docs hub", pageHTML)}
 }
 
+// notFoundPage builds one of the pretty 404 pages: the same branded shell as the docs pages —
+// brandCSS, the theme script, the toggle, the logo twins, the footer — carrying a 404 heading
+// and the cause named by the message.
+func notFoundPage(message string) hostedPage {
+	body := "<h1>404 Not Found</h1>\n" +
+		"<p class=\"tagline\">" + message + "</p>\n" +
+		"<p><a href=\"/\">Back to the home page</a></p>\n"
+	pageHTML := docShell("404 Not Found", body)
+	return hostedPage{title: "404 Not Found", html: pageHTML, tmpl: parseDocTemplate("404 page", pageHTML)}
+}
+
+var (
+	nfBinNotFound        = notFoundPage("bin not found")
+	nfBinContentNotFound = notFoundPage("bin content not found")
+	nfPageNotFound       = notFoundPage("page not found")
+)
+
 // renderUsageDoc parses one embedded markdown file and returns its H1 text and its rendered
 // body HTML: heading ids added, doc links rewritten, the rest as the engine wrote it.
 func renderUsageDoc(raw []byte) (title, body string) {
@@ -524,7 +541,7 @@ func (s *server) expandDoc(page hostedPage, r *http.Request) string {
 }
 
 // serveDocs answers GET and HEAD on the docs routes: the hub, a hosted page named whole, and
-// the embedded logo. Everything else under /docs is the plain 404 shape, and every other
+// the embedded logo. Everything else under /docs is the page not found page, and every other
 // method is the plain 405 shape.
 func (s *server) serveDocs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -548,7 +565,7 @@ func (s *server) serveDocs(w http.ResponseWriter, r *http.Request) {
 		writeDocsPage(w, s.expandDoc(page, r))
 		return
 	}
-	http.Error(w, "unknown bin", http.StatusNotFound)
+	s.writeNotFoundPage(w, r, nfPageNotFound)
 }
 
 // writeDocsPage answers one rendered page: the body is already the complete HTML, cached at

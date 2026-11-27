@@ -43,10 +43,15 @@ refusals always used (`invalid API key`, `too many bad API keys`, `bin password 
 named by its cause: a path the route table does not name — a trailing-slash spelling, a
 segment that is no eight-hex hash — answers `API endpoint not found`; a named route whose
 `{hash}` resolves to no bin answers `bin not found`; on the `DELETE` file route, a path
-nothing lives under answers `path not found`. Routes that never answered JSON stay plain
-text: a file `GET` (`unknown bin`, `unknown path`), the front page, `/robots.txt`, `/docs`,
-the skill and installer files, near-miss paths that never reach the API dispatch
-(`/openapi.json/` and `/openapix.json` answer `unknown bin`), and `PATCH` on a bin path.
+nothing lives under answers `path not found`. Outside the JSON surface, a `GET` that finds
+no bin or no file now answers a branded HTML `404 Not Found` page, named by cause:
+`bin not found` when the first path segment is an eight-hex hash that names no bin,
+`bin content not found` for a path inside an existing bin the bin does not hold, and
+`page not found` for a path that cannot name a bin — the near-miss paths that never reach
+the API dispatch (`/openapi.json/` and `/openapix.json`) answer it the same way. The other
+methods keep their plain refusals: `PUT` and `DELETE` keep the envelope's `bin not found`,
+and the front page, `/robots.txt`, `/docs`, the skill and installer files, and `PATCH` on a
+bin path stay plain text.
 
 **Protected bins.** A bin created with a `password` in its create body requires that password
 as Basic Auth — user name the bin's hash, e.g. `curl -u "abc1234:sesame"` — on every `GET`,
@@ -317,8 +322,8 @@ curl -X DELETE \
 ```
 
 It answers `200` with `{"status":"ok"}`: the bin and its files are gone, and every path under
-`{{ .Instance.URL }}/9c0ffee0/` is a `404` from then on — plain `unknown bin` to a `GET`, the
-envelope's `bin not found` to a `PUT` or `DELETE`. A protected bin takes the same
+`{{ .Instance.URL }}/9c0ffee0/` is a `404` from then on — the `bin not found` page to a
+`GET`, the envelope's `bin not found` to a `PUT` or `DELETE`. A protected bin takes the same
 `DELETE` with its current password — for `def5678`, add `-u "def5678:sesame"`. Removing files
 one by one stays on the file route below.
 
@@ -368,7 +373,8 @@ It answers `{"status":"ok"}`.
 The document route answers `GET` alone; `HEAD` and every other method — `POST` included —
 answer the `405` envelope `method not allowed`, from the same table dispatch that guards the
 `/api` routes. The trailing-slash spelling `/openapi.json/` never reaches that table: it
-falls through to the bin path and stays the plain `404` `unknown bin`, like `/openapix.json`.
+falls through to the bin path and answers the `404 Not Found` page `page not found`,
+like `/openapix.json` — neither spelling can name a bin.
 
 Answers `200` `application/json` with the OpenAPI 3.1 document: the machine-readable
 description of the `/api` JSON surface — the `/api` index, `/api/bins`, `/api/bins/{hash}`,
@@ -408,7 +414,8 @@ own order, the elided parts marked with `…`:
 
 ## `/{hash}/` — the bin base
 
-The bin base answers `GET`. An unknown hash is `404` — plain `unknown bin` to a `GET`, the
+The bin base answers `GET`. An unknown hash is `404` — the `404 Not Found` page to a `GET`,
+named `bin not found` for an eight-hex segment and `page not found` for any other, the
 envelope's `bin not found` to a `PUT` or `DELETE`. A method against the base without a path:
 `DELETE` answers the `405` envelope `method not allowed` — a bin is never deleted at its base,
 `DELETE /api/bins/{hash}` above is for that — a `PUT` is the `400` envelope `empty path`,
@@ -461,8 +468,8 @@ Under the bin base, each stored file lives at its own path, answered by `GET`, `
 
 Serves the stored bytes: `text/plain` for text shapes, rendered `text/html` for a `.ansi`
 file, and `text/html` for the bin's own `404.html` treatment described below. An unknown
-path is the plain `404 unknown path` — this plain side keeps its plain text; the `PUT` and
-`DELETE` refusals below answer the JSON envelope. Needs no key on a public bin.
+path is the `404 Not Found` page `bin content not found`; the `PUT` and `DELETE` refusals
+below answer the JSON envelope. Needs no key on a public bin.
 
 ```sh
 curl {{ .Instance.URL }}/abc1234/notes.md
@@ -478,9 +485,9 @@ It answers `200` `text/html` with the ANSI rendered.
 
 A bin whose files include a `404.html` answers every `GET` of an unmatched path under it with
 that file and a `404` status, which lets a single-page app serve its own error page from the
-bin; a bin without one answers the plain `404 unknown path`. Only a `GET` gets that
-treatment: a `DELETE` of a path nothing lives under answers the envelope's `path not found`
-and never consults the fallback.
+bin; a bin without one answers the `404 Not Found` page `bin content not found`. Only a
+`GET` gets that treatment: a `DELETE` of a path nothing lives under answers the envelope's
+`path not found` and never consults the fallback.
 
 ### `PUT` — upload a file
 

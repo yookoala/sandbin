@@ -805,15 +805,15 @@ func TestDocsLogoRouteServesEmbeddedBytes(t *testing.T) {
 	}
 }
 
-// TestDocsUnknownPathsArePlainNotFound checks unknown /docs paths — including traversal
-// shapes — answer the plain 404 shape, and no path joins anything.
-func TestDocsUnknownPathsArePlainNotFound(t *testing.T) {
+// TestDocsUnknownPathsAnswerTheNotFoundPage checks unknown /docs paths — including
+// traversal shapes — answer the page not found page, and no path joins anything.
+func TestDocsUnknownPathsAnswerTheNotFoundPage(t *testing.T) {
 	h := newTestServer(t, "test-key")
 	for _, p := range []string{
 		"/docs/nope.html", "/docs/SANDBIN.html", "/docs/sandbin.md", "/docs/assets/nope.svg",
 		"/docs/../etc/passwd", "/docs/..%2f..%2fetc/passwd", "/docs//sandbin.html",
 		"/docs/sandbin/", "/docs/sandbin.html/x", "/docs/assets", "/docs/assets/",
-		// The two pages the merged IP Address Blocking page replaced answer the plain 404 shape.
+		// The two pages the merged IP Address Blocking page replaced answer the not-found page.
 		"/docs/sandbin-lockout.html", "/docs/sandbin-ip.html",
 		// The page the merged Building and Config page replaced answers it the same way.
 		"/docs/sandbin-client-config.html",
@@ -821,9 +821,39 @@ func TestDocsUnknownPathsArePlainNotFound(t *testing.T) {
 		rec := get(t, h, p)
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("GET %s = %d, want %d; body %q", p, rec.Code, http.StatusNotFound, rec.Body.String())
+			continue
 		}
-		if got := rec.Body.String(); got != "unknown bin\n" {
-			t.Errorf("GET %s body = %q, want the plain 404 shape %q", p, got, "unknown bin\n")
+		checkPrettyNotFoundPage(t, rec.Body.String(), "page not found")
+	}
+}
+
+// TestNotFoundPagesCarryTheDocsShellAndTheme pins the three pretty 404 pages' shell: the 404
+// title and heading, the cause message, the theme script and toggle button, the powered-by
+// footer, and no template token.
+func TestNotFoundPagesCarryTheDocsShellAndTheme(t *testing.T) {
+	for _, c := range []struct {
+		page    hostedPage
+		message string
+	}{
+		{nfBinNotFound, "bin not found"},
+		{nfBinContentNotFound, "bin content not found"},
+		{nfPageNotFound, "page not found"},
+	} {
+		body := c.page.html
+		for _, want := range []string{
+			"<title>404 Not Found</title>",
+			"<h1>404 Not Found</h1>",
+			"<p class=\"tagline\">" + c.message + "</p>",
+			"function sandbinToggleTheme() {",
+			"theme-toggle",
+			"Powered by Sandbin | version:",
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("the 404 page carrying %q misses %q in:\n%s", c.message, want, body)
+			}
+		}
+		if strings.Contains(body, "{{") {
+			t.Errorf("the 404 page carrying %q holds a template token:\n%s", c.message, body)
 		}
 	}
 }

@@ -136,10 +136,10 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		// "/{hash}" without its trailing slash redirects to "/{hash}/" (301) when that
 		// bin exists, so relative links inside the bin resolve. GitHub does the same for
-		// its pages. Unknown hashes keep their 404 — the plain one for every method but
-		// PUT and DELETE, which answer the envelope's bin not found — and no method
-		// outside GET redirects: a redirect would silently change what a PUT or DELETE
-		// meant.
+		// its pages. Unknown hashes keep their 404 — GET answers the pretty 404 page,
+		// PUT and DELETE answer the envelope's bin not found, and every other method
+		// keeps its plain unknown bin — and no method outside GET redirects: a redirect
+		// would silently change what a PUT or DELETE meant.
 		if r.Method == http.MethodGet {
 			if seg, single := singleSegment(r.URL.Path); single {
 				if _, exists, err := s.store.GetBin(seg); err != nil {
@@ -155,9 +155,12 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		// The PUT/DELETE pair answers the unknown hash with the resource it tried to select;
-		// every other method keeps today's plain unknown bin.
+		// the GET that found nothing answers the pretty 404 page; every other method keeps
+		// today's plain unknown bin.
 		if r.Method == http.MethodPut || r.Method == http.MethodDelete {
 			s.writeAPIError(w, http.StatusNotFound, "bin not found")
+		} else if r.Method == http.MethodGet {
+			s.writeNotFoundPage(w, r, notFoundPageForSegment(strings.TrimPrefix(r.URL.Path, "/")))
 		} else {
 			http.Error(w, "unknown bin", http.StatusNotFound)
 		}
@@ -192,6 +195,29 @@ func singleSegment(urlPath string) (string, bool) {
 		return "", false
 	}
 	return seg, true
+}
+
+// binHashRE is the only spelling a bin hash can take: the store writes four random bytes as
+// hex.EncodeToString, so exactly eight lowercase hex characters. A path whose first segment
+// matches it could name a bin; anything else cannot.
+var binHashRE = regexp.MustCompile(`^[0-9a-f]{8}$`)
+
+// notFoundPageForSegment picks the pretty 404 page a GET answers with, by what the segment
+// could have been: an eight-hex segment names no bin, so bin not found; every other segment
+// cannot even name a bin, so page not found.
+func notFoundPageForSegment(seg string) hostedPage {
+	if binHashRE.MatchString(seg) {
+		return nfBinNotFound
+	}
+	return nfPageNotFound
+}
+
+// writeNotFoundPage answers a GET that found nothing with the named pretty 404 page: 404
+// status, the branded shell, the cause named in its message.
+func (s *server) writeNotFoundPage(w http.ResponseWriter, r *http.Request, page hostedPage) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	io.WriteString(w, s.expandDoc(page, r))
 }
 
 // binRoutes serves GET, PUT and DELETE under one bin hash. PATCH retired here when the bin
@@ -249,11 +275,11 @@ func (s *server) getFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 	bin, ok, err := s.store.GetBin(hash)
 	if err != nil {
 		log.Printf("get bin %q: %v", hash, err)
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		s.writeNotFoundPage(w, r, notFoundPageForSegment(hash))
 		return
 	}
 	if !ok {
-		http.Error(w, "unknown bin", http.StatusNotFound)
+		s.writeNotFoundPage(w, r, notFoundPageForSegment(hash))
 		return
 	}
 	if !s.binAuthorized(w, r, bin, false) {
@@ -309,7 +335,7 @@ func (s *server) getFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 			w.Write(fallback)
 			return
 		}
-		http.Error(w, "unknown path", http.StatusNotFound)
+		s.writeNotFoundPage(w, r, nfBinContentNotFound)
 		return
 	}
 	if strings.ToLower(path.Ext(sub)) == ".ansi" {

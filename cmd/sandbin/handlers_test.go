@@ -867,8 +867,72 @@ func TestGetUnknownBin(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("GET unknown bin = %d, want %d; body %q", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "unknown bin") {
-		t.Errorf("body = %q, want an unknown bin message", rec.Body.String())
+	checkPrettyNotFoundPage(t, rec.Body.String(), "bin not found")
+}
+
+// checkPrettyNotFoundPage pins the branded shell every pretty 404 page carries: the doctype,
+// the 404 title and heading, the cause message, the theme script, and the powered-by footer.
+func checkPrettyNotFoundPage(t *testing.T, body, message string) {
+	t.Helper()
+	for _, want := range []string{
+		"<!doctype html>",
+		"<title>404 Not Found</title>",
+		"<h1>404 Not Found</h1>",
+		"<p class=\"tagline\">" + message + "</p>",
+		"sandbinToggleTheme",
+		"Powered by Sandbin | version:",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("404 page missing %q in:\n%s", want, body)
+		}
+	}
+}
+
+// TestPrettyNotFoundPages is the 404 matrix: a GET that finds nothing answers a branded
+// 404 Not Found page named by cause — bin not found for an eight-hex segment that names no
+// bin, bin content not found for a path inside an existing bin the bin does not hold, and
+// page not found for a path that cannot name a bin. The bin's own 404.html still wins, and
+// every page carries the docs shell and theme.
+func TestPrettyNotFoundPages(t *testing.T) {
+	h := newTestServer(t, "test-key")
+
+	// An eight-hex segment that names no bin answers "bin not found", at the base and for a
+	// sub path.
+	for _, p := range []string{"/deadbeef", "/deadbeef/notes.md"} {
+		rec := get(t, h, p)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET %s = %d, want %d; body %q", p, rec.Code, http.StatusNotFound, rec.Body.String())
+		}
+		checkPrettyNotFoundPage(t, rec.Body.String(), "bin not found")
+	}
+
+	// Near-miss hashes — seven, nine, upper-case, and a non-hex letter — cannot name a bin,
+	// so they answer "page not found".
+	for _, p := range []string{"/deadbee", "/deadbeef1", "/DEADBEEF", "/deadbeeg"} {
+		rec := get(t, h, p)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET %s = %d, want %d; body %q", p, rec.Code, http.StatusNotFound, rec.Body.String())
+		}
+		checkPrettyNotFoundPage(t, rec.Body.String(), "page not found")
+	}
+
+	// A path inside an existing bin the bin does not hold answers "bin content not found".
+	base := createTestBin(t, h, "test-key")
+	if rec := get(t, h, base+"missing.md"); rec.Code != http.StatusNotFound {
+		t.Fatalf("GET %smissing.md = %d, want %d; body %q", base, rec.Code, http.StatusNotFound, rec.Body.String())
+	} else {
+		checkPrettyNotFoundPage(t, rec.Body.String(), "bin content not found")
+	}
+
+	// A bin holding a 404.html answers its own file for an unmatched path: the fallback
+	// still beats the pretty page.
+	fb := createTestBin(t, h, "test-key")
+	const fallbackBody = "<html><body>the bin's own 404</body></html>"
+	if rec := put(t, h, fb+"404.html", "test-key", fallbackBody); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT 404.html = %d; body %q", rec.Code, rec.Body.String())
+	}
+	if rec := get(t, h, fb+"nope.md"); rec.Code != http.StatusNotFound || rec.Body.String() != fallbackBody {
+		t.Errorf("GET %snope.md = %d %q, want 404 and the bin's own 404.html", fb, rec.Code, rec.Body.String())
 	}
 }
 
@@ -2362,18 +2426,17 @@ func TestSkillRouteMethodDiscipline(t *testing.T) {
 }
 
 // TestOtherSkillPathsAreUnknownBins keeps the static route to its one exact path: every
-// other /skills/... path falls through to the ordinary unknown-bin router.
+// other /skills/... path falls through to the ordinary router, which answers the page not
+// found page — "skills" is no eight-hex hash.
 func TestOtherSkillPathsAreUnknownBins(t *testing.T) {
 	h := newTestServer(t, "test-key")
 
 	for _, p := range []string{"/skills/other", "/skills/"} {
 		rec := get(t, h, p)
 		if rec.Code != http.StatusNotFound {
-			t.Errorf("GET %s = %d, want %d; body %q", p, rec.Code, http.StatusNotFound, rec.Body.String())
+			t.Fatalf("GET %s = %d, want %d; body %q", p, rec.Code, http.StatusNotFound, rec.Body.String())
 		}
-		if !strings.Contains(rec.Body.String(), "unknown bin") {
-			t.Errorf("GET %s body = %q, want an unknown bin message", p, rec.Body.String())
-		}
+		checkPrettyNotFoundPage(t, rec.Body.String(), "page not found")
 	}
 }
 
@@ -2411,12 +2474,13 @@ func TestBinBaseWantsItsTrailingSlash(t *testing.T) {
 		t.Errorf("GET /%s (protected) = %d, want %d", protectedHash, rec.Code, http.StatusMovedPermanently)
 	}
 
-	// Unknown hashes keep the plain 404, and so does every other method on /<hash>:
-	// a redirect would silently change what PUT or DELETE meant.
+	// Unknown hashes answer the bin not found page on a GET, and so does every other method
+	// on /<hash> with a 404: a redirect would silently change what PUT or DELETE meant.
 	rec = get(t, h, "/deadbeef")
-	if rec.Code != http.StatusNotFound || strings.TrimSpace(rec.Body.String()) != "unknown bin" {
-		t.Errorf("GET /deadbeef = %d %q, want 404 unknown bin", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /deadbeef = %d, want %d; body %q", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
+	checkPrettyNotFoundPage(t, rec.Body.String(), "bin not found")
 	for _, method := range []string{http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead, http.MethodOptions} {
 		req := httptest.NewRequest(method, "/"+hash, nil)
 		rec = httptest.NewRecorder()
@@ -2785,9 +2849,12 @@ func TestNotFoundServesTheBinsFallback(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	base := createTestBinWithMetadata(t, s, "test-key", "kept title", "kept description")
 
-	// Before the bin holds a 404.html, an unmatched path is the plain 404 it always was.
-	if rec := get(t, s, base+"missing.txt"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
-		t.Fatalf("GET missing.txt before the fallback = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
+	// Before the bin holds a 404.html, an unmatched path in an existing bin answers the
+	// bin content not found page.
+	if rec := get(t, s, base+"missing.txt"); rec.Code != http.StatusNotFound {
+		t.Fatalf("GET missing.txt before the fallback = %d, body %q; want 404", rec.Code, rec.Body.String())
+	} else {
+		checkPrettyNotFoundPage(t, rec.Body.String(), "bin content not found")
 	}
 
 	if rec := put(t, s, base+"404.html", "test-key", fallbackBody); rec.Code != http.StatusCreated {
@@ -2845,10 +2912,12 @@ func TestFallbackNeverShadowsAnything(t *testing.T) {
 		}
 	}
 
-	// No root 404.html yet: every unmatched path is the plain answer, and the base is the
-	// stored index.html.
-	if rec := get(t, s, base+"app/missing.js"); rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
-		t.Errorf("GET app/missing.js without a fallback = %d, body %q; want 404 unknown path", rec.Code, rec.Body.String())
+	// No root 404.html yet: every unmatched path is the bin content not found page, and the
+	// base is the stored index.html.
+	if rec := get(t, s, base+"app/missing.js"); rec.Code != http.StatusNotFound {
+		t.Errorf("GET app/missing.js without a fallback = %d, body %q; want 404", rec.Code, rec.Body.String())
+	} else {
+		checkPrettyNotFoundPage(t, rec.Body.String(), "bin content not found")
 	}
 	if rec := get(t, s, base+"hello/404.html"); rec.Code != http.StatusOK || rec.Body.String() != "<h1>an ordinary nested file</h1>" {
 		t.Errorf("GET hello/404.html = %d, body %q; want 200 and the stored file", rec.Code, rec.Body.String())
@@ -3000,23 +3069,28 @@ func TestFilePutPassword401IsEnvelope(t *testing.T) {
 	}
 }
 
-// TestFileGetRefusalsStayPlain is the boundary that must not leak: the GET side of the same
-// refused shapes keeps today's plain bodies byte for byte.
+// TestFileGetRefusalsStayPlain is the boundary that must not leak: the GET side of the refused
+// shapes answers 404s as the pretty pages the router gives every GET that finds nothing, and
+// the 401 keeps its plain body byte for byte.
 func TestFileGetRefusalsStayPlain(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	base := createTestBin(t, s, "test-key")
 
 	rec := get(t, s, "/deadbeef/page.html")
-	if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown bin\n" {
-		t.Errorf("GET unknown bin = %d, body %q; want 404 unknown bin plain", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET unknown bin = %d, body %q; want 404", rec.Code, rec.Body.String())
+	} else {
+		checkPrettyNotFoundPage(t, rec.Body.String(), "bin not found")
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
-		t.Errorf("GET unknown bin Content-Type = %q, want the plain text type", ct)
+	if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Errorf("GET unknown bin Content-Type = %q, want text/html; charset=utf-8", ct)
 	}
 
 	rec = get(t, s, base+"gone.txt")
-	if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown path\n" {
-		t.Errorf("GET unknown path = %d, body %q; want 404 unknown path plain", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET unknown path = %d, body %q; want 404", rec.Code, rec.Body.String())
+	} else {
+		checkPrettyNotFoundPage(t, rec.Body.String(), "bin content not found")
 	}
 
 	protected := createTestBinWithPassword(t, s, "sesame")

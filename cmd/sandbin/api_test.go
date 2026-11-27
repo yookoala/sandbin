@@ -8,16 +8,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
-
-// binHashRE matches the hash a bin answer names.
-var binHashRE = regexp.MustCompile(`^[0-9a-f]{8}$`)
 
 // postAPIBins POSTs a body to /api/bins from a fixed socket address and returns the recorder.
 // An empty body sends no body at all, which is the empty request; an empty apiKey omits the
@@ -193,8 +189,9 @@ func TestAPIUnknownShapes(t *testing.T) {
 	}
 }
 
-// TestOldRoutesRetired is the no-compatibility rule: /healthz and /verify-key are ordinary
-// unknown paths now, answered with the plain 404 the router gives every other unknown shape.
+// TestOldRoutesRetired is the no-compatibility rule: /healthz is an ordinary unknown path
+// now, answered with the page not found page the router gives a GET, and /verify-key keeps
+// the plain 404 every non-GET unknown shape gets.
 func TestOldRoutesRetired(t *testing.T) {
 	s := newTestServer(t, "test-key")
 
@@ -202,9 +199,7 @@ func TestOldRoutesRetired(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("GET /healthz = %d, want %d; body %q", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
-	if rec.Body.String() != "unknown bin\n" {
-		t.Errorf("GET /healthz body = %q, want the unknown bin message", rec.Body.String())
-	}
+	checkPrettyNotFoundPage(t, rec.Body.String(), "page not found")
 
 	req := httptest.NewRequest(http.MethodPost, "/verify-key", nil)
 	req.Header.Set("X-API-Key", "test-key")
@@ -1113,22 +1108,20 @@ func TestAPIDeleteBinAnswersOKBody(t *testing.T) {
 		t.Errorf("200 Content-Type = %q, want application/json", ct)
 	}
 
-	// Every face of the bin now says it is gone: the bin paths keep the plain unknown bin,
-	// the API path answers the envelope.
-	for _, c := range []struct{ path, want string }{
-		{base, "unknown bin\n"},
-		{base + "notes.md", "unknown bin\n"},
-		{base + "drafts/one.md", "unknown bin\n"},
-		{"/api/bins/" + hash, apiEnvelope(404, "bin not found")},
-	} {
-		rec = get(t, s, c.path)
+	// Every face of the bin now says it is gone: the bin paths answer the bin not found
+	// page, and the API path answers the envelope.
+	for _, p := range []string{base, base + "notes.md", base + "drafts/one.md"} {
+		rec = get(t, s, p)
 		if rec.Code != http.StatusNotFound {
-			t.Errorf("after the delete, GET %s = %d, want %d; body %q", c.path, rec.Code, http.StatusNotFound, rec.Body.String())
+			t.Errorf("after the delete, GET %s = %d, want %d; body %q", p, rec.Code, http.StatusNotFound, rec.Body.String())
 			continue
 		}
-		if rec.Body.String() != c.want {
-			t.Errorf("after the delete, GET %s body = %q, want %q", c.path, rec.Body.String(), c.want)
-		}
+		checkPrettyNotFoundPage(t, rec.Body.String(), "bin not found")
+	}
+	if rec = get(t, s, "/api/bins/"+hash); rec.Code != http.StatusNotFound {
+		t.Errorf("after the delete, GET /api/bins/%s = %d, want %d; body %q", hash, rec.Code, http.StatusNotFound, rec.Body.String())
+	} else if rec.Body.String() != apiEnvelope(404, "bin not found") {
+		t.Errorf("after the delete, GET /api/bins/%s body = %q, want the envelope", hash, rec.Body.String())
 	}
 
 	// The listing no longer names the bin.

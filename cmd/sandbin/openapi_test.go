@@ -271,7 +271,7 @@ func TestOpenAPIServedBytesMatchTheCommittedFile(t *testing.T) {
 // TestOpenAPIServeShapes pins the endpoint's shapes: the route table names GET only, so HEAD
 // and POST are the envelope 405 the table gives every named path on a method it does not list,
 // and every spelling the table does not name — the trailing slash, a near-miss name — is the
-// plain 404 unknown bin.
+// page not found page, since neither spelling can name a bin.
 func TestOpenAPIServeShapes(t *testing.T) {
 	s := newTestServer(t, "test-key")
 
@@ -290,13 +290,17 @@ func TestOpenAPIServeShapes(t *testing.T) {
 	}
 
 	rec = get(t, s, "/openapi.json/")
-	if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown bin\n" {
-		t.Errorf("GET /openapi.json/ = %d, body %q; want 404 unknown bin", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /openapi.json/ = %d, body %q; want 404", rec.Code, rec.Body.String())
+	} else {
+		checkPrettyNotFoundPage(t, rec.Body.String(), "page not found")
 	}
 
 	rec = get(t, s, "/openapix.json")
-	if rec.Code != http.StatusNotFound || rec.Body.String() != "unknown bin\n" {
-		t.Errorf("GET /openapix.json = %d, body %q; want 404 unknown bin", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /openapix.json = %d, body %q; want 404", rec.Code, rec.Body.String())
+	} else {
+		checkPrettyNotFoundPage(t, rec.Body.String(), "page not found")
 	}
 }
 
