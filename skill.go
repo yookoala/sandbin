@@ -30,3 +30,9 @@ var UsageDocs embed.FS
 //
 //go:embed docs/assets/sandbin-logo.svg
 var LogoSVG string
+
+// LogoDarkSVG is the markup of docs/assets/sandbin-logo-dark.svg, the dark-theme wordmark:
+// the same logo calibrated for a dark canvas, shown where the light one is hidden.
+//
+//go:embed docs/assets/sandbin-logo-dark.svg
+var LogoDarkSVG string

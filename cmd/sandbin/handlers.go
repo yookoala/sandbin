@@ -615,7 +615,9 @@ func (s *server) renderFrontPage(w http.ResponseWriter, r *http.Request) {
 	if err := frontpage.Render(&buf, frontpage.Data{
 		Base:      s.frontBase(r),
 		Logo:      sandbin.LogoSVG,
+		LogoDark:  sandbin.LogoDarkSVG,
 		BrandCSS:  brandCSS,
+		ThemeJS:   themeScript,
 		Version:   version.String(),
 		Harnesses: frontpage.DefaultHarnesses(),
 	}); err != nil {

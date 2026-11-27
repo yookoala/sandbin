@@ -31,9 +31,10 @@ import (
 	"text/template"
 )
 
-// frontHTML is the landing page's markup: {{.BrandCSS}} inside the <style>, {{.Logo}} inside
-// its hero-sized wrapper in the header, {{.DefaultLabel}}, {{.DefaultCmd}} and {{.DefaultPath}}
-// in the combobox face, the command widget's initial value and the install-path box,
+// frontHTML is the landing page's markup: {{.BrandCSS}} inside the <style>, {{.Logo}} and
+// {{.LogoDark}} inside their hero-sized wrappers in the header, {{.ThemeJS}} inside the
+// <head>'s theme script, {{.DefaultLabel}}, {{.DefaultCmd}} and {{.DefaultPath}} in the
+// combobox face, the command widget's initial value and the install-path box,
 // {{.Version}} in the powered-by footer, and {{.HarnessJSON}} inside the JSON data island the
 // picker script parses.
 //
@@ -87,14 +88,18 @@ func DefaultHarnesses() []Harness {
 
 // Data is what the page is assembled from. Base is the example prefix implied by the request
 // ("https://host" or the "https://this.host" placeholder for an odd Host); Logo the embedded
-// wordmark markup; BrandCSS the branding style the docs shell also uses; Version the version
-// string the footer names, which cmd/sandbin supplies from internal/version; Harnesses the
-// harness table, which cmd/sandbin supplies as DefaultHarnesses() and a test may replace with
-// its own rows.
+// light wordmark markup; LogoDark the embedded dark-theme wordmark markup; BrandCSS the
+// branding style the docs shell also uses; ThemeJS the theme script the page runs before
+// paint, which persists the visitor's choice and defines the toggle its nav button calls;
+// Version the version string the footer names, which cmd/sandbin supplies from
+// internal/version; Harnesses the harness table, which cmd/sandbin supplies as
+// DefaultHarnesses() and a test may replace with its own rows.
 type Data struct {
 	Base      string
 	Logo      string
+	LogoDark  string
 	BrandCSS  string
+	ThemeJS   string
 	Version   string
 	Harnesses []Harness
 }

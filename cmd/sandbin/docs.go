@@ -58,6 +58,8 @@ var docSets = []docSet{
 const (
 	// docsLogoPath is the logo route, matching its path in the repo.
 	docsLogoPath = "/docs/assets/sandbin-logo.svg"
+	// docsDarkLogoPath is the dark-theme logo route, matching its path in the repo.
+	docsDarkLogoPath = "/docs/assets/sandbin-logo-dark.svg"
 	// docsSourceBase is where a hosted page's markdown lives on GitHub: the body-link
 	// rewriter sends a relative .md link with no hosted page there, and only there — the
 	// nav's GitHub door is one fixed repo URL on every page.
@@ -274,28 +276,29 @@ func rewriteDocLink(dest string) string {
 // powered-by line both page families end with. The icon rules at the end style the icon nav
 // every docs page and the landing carry; the plain .page-head nav a margin rule stays for
 // any text nav, overridden for the icon nav.
-const brandCSS = `:root{--sandbin-purple:#4E1680;--sandbin-amber:#EA9B25;--sandbin-canvas:#F8F7F4}
-body{max-width:44rem;margin:0 auto;padding:1.25rem 1rem 3rem;background:#F8F7F4;color:#222;
+const brandCSS = `:root{--sandbin-purple:#4E1680;--sandbin-amber:#EA9B25;--sandbin-canvas:#F8F7F4;--sb-fg:#222;--sb-li:#333;--sb-quote:#444;--sb-soft:#555;--sb-muted:#666;--sb-faint:#8b8171;--sb-pick:#b3a894;--sb-border:#e3ddd3;--sb-line:#ded7cb;--sb-hl:#F6EDDD;--sb-code:#efeadf;--sb-surface:#fff;--sb-ok:#2e7d32}
+:root[data-theme="dark"]{--sandbin-purple:#E2C2FF;--sandbin-canvas:#111111;--sb-fg:#E5E1D8;--sb-li:#D8D3CA;--sb-quote:#B0A99E;--sb-soft:#A09A90;--sb-muted:#A09A90;--sb-faint:#7E7668;--sb-pick:#57503F;--sb-border:#3B372F;--sb-line:#4A443A;--sb-hl:#2E2410;--sb-code:#2A2721;--sb-surface:#1B1A17;--sb-ok:#7BC47F}
+body{max-width:44rem;margin:0 auto;padding:1.25rem 1rem 3rem;background:var(--sandbin-canvas);color:var(--sb-fg);
 font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.55;
 display:flex;flex-direction:column;box-sizing:border-box;min-height:100vh}
 main{flex:1 0 auto}
-.site-footer{margin-top:auto;padding-top:1.2rem;border-top:1px solid #e3ddd3;color:#666;font-size:0.85rem;text-align:center}
-h1,h2,h3,h4,h5,h6{font-family: 'Poetsen One', sans-serif;color:#4E1680;line-height:1.2}
+.site-footer{margin-top:auto;padding-top:1.2rem;border-top:1px solid var(--sb-border);color:var(--sb-muted);font-size:0.85rem;text-align:center}
+h1,h2,h3,h4,h5,h6{font-family: 'Poetsen One', sans-serif;color:var(--sandbin-purple);line-height:1.2}
 h1{font-size:1.9rem;margin:0 0 0.4em}
 h2{font-size:1.35rem;margin:1.6em 0 0.4em}
 h3{font-size:1.1rem;margin:1.4em 0 0.3em}
-a{color:#4E1680}
+a{color:var(--sandbin-purple)}
 p,ul,ol{overflow-wrap:break-word}
-pre{background:#fff;border:1px solid #e3ddd3;border-left:4px solid #EA9B25;border-radius:4px;
+pre{background:var(--sb-surface);border:1px solid var(--sb-border);border-left:4px solid #EA9B25;border-radius:4px;
 padding:0.6em 0.8em;overflow-x:auto}
-code{background:#efeadf;border-radius:3px;padding:0.1em 0.35em;
+code{background:var(--sb-code);border-radius:3px;padding:0.1em 0.35em;
 font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:0.95em}
 pre code{background:none;padding:0;border-radius:0;font-size:1em}
 table{border-collapse:collapse;width:100%;margin:1em 0}
-th,td{border:1px solid #ded7cb;padding:0.45em 0.6em;text-align:left;vertical-align:top}
-th{background:#4E1680;color:#fff}
-blockquote{border-left:4px solid #EA9B25;margin:1em 0;padding:0.2em 0 0.2em 0.9em;color:#444}
-.page-head{display:flex;align-items:flex-end;gap:1rem;border-bottom:2px solid #4E1680;
+th,td{border:1px solid var(--sb-line);padding:0.45em 0.6em;text-align:left;vertical-align:top}
+th{background:var(--sandbin-purple);color:var(--sb-surface)}
+blockquote{border-left:4px solid #EA9B25;margin:1em 0;padding:0.2em 0 0.2em 0.9em;color:var(--sb-quote)}
+.page-head{display:flex;align-items:flex-end;gap:1rem;border-bottom:2px solid var(--sandbin-purple);
 padding-bottom:0.8rem;margin-bottom:1.4rem;flex-wrap:wrap}
 .wordmark{width:56px;height:86px;flex:none}
 .wordmark-hero{width:120px;height:183px}
@@ -303,33 +306,64 @@ padding-bottom:0.8rem;margin-bottom:1.4rem;flex-wrap:wrap}
 .logo-link{text-decoration:none}
 .page-head nav{font-size:0.95rem}
 .page-head nav a{margin-right:0.7rem}
-.tagline{color:#555;margin:0 0 1.5em}
+.tagline{color:var(--sb-soft);margin:0 0 1.5em}
 .cmd{display:flex;align-items:center;gap:0.7rem}
 .cmd pre{flex:1 1 auto;margin:0}
-.copy{flex:none;border:1px solid #4E1680;background:#fff;color:#4E1680;border-radius:4px;
+.copy{flex:none;border:1px solid var(--sandbin-purple);background:var(--sb-surface);color:var(--sandbin-purple);border-radius:4px;
 padding:0.4em 0.8em;font:inherit;cursor:pointer}
 
 .page-head nav.icon-nav{margin-left:auto;display:flex;gap:0.55rem;align-items:center}
 .page-head nav.icon-nav a{margin-right:0}
 .icon-link{display:inline-flex;align-items:center;justify-content:center;width:2.1rem;height:2.1rem;
 border:none;border-radius:8px;color:var(--sandbin-purple);text-decoration:none}
-.icon-link:hover,.icon-link:focus-visible{color:var(--sandbin-amber);background:#fff}
+.icon-link:hover,.icon-link:focus-visible{color:var(--sandbin-amber);background:var(--sb-surface)}
 .icon-link svg{width:1.35rem;height:1.35rem;display:block}
 
 .codeblock{position:relative}
 .codeblock pre{margin:1em 0}
-.block-copy{position:absolute;right:0.45em;top:calc(1em + 0.3em);border:1px solid #ded7cb;background:#fff;
+.block-copy{position:absolute;right:0.45em;top:calc(1em + 0.3em);border:1px solid var(--sb-line);background:var(--sb-surface);
 color:var(--sandbin-purple);border-radius:4px;padding:0.25em;line-height:0;cursor:pointer}
 .block-copy:hover,.block-copy:focus-visible{color:var(--sandbin-amber)}
 .block-copy svg{width:1.05rem;height:1.05rem;display:block}
-.block-copy.copied{color:#2e7d32;border-color:#2e7d32}
+.block-copy.copied{color:var(--sb-ok);border-color:var(--sb-ok)}
+.logo-dark{display:none}
+:root[data-theme="dark"] .logo-dark{display:block}
+:root[data-theme="dark"] .wordmark:not(.logo-dark){display:none}
+.theme-sun{display:none}
+:root[data-theme="dark"] .theme-moon{display:none}
+:root[data-theme="dark"] .theme-sun{display:block}
 `
+
+// themeScript is the head script every themed page runs before paint: it reads the visitor's
+// persisted choice from localStorage and, when none is stored, falls back to the OS
+// prefers-color-scheme, then sets data-theme on the document element so the CSS variables and
+// the logo twins resolve before the first frame. It also defines the toggle the nav button
+// calls, which flips data-theme and persists the new choice.
+const themeScript = `(function () {
+  var t = null;
+  try { t = localStorage.getItem("sandbin-theme"); } catch (e) {}
+  if (t !== "dark" && t !== "light") {
+    t = (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+  }
+  document.documentElement.setAttribute("data-theme", t);
+})();
+function sandbinToggleTheme() {
+  var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("sandbin-theme", next); } catch (e) {}
+}`
+
+// themeToggleButton is the nav button every themed page carries: a sun and a moon, the visible
+// one picked by the data-theme rules in brandCSS, calling the theme script's toggle.
+const themeToggleButton = `<button type="button" class="icon-link theme-toggle" title="toggle theme" aria-label="Toggle dark theme" onclick="sandbinToggleTheme()"><svg class="theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg><svg class="theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg></button>`
 
 // logoBlock is the embedded wordmark markup, inlined verbatim inside a sized wrapper: the
 // SVG's own width/height=100% and viewBox scale to that wrapper, and its <style> keeps the
-// web font its @import names.
+// web font its @import names. It emits the light logo and a dark twin carrying logo-dark,
+// which the data-theme rules in brandCSS swap between.
 func logoBlock(class string) string {
-	return "<div class=\"" + class + "\">" + sandbin.LogoSVG + "</div>"
+	return "<div class=\"" + class + "\">" + sandbin.LogoSVG + "</div>" +
+		"<div class=\"" + class + " logo-dark\">" + sandbin.LogoDarkSVG + "</div>"
 }
 
 // docCopyJS wraps every code block under <main> with a copy button, the landing page's
@@ -401,6 +435,7 @@ func docShell(title, bodyHTML string) string {
 	b.WriteString("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n")
 	b.WriteString("<title>" + html.EscapeString(title) + "</title>\n")
 	b.WriteString("<style>\n" + brandCSS + "</style>\n")
+	b.WriteString("<script>\n" + themeScript + "</script>\n")
 	b.WriteString("</head>\n<body>\n")
 	b.WriteString(docHead())
 	b.WriteString("<main>\n")
@@ -434,6 +469,7 @@ func docHead() string {
 	b.WriteString("<a class=\"icon-link\" href=\"/\" title=\"home\" aria-label=\"Sandbin home\">" + docIconHome + "</a>\n")
 	b.WriteString("<a class=\"icon-link\" href=\"/docs\" title=\"docs\" aria-label=\"Documentation\">" + docIconBook + "</a>\n")
 	b.WriteString("<a class=\"icon-link\" href=\"https://github.com/yookoala/sandbin\" target=\"_blank\" rel=\"noopener\" title=\"source on GitHub\" aria-label=\"Source on GitHub\">" + docIconGitHub + "</a>\n")
+	b.WriteString(themeToggleButton + "\n")
 	b.WriteString("</nav>\n")
 	b.WriteString("</header>\n")
 	return b.String()
@@ -502,6 +538,10 @@ func (s *server) serveDocs(w http.ResponseWriter, r *http.Request) {
 	case docsLogoPath:
 		w.Header().Set("Content-Type", "image/svg+xml")
 		w.Write([]byte(sandbin.LogoSVG))
+		return
+	case docsDarkLogoPath:
+		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Write([]byte(sandbin.LogoDarkSVG))
 		return
 	}
 	if page, ok := docsPages[strings.TrimPrefix(r.URL.Path, "/docs/")]; ok {

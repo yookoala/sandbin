@@ -184,8 +184,42 @@ func TestDocsPagesCarryTheWordmarkInline(t *testing.T) {
 		if !strings.Contains(body, sandbin.LogoSVG) {
 			t.Errorf("GET %s does not carry the embedded logo markup verbatim:\n%s", name, body[:min(len(body), 400)])
 		}
+		if !strings.Contains(body, sandbin.LogoDarkSVG) {
+			t.Errorf("GET %s does not carry the embedded dark logo markup verbatim:\n%s", name, body[:min(len(body), 400)])
+		}
 		if strings.Contains(body, "<img") {
 			t.Errorf("GET %s references an <img> logo:\n%s", name, body)
+		}
+	}
+}
+
+// TestDocsPagesCarryTheDarkTheme checks the dark theme every docs page carries: the theme
+// script in the <head> before its close, the toggle button in the nav, the dark variable
+// overrides in the CSS, and the light wordmark still inline.
+func TestDocsPagesCarryTheDarkTheme(t *testing.T) {
+	h := newTestServer(t, "test-key")
+	for _, name := range append([]string{"/docs"}, docPageHrefs()...) {
+		rec := get(t, h, name)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d", name, rec.Code)
+		}
+		body := rec.Body.String()
+		// The theme script's toggle definition sits in the <head>, before its close.
+		script := "function sandbinToggleTheme() {"
+		if at := strings.Index(body, script); at < 0 || strings.Index(body, "</head>") < at {
+			t.Errorf("GET %s theme script is not before </head> in:\n%s", name, body[:min(len(body), 400)])
+		}
+		// The nav carries the toggle button.
+		if !strings.Contains(body, "theme-toggle") {
+			t.Errorf("GET %s nav carries no theme-toggle button in:\n%s", name, body[:min(len(body), 400)])
+		}
+		// The CSS carries the dark variable overrides.
+		if !strings.Contains(body, ":root[data-theme=\"dark\"]") {
+			t.Errorf("GET %s CSS carries no :root[data-theme=\"dark\"] block in:\n%s", name, body[:min(len(body), 400)])
+		}
+		// The light wordmark is still inline.
+		if !strings.Contains(body, sandbin.LogoSVG) {
+			t.Errorf("GET %s does not carry the embedded logo markup verbatim:\n%s", name, body[:min(len(body), 400)])
 		}
 	}
 }
@@ -210,7 +244,7 @@ func TestDocsPagesFillTheViewportAndEndInFooter(t *testing.T) {
 			// to the bottom edge.
 			"display:flex;flex-direction:column;box-sizing:border-box;min-height:100vh",
 			"main{flex:1 0 auto}",
-			".site-footer{margin-top:auto;padding-top:1.2rem;border-top:1px solid #e3ddd3;color:#666;font-size:0.85rem;text-align:center}",
+			".site-footer{margin-top:auto;padding-top:1.2rem;border-top:1px solid var(--sb-border);color:var(--sb-muted);font-size:0.85rem;text-align:center}",
 			"</header>\n<main>\n",
 			footer,
 			"</script>\n</body>\n</html>\n",
@@ -751,6 +785,24 @@ func TestDocsLogoRouteServesEmbeddedBytes(t *testing.T) {
 	if sandbin.LogoSVG != string(raw) {
 		t.Error("sandbin.LogoSVG is not the repo logo")
 	}
+
+	rec = get(t, h, "/docs/assets/sandbin-logo-dark.svg")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /docs/assets/sandbin-logo-dark.svg = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/svg+xml" {
+		t.Errorf("Content-Type = %q, want image/svg+xml", ct)
+	}
+	rawDark, err := os.ReadFile(filepath.Join("..", "..", "docs", "assets", "sandbin-logo-dark.svg"))
+	if err != nil {
+		t.Fatalf("read the repo dark logo: %v", err)
+	}
+	if rec.Body.String() != string(rawDark) {
+		t.Errorf("served dark logo is not byte-equal to docs/assets/sandbin-logo-dark.svg")
+	}
+	if sandbin.LogoDarkSVG != string(rawDark) {
+		t.Error("sandbin.LogoDarkSVG is not the repo dark logo")
+	}
 }
 
 // TestDocsUnknownPathsArePlainNotFound checks unknown /docs paths — including traversal
@@ -780,7 +832,7 @@ func TestDocsUnknownPathsArePlainNotFound(t *testing.T) {
 // routes.
 func TestDocsMethodDiscipline(t *testing.T) {
 	h := newTestServer(t, "test-key")
-	live := []string{"/docs", "/docs/", "/docs/sandbin.html", "/docs/assets/sandbin-logo.svg"}
+	live := []string{"/docs", "/docs/", "/docs/sandbin.html", "/docs/assets/sandbin-logo.svg", "/docs/assets/sandbin-logo-dark.svg"}
 	for _, p := range live {
 		req := httptest.NewRequest(http.MethodHead, p, nil)
 		rec := httptest.NewRecorder()
@@ -995,7 +1047,7 @@ func TestDocsCarryCopyButtonsAndTheLandingDoesNot(t *testing.T) {
 			"document.execCommand(\"copy\")",
 			".codeblock{position:relative}",
 			".block-copy{position:absolute",
-			".block-copy.copied{color:#2e7d32;border-color:#2e7d32}",
+			".block-copy.copied{color:var(--sb-ok);border-color:var(--sb-ok)}",
 			"</script>\n</body>\n</html>\n",
 		} {
 			if !strings.Contains(body, want) {

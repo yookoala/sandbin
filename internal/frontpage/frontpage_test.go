@@ -7,12 +7,15 @@ import (
 	"testing"
 )
 
-// sampleLogo and sampleCSS stand in for the two constants cmd/sandbin hands the template:
-// the embedded wordmark markup and the branding style the docs shell shares. The tests only
-// need strings that could plausibly be them: what they pin is where the values land.
+// sampleLogo, sampleLogoDark, sampleThemeJS and sampleCSS stand in for the constants
+// cmd/sandbin hands the template: the embedded light and dark wordmark markup, the theme
+// script, and the branding style the docs shell shares. The tests only need strings that
+// could plausibly be them: what they pin is where the values land.
 const (
-	sampleLogo = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 56 86\"><style>.b{fill:#4E1680}</style><path class=\"b\" d=\"M0 0h56v86H0z\"/></svg>"
-	sampleCSS  = ":root{--sandbin-purple:#4E1680}\n.page-head{display:flex}"
+	sampleLogo     = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 56 86\"><style>.b{fill:#4E1680}</style><path class=\"b\" d=\"M0 0h56v86H0z\"/></svg>"
+	sampleLogoDark = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 56 86\"><style>.d{fill:#E2C2FF}</style><path class=\"d\" d=\"M0 0h56v86H0z\"/></svg>"
+	sampleThemeJS  = "function sandbinToggleTheme() { document.documentElement.setAttribute(\"data-theme\", \"dark\"); }"
+	sampleCSS      = ":root{--sandbin-purple:#4E1680}\n.page-head{display:flex}"
 )
 
 // sampleData is one ordinary render: a https base with a port, as frontBase answers behind a
@@ -22,7 +25,9 @@ func sampleData() Data {
 	return Data{
 		Base:      "https://preview.example.org:8443",
 		Logo:      sampleLogo,
+		LogoDark:  sampleLogoDark,
 		BrandCSS:  sampleCSS,
+		ThemeJS:   sampleThemeJS,
 		Version:   "v9.9.9-test",
 		Harnesses: DefaultHarnesses(),
 	}
@@ -148,7 +153,8 @@ func TestRenderFillsEveryField(t *testing.T) {
 }
 
 // The logo is the content of the hero-sized wrapper: the exact div the landing page has always
-// carried, and nothing else wraps it.
+// carried, and nothing else wraps it. The dark twin is the same wrapper plus logo-dark, beside
+// the light one.
 func TestRenderPlacesTheLogoInItsHeroWrapper(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Render(&buf, sampleData()); err != nil {
@@ -160,8 +166,8 @@ func TestRenderPlacesTheLogoInItsHeroWrapper(t *testing.T) {
 	if !strings.Contains(body, want) {
 		t.Errorf("Render missing %q in:\n%s", want, body)
 	}
-	// The wrapper is opened once and its closing tag belongs to it: the logo is not left to
-	// wander into the nav or the body.
+	// The light wrapper is opened once and its closing tag belongs to it: the logo is not
+	// left to wander into the nav or the body.
 	if n := strings.Count(body, "<div class=\"wordmark wordmark-hero\">"); n != 1 {
 		t.Errorf("hero wrapper opened %d times, want 1 in:\n%s", n, body)
 	}
@@ -172,6 +178,48 @@ func TestRenderPlacesTheLogoInItsHeroWrapper(t *testing.T) {
 	}
 	if end := strings.Index(body, "</div>"); end < 0 || end > header {
 		t.Errorf("the logo wrapper's </div> (offset %d) is not inside the <header> block (ends at %d)", end, header)
+	}
+	// The dark twin is opened exactly once, inside the <header> block too.
+	darkTwin := "<div class=\"wordmark wordmark-hero logo-dark\">"
+	if n := strings.Count(body, darkTwin); n != 1 {
+		t.Errorf("dark hero wrapper opened %d times, want 1 in:\n%s", n, body)
+	}
+	darkOpen := strings.Index(body, darkTwin)
+	if darkOpen < 0 || header < 0 || darkOpen > header {
+		t.Errorf("the dark logo wrapper (offset %d) is not inside the <header> block (ends at %d)", darkOpen, header)
+	}
+}
+
+// The dark theme the landing carries: the theme script in the <head> before its close, the
+// toggle button in the header's nav, and the dark wordmark twin inside the header.
+func TestRenderCarriesTheDarkTheme(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Render(&buf, sampleData()); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	body := buf.String()
+
+	// The theme script lands in the <head> as a plain script element, before its close.
+	script := "<script>\n" + sampleThemeJS + "</script>"
+	if !strings.Contains(body, script) {
+		t.Errorf("Render missing the theme script %q in:\n%s", script, body)
+	}
+	if at := strings.Index(body, script); at < 0 || strings.Index(body, "</head>") < at {
+		t.Errorf("the theme script is not before </head> in:\n%s", body)
+	}
+	// The toggle button sits in the header's nav.
+	headerStart := strings.Index(body, "<header class=\"page-head\">")
+	headerEnd := strings.Index(body, "</header>")
+	if headerStart < 0 || headerEnd < 0 || headerEnd < headerStart {
+		t.Fatalf("the render carries no <header>…</header> block:\n%s", body)
+	}
+	header := body[headerStart:headerEnd]
+	if !strings.Contains(header, "theme-toggle") {
+		t.Errorf("the header nav carries no theme-toggle button in:\n%s", header)
+	}
+	// The dark wordmark twin sits in the header exactly once.
+	if n := strings.Count(header, "<div class=\"wordmark wordmark-hero logo-dark\">"); n != 1 {
+		t.Errorf("the dark wordmark twin opens %d times in the header, want 1 in:\n%s", n, header)
 	}
 }
 
@@ -431,7 +479,7 @@ func TestRenderCarriesTheSwapTint(t *testing.T) {
 	body := buf.String()
 
 	for _, want := range []string{
-		"@keyframes sandbin-swapbg{0%{background-color:#f7e7cb}100%{background-color:#fff}}",
+		"@keyframes sandbin-swapbg{0%{background-color:#f7e7cb}100%{background-color:var(--sb-surface)}}",
 		".cmd-input.swap,.path-input.swap,.pick-face.swap{animation:sandbin-swap 0.28s ease-out,sandbin-swapbg 1.4s ease-out}",
 	} {
 		if !strings.Contains(body, want) {
@@ -457,12 +505,12 @@ func TestRenderCarriesTheResponsiveModal(t *testing.T) {
 		// The desktop resting state: scrim and hint hidden, placeholder styled as a hint.
 		".pick-scrim{display:none}",
 		".pick-hint{display:none}",
-		".pick-pop input::placeholder{color:#8b8171;font-weight:400}",
+		".pick-pop input::placeholder{color:var(--sb-faint);font-weight:400}",
 		// The query and its modal rules: scrim wash under the panel, fixed panel box model.
 		"@media (max-width:30rem){",
 		".pick-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:19;background:rgba(20,14,6,0.55)}",
 		".pick-pop:not([hidden]){position:fixed;left:0.75rem;right:0.75rem;top:6vh;bottom:6vh;z-index:20;",
-		".pick-hint{display:block;margin:0 0 0.3em;color:#222}",
+		".pick-hint{display:block;margin:0 0 0.3em;color:var(--sb-fg)}",
 		".pick-pop input{width:100%;box-sizing:border-box}",
 		".pick-pop ul{flex:1 1 auto;max-height:none;margin:0.5rem 0 0;border:none;box-shadow:none;",
 		// The markup: hint as the popup's first child, scrim after the popup inside #pick,

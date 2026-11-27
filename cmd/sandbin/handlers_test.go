@@ -298,6 +298,11 @@ func TestFrontPageAtRoot(t *testing.T) {
 		"<a class=\"icon-link\" href=\"/docs\"",
 		"aria-label=\"Documentation\"",
 		"aria-label=\"Source on GitHub\"",
+		// The dark theme: the toggle button in the nav, the head script that defines its
+		// function, and the dark wordmark twin beside the light one.
+		"class=\"icon-link theme-toggle\"",
+		"function sandbinToggleTheme() {",
+		"logo-dark",
 		"role=\"combobox\"",
 		"role=\"listbox\"",
 		"JSON.parse(document.getElementById(\"harness-data\").textContent)",
