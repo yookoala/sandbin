@@ -181,7 +181,7 @@ not flags of `delete`, so a run written with them is a usage error that makes no
 delete run reads no stdin even when a pipe is attached. The names follow the upload name rules,
 with two of their own: a trailing slash on a file argument is a refusal pointing at `--folder`,
 and a trailing slash on `--folder` is a refusal saying the client sends that slash itself.
-`--json` on a delete run reports one `delete <path>` action per file the server accepted, and
+`--json` on a delete run reports one `delete <path>` action per name the server accepted, and
 the array stops at the first refusal.
 
 The names are checked against the bin by the server: a path the bin does not hold is refused

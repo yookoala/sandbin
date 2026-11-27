@@ -75,7 +75,7 @@ Piped stdin needs `--name` to say what it uploads; a `.ansi` file comes back ren
 # {{.Base}}/<bin>/
 ```
 
-File arguments name files and a repeatable `--folder` names a folder and takes everything under it; flags may be written before or after the file arguments. A delete run reuses this directory's bin and never makes one, and it never uploads: `--name`, `--archive`, `--new` and `--no-extract` are not delete flags, so a run written with them is a usage error that makes no request. A path the bin does not hold is refused with `delete "missing.txt": 404 unknown path`.
+File arguments name files and a repeatable `--folder` names a folder and takes everything under it; flags may be written before or after the file arguments. A delete run reuses this directory's bin and never makes one, and it never uploads: `--name`, `--archive`, `--new` and `--no-extract` are not delete flags, so a run written with them is a usage error that makes no request. A path the bin does not hold is refused with `delete "missing.txt": 404 path not found`.
 
 ## Saying what the bin holds
 
