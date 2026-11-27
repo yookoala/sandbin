@@ -91,8 +91,9 @@ func put(t *testing.T, h http.Handler, path, apiKey, body string) *httptest.Resp
 }
 
 // putEntry reads the JSON entry a successful single-file PUT answers: the pinned
-// {"path","size","updated_at"} spelling of the row the store read back for the file
-// just written, under the application/json Content-Type every JSON success carries.
+// {"status","path","size","updated_at"} spelling of the top-level answer — status:ok first,
+// then the row the store read back for the file just written — under the application/json
+// Content-Type every JSON success carries.
 func putEntry(t *testing.T, rec *httptest.ResponseRecorder) fileJSON {
 	t.Helper()
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
@@ -102,8 +103,11 @@ func putEntry(t *testing.T, rec *httptest.ResponseRecorder) fileJSON {
 	if err := json.Unmarshal(rec.Body.Bytes(), &keys); err != nil {
 		t.Fatalf("PUT body %q is not a JSON object: %v", rec.Body.String(), err)
 	}
-	if len(keys) != 3 || keys["path"] == nil || keys["size"] == nil || keys["updated_at"] == nil {
-		t.Fatalf("PUT body %q is not the pinned {path,size,updated_at} entry", rec.Body.String())
+	if len(keys) != 4 || keys["status"] == nil || keys["path"] == nil || keys["size"] == nil || keys["updated_at"] == nil {
+		t.Fatalf("PUT body %q is not the pinned {status,path,size,updated_at} entry", rec.Body.String())
+	}
+	if string(keys["status"]) != `"ok"` {
+		t.Fatalf("PUT status = %s, want \"ok\"", keys["status"])
 	}
 	var entry fileJSON
 	if err := json.Unmarshal(rec.Body.Bytes(), &entry); err != nil {
@@ -1301,13 +1305,14 @@ func delWithBody(t *testing.T, h http.Handler, path, apiKey, body string) *httpt
 	return rec
 }
 
-// deletedBody is the JSON a DELETE answers: the removed paths under a "deleted" key, with
-// the same trailing newline the PATCH answer carries.
+// deletedBody is the JSON a DELETE answers: status:ok first, then the removed paths under a
+// "deleted" key, with the same trailing newline the PATCH answer carries.
 func deletedBody(t *testing.T, paths ...string) string {
 	t.Helper()
 	out, err := json.Marshal(struct {
+		Status  string   `json:"status"`
 		Deleted []string `json:"deleted"`
-	}{paths})
+	}{"ok", paths})
 	if err != nil {
 		t.Fatalf("marshal the deleted body: %v", err)
 	}
@@ -2087,20 +2092,20 @@ func postAPIKeyFrom(t *testing.T, h http.Handler, remoteAddr, apiKey string) *ht
 	return rec
 }
 
-// TestAPIKeyAnswersNoContent is the key check's happy path: the correct key answers
-// 204 with an empty body, and a correct call creates no bin and charges nothing.
-func TestAPIKeyAnswersNoContent(t *testing.T) {
+// TestAPIKeyAnswersOKBody is the key check's happy path: the correct key answers
+// 200 with {"status":"ok"}, and a correct call creates no bin and charges nothing.
+func TestAPIKeyAnswersOKBody(t *testing.T) {
 	s := newTestServer(t, "test-key")
 
 	rec := postAPIKeyFrom(t, s, "198.51.100.21:1234", "test-key")
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("POST /api/key with the correct key = %d, want %d; body %q", rec.Code, http.StatusNoContent, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/key with the correct key = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "" {
-		t.Errorf("204 body = %q, want it empty", got)
+	if got := rec.Body.String(); got != "{\"status\":\"ok\"}\n" {
+		t.Errorf("200 body = %q, want {\"status\":\"ok\"} with its trailing newline", got)
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "" {
-		t.Errorf("Content-Type = %q, want none on a 204", ct)
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json on the 200", ct)
 	}
 	if _, ok := ipBlockRow(t, s.store, "198.51.100.21"); ok {
 		t.Errorf("a key-correct /api/key charged 198.51.100.21, want no row in ip_blocks")

@@ -372,9 +372,10 @@ func (c *client) listBins() ([]binInfo, error) {
 	}
 }
 
-// verifyKey POSTs /api/key with the API key and asks only "is this key ok?". A 204 with
-// an empty body is the ok, a 403 is the wrong key, and a 429 is this address already
-// locked out by bad keys. One attempt, no retry: a retry would only deepen the lockout.
+// verifyKey POSTs /api/key with the API key and asks only "is this key ok?". A 200 with
+// the {"status":"ok"} body is the ok, a 403 is the wrong key, and a 429 is this address
+// already locked out by bad keys. One attempt, no retry: a retry would only deepen the
+// lockout.
 func (c *client) verifyKey() error {
 	req, err := http.NewRequest(http.MethodPost, c.base.String()+"/api/key", nil)
 	if err != nil {
@@ -391,7 +392,7 @@ func (c *client) verifyKey() error {
 		return fmt.Errorf("cannot reach %s: read response: %v", c.base, err)
 	}
 	switch resp.StatusCode {
-	case http.StatusNoContent:
+	case http.StatusOK:
 		return nil
 	case http.StatusForbidden:
 		return errors.New("server rejected this API key")

@@ -327,7 +327,7 @@ func TestZipUploadExtractsIntoParentDir(t *testing.T) {
 	if got := rec.Header().Get("X-Extracted-Count"); got != "" {
 		t.Errorf("X-Extracted-Count = %q, want none: the counts answer in the JSON body", got)
 	}
-	if want := "{\"created\":3,\"replaced\":0}\n"; rec.Body.String() != want {
+	if want := "{\"status\":\"ok\",\"created\":3,\"replaced\":0}\n"; rec.Body.String() != want {
 		t.Errorf("PUT body = %q, want %q", rec.Body.String(), want)
 	}
 
@@ -443,7 +443,7 @@ func TestRawQueryStoresRaw(t *testing.T) {
 		}
 		if !shape.keep {
 			// Without the raw query the magic still decides: the zip is extracted.
-			if want := "{\"created\":1,\"replaced\":0}\n"; rec.Body.String() != want {
+			if want := "{\"status\":\"ok\",\"created\":1,\"replaced\":0}\n"; rec.Body.String() != want {
 				t.Errorf("%s body = %q, want %q", shape.name, rec.Body.String(), want)
 			}
 			if rec := get(t, s, base+shape.file); rec.Code != http.StatusNotFound {
@@ -855,7 +855,7 @@ func TestExtractionUpsertsAtomically(t *testing.T) {
 		t.Fatalf("PUT update.zip = %d, want 201 (a.txt replaced, sub/new.txt created); body %q", rec.Code, rec.Body.String())
 	}
 	// The mixed upload states its exact counts: one created, one replaced.
-	if want := "{\"created\":1,\"replaced\":1}\n"; rec.Body.String() != want {
+	if want := "{\"status\":\"ok\",\"created\":1,\"replaced\":1}\n"; rec.Body.String() != want {
 		t.Errorf("mixed PUT body = %q, want %q", rec.Body.String(), want)
 	}
 	if got := listingPaths(t, s, hash); strings.Join(got, ",") != "a.txt,keep.txt,sub/new.txt" {
@@ -873,7 +873,7 @@ func TestExtractionUpsertsAtomically(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("second PUT update.zip = %d, want 200 (all replaced); body %q", rec.Code, rec.Body.String())
 	}
-	if want := "{\"created\":0,\"replaced\":2}\n"; rec.Body.String() != want {
+	if want := "{\"status\":\"ok\",\"created\":0,\"replaced\":2}\n"; rec.Body.String() != want {
 		t.Errorf("second PUT body = %q, want %q", rec.Body.String(), want)
 	}
 
@@ -907,7 +907,7 @@ func TestExtractionAnswersWithCounts(t *testing.T) {
 	if got := rec.Header().Get("X-Extracted-Count"); got != "" {
 		t.Errorf("X-Extracted-Count = %q, want none: the counts answer in the JSON body", got)
 	}
-	if want := "{\"created\":2,\"replaced\":0}\n"; rec.Body.String() != want {
+	if want := "{\"status\":\"ok\",\"created\":2,\"replaced\":0}\n"; rec.Body.String() != want {
 		t.Errorf("body = %q, want %q", rec.Body.String(), want)
 	}
 }
@@ -1017,7 +1017,7 @@ func TestTarDotSlashEntriesLandInTheArchivesFolder(t *testing.T) {
 	if got := rec.Header().Get("X-Extracted-Count"); got != "" {
 		t.Errorf("X-Extracted-Count = %q, want none", got)
 	}
-	if want := "{\"created\":2,\"replaced\":0}\n"; rec.Body.String() != want {
+	if want := "{\"status\":\"ok\",\"created\":2,\"replaced\":0}\n"; rec.Body.String() != want {
 		t.Errorf("PUT body = %q, want %q", rec.Body.String(), want)
 	}
 	if got := listingPaths(t, s, hash); strings.Join(got, ",") != "site/hello.txt,site/sub/app.css" {
@@ -1237,7 +1237,7 @@ func TestTarGNUSparseEntriesExtractAsFiles(t *testing.T) {
 	if got := rec.Header().Get("X-Extracted-Count"); got != "" {
 		t.Errorf("X-Extracted-Count = %q, want none", got)
 	}
-	if want := "{\"created\":3,\"replaced\":0}\n"; rec.Body.String() != want {
+	if want := "{\"status\":\"ok\",\"created\":3,\"replaced\":0}\n"; rec.Body.String() != want {
 		t.Errorf("PUT body = %q, want %q", rec.Body.String(), want)
 	}
 	if got := listingPaths(t, s, hash); strings.Join(got, ",") != "after.txt,fine.txt,holes.bin" {

@@ -216,12 +216,13 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/api/key" {
 		// The real server's contract: only POST answers, and the key guard above is
 		// what charged any wrong key before this point. A good key creates nothing,
-		// charges nothing and answers 204 with an empty body.
+		// charges nothing and answers 200 with {"status":"ok"}.
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte("{\"status\":\"ok\"}\n"))
 		return
 	}
 	if r.URL.Path == "/api/bins" && r.Method == http.MethodPost {
@@ -2265,9 +2266,9 @@ func TestClientList(t *testing.T) {
 	}
 }
 
-// TestClientVerifyKey204 re-points the key check: POST /api/key answers a good key with
-// 204 and an empty body, and a wrong key is the same refusal it always was.
-func TestClientVerifyKey204(t *testing.T) {
+// TestVerifyKeyAcceptsOKBody re-points the key check: POST /api/key answers a good key with
+// 200 and {"status":"ok"}, and a wrong key is the same refusal it always was.
+func TestVerifyKeyAcceptsOKBody(t *testing.T) {
 	f := newFake(t, "test-key")
 	cl, err := newClient(os.Getenv("SANDBIN_URL"), "test-key", "")
 	if err != nil {

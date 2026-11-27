@@ -351,8 +351,9 @@ func TestOpenAPINeverCharges(t *testing.T) {
 // TestOpenAPIBodySchemasMatchLiveAnswers validates bodies the real server answered against
 // the committed document's schemas — create, inspect, list, the single-file PUT's stored row
 // (fileJSON, the document's own spelling of every listed file), the archive PUT's counts (the
-// pinned archiveAnswer) and the GET /api index (the named apiIndexDoc component, pinned as the
-// closed DTO the handler marshals) — through kin-openapi's own schema validation.
+// pinned archiveAnswer), the GET /api index (the named apiIndexDoc component, pinned as the
+// closed DTO the handler marshals) and the two ex-204 successes (both named okBody) — through
+// kin-openapi's own schema validation.
 func TestOpenAPIBodySchemasMatchLiveAnswers(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	doc := openapiSpec(t)
@@ -435,7 +436,7 @@ func TestOpenAPIBodySchemasMatchLiveAnswers(t *testing.T) {
 		schema     *openapi3.Schema
 		properties []string
 	}{
-		{"apiIndexDoc", indexDoc, []string{"endpoints", "openapi", "version"}},
+		{"apiIndexDoc", indexDoc, []string{"endpoints", "openapi", "status", "version"}},
 		{"apiIndexEndpoint", endpoints.Value.Items.Value, []string{"methods", "url"}},
 		{"apiIndexMethod", methods.Value.Items.Value, []string{"description", "method"}},
 		{"apiIndexLink", link.Value, []string{"description", "url"}},
@@ -452,6 +453,28 @@ func TestOpenAPIBodySchemasMatchLiveAnswers(t *testing.T) {
 			t.Errorf("%s is not additionalProperties: false; the marshaled DTO is closed", level.what)
 		}
 	}
+
+	// The two successes the 204s retired: POST /api/key and DELETE /api/bins/{hash} answer 200
+	// with the okBody body, and both the document's 200 responses and a live answer must speak
+	// of that one named component — the same reference-pin shape the index 200 holds.
+	rec = postAPIKeyFrom(t, s, "198.51.100.99:1234", "test-key")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/key = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	okBody := componentSchema(t, doc, "okBody")
+	if responseJSONSchema(t, doc, "/api/key", http.MethodPost, "200") != okBody {
+		t.Errorf("the POST /api/key 200 schema is not the document's named component okBody; the response must reference it")
+	}
+	validateBodyAgainst(t, "key check 200", okBody, rec.Body.Bytes())
+
+	rec = deleteBinFrom(t, s, "198.51.100.99:1234", "/api/bins/"+created.Bin, "test-key", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE /api/bins/%s = %d, want %d; body %q", created.Bin, rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if responseJSONSchema(t, doc, "/api/bins/{hash}", http.MethodDelete, "200") != okBody {
+		t.Errorf("the DELETE /api/bins/{hash} 200 schema is not the document's named component okBody; the response must reference it")
+	}
+	validateBodyAgainst(t, "delete bin 200", okBody, rec.Body.Bytes())
 }
 
 // TestKinOpenapiStaysTestOnly guards the dependency rule: kin-openapi enters the module to

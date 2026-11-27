@@ -20,7 +20,7 @@ var apiIndexPathOrder = []string{"/api/key", "/api/health", "/api/bins", "/api/b
 // every other pattern to exactly one entry. A rewording here must consciously move the golden
 // body in TestAPIIndexBodyIsThePublishedSurface along with it.
 var apiIndexDescriptions = map[string]string{
-	apiPatternKey:        "Checks an API key without touching a bin: a good key answers 204, a wrong key costs the requesting address a lockout step.",
+	apiPatternKey:        "Checks an API key without touching a bin: a good key answers 200 with {\"status\":\"ok\"}, a wrong key costs the requesting address a lockout step.",
 	apiPatternHealthGet:  "Unauthenticated liveness probe; answers 200 even while an address is blocked.",
 	apiPatternHealthHead: "The same probe with no body.",
 	apiPatternBinsGet:    "Lists bins with cursor paging; a wrong key costs the address a lockout step.",
@@ -52,9 +52,11 @@ type apiIndexLink struct {
 	Description string `json:"description"`
 }
 
-// apiIndexDoc is the GET /api answer: the stamped version, the endpoint rows enumerated from
-// the route table, and the openapi sibling pointing at the machine-readable contract.
+// apiIndexDoc is the GET /api answer: its own status first, then the stamped version, the
+// endpoint rows enumerated from the route table, and the openapi sibling pointing at the
+// machine-readable contract.
 type apiIndexDoc struct {
+	Status    string             `json:"status"`
 	Version   string             `json:"version"`
 	Endpoints []apiIndexEndpoint `json:"endpoints"`
 	OpenAPI   apiIndexLink       `json:"openapi"`
@@ -70,6 +72,7 @@ func (s *server) apiIndex(w http.ResponseWriter, r *http.Request) {
 	base := s.frontBase(r)
 
 	doc := apiIndexDoc{
+		Status:    "ok",
 		Version:   version.Value,
 		Endpoints: make([]apiIndexEndpoint, 0, len(apiIndexPathOrder)),
 	}

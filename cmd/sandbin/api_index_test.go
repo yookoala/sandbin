@@ -59,9 +59,9 @@ func TestAPIIndexBodyIsThePublishedSurface(t *testing.T) {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
 
-	want := `{"version":"` + version.Value + `","endpoints":[` +
+	want := `{"status":"ok","version":"` + version.Value + `","endpoints":[` +
 		`{"url":"http://127.0.0.1:8080/api/key","methods":[` +
-		`{"method":"POST","description":"Checks an API key without touching a bin: a good key answers 204, a wrong key costs the requesting address a lockout step."}` +
+		`{"method":"POST","description":"Checks an API key without touching a bin: a good key answers 200 with {\"status\":\"ok\"}, a wrong key costs the requesting address a lockout step."}` +
 		`]},` +
 		`{"url":"http://127.0.0.1:8080/api/health","methods":[` +
 		`{"method":"GET","description":"Unauthenticated liveness probe; answers 200 even while an address is blocked."},` +

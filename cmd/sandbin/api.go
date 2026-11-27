@@ -182,10 +182,20 @@ var apiBinPathRE = regexp.MustCompile(`^/api/bins/([0-9a-f]{8})$`)
 
 // apiKeyCheck answers the key check. It registers through the withAPIKey wrapper, whose
 // guard is requireKey's verbatim, so a wrong key through it charges exactly like a wrong key
-// through a write, and a match creates nothing, charges nothing and answers 204 with an
-// empty body.
+// through a write, and a match creates nothing, charges nothing and answers 200 with
+// {"status":"ok"}.
 func (s *server) apiKeyCheck(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNoContent)
+	// Marshaling an okBody cannot fail and a failed write means the visitor is already gone,
+	// so there is no refusal left to answer here; the log is all that is left.
+	if err := writeJSON(w, http.StatusOK, okBody{Status: "ok"}); err != nil {
+		log.Printf("encode the key check answer: %v", err)
+	}
+}
+
+// okBody is the JSON a success answers when it has nothing to report beyond "it worked":
+// the shape /api/health already carried, now shared by the key check and the bin delete.
+type okBody struct {
+	Status string `json:"status"`
 }
 
 // healthBody is the /api/health answer.
@@ -326,8 +336,11 @@ func decodeBinRequest(s *server, w http.ResponseWriter, r *http.Request, bodyOpt
 
 // binJSON is the bin object every JSON answer about a bin carries: its hash, the path it lives
 // under, its metadata, whether a password guards it, and when the store made it. Neither the
-// password nor its hash is ever in it.
+// password nor its hash is ever in it. status is set to "ok" only where the object is itself
+// the response — create's and patch's answer; a list row or a detail's bin fields leave it
+// empty and the key absent, because a nested row is data, not a response.
 type binJSON struct {
+	Status      string `json:"status,omitempty"`
 	Bin         string `json:"bin"`
 	URL         string `json:"url"`
 	Title       string `json:"title"`
@@ -407,6 +420,7 @@ func (s *server) apiCreateBin(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Location", "/api/bins/"+hash)
 	created := binToJSON(bin)
+	created.Status = "ok"
 	if err := writeJSON(w, http.StatusCreated, created); err != nil {
 		log.Printf("encode the answer of bin %q: %v", hash, err)
 		s.writeAPIError(w, http.StatusInternalServerError, "could not answer the bin")
@@ -420,9 +434,11 @@ const (
 	maxListLimit     = 100
 )
 
-// binListJSON is the GET /api/bins answer: the page of bin objects and, only when the store's
-// probe found a further row, the cursor that resumes the walk after the page's last one.
+// binListJSON is the GET /api/bins answer: its own status first, then the page of bin objects
+// — which carry no status of their own — and, only when the store's probe found a further row,
+// the cursor that resumes the walk after the page's last one.
 type binListJSON struct {
+	Status     string    `json:"status"`
 	Bins       []binJSON `json:"bins"`
 	NextCursor string    `json:"next_cursor,omitempty"`
 }
@@ -492,7 +508,7 @@ func (s *server) apiListBins(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The store hands back a nil slice for an empty page; the answer promises an array.
-	answer := binListJSON{Bins: make([]binJSON, 0, len(bins))}
+	answer := binListJSON{Status: "ok", Bins: make([]binJSON, 0, len(bins))}
 	for _, b := range bins {
 		answer.Bins = append(answer.Bins, binToJSON(b))
 	}
@@ -506,16 +522,21 @@ func (s *server) apiListBins(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// fileJSON spells one file row for the JSON answers that name a bin's contents.
+// fileJSON spells one file row for the JSON answers that name a bin's contents. status is set
+// to "ok" only where the row is itself the response — a single-file PUT answer; a detail's
+// file rows leave it empty and the key absent.
 type fileJSON struct {
+	Status    string `json:"status,omitempty"`
 	Path      string `json:"path"`
 	Size      int64  `json:"size"`
 	UpdatedAt string `json:"updated_at"`
 }
 
-// binDetailJSON is the inspect answer: the bin object plus every file the bin holds. The bin's
-// own HTML page hides that list whenever an index.html covers the base; the API never does.
+// binDetailJSON is the inspect answer: its own status first, then the bin object and every
+// file the bin holds. The bin's own HTML page hides that list whenever an index.html covers
+// the base; the API never does.
 type binDetailJSON struct {
+	Status string `json:"status"`
 	binJSON
 	Files []fileJSON `json:"files"`
 }
@@ -549,6 +570,7 @@ func (s *server) apiInspectBin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	detail := binDetailJSON{
+		Status:  "ok",
 		binJSON: binToJSON(bin),
 		Files:   make([]fileJSON, 0, len(files)),
 	}
@@ -664,6 +686,7 @@ func (s *server) apiPatchBin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	patched := binToJSON(bin)
+	patched.Status = "ok"
 	if err := writeJSON(w, http.StatusOK, patched); err != nil {
 		log.Printf("encode the answer of bin %q: %v", hash, err)
 		s.writeAPIError(w, http.StatusInternalServerError, "could not answer the bin")
@@ -673,8 +696,8 @@ func (s *server) apiPatchBin(w http.ResponseWriter, r *http.Request) {
 // apiDeleteBin removes a bin and every file in it. The order is pinned: the wrapper's key, bin
 // lookup, and only then the bin's own password gate, so a protected bin goes only to a request
 // carrying its current password — and a 401 charges nothing while the bin survives. The body is
-// not read at all: a DELETE has nothing to say. The answer is 204 with an empty body, because
-// there is nothing left to report about a bin that is gone.
+// not read at all: a DELETE has nothing to say. The answer is 200 with {"status":"ok"}: the
+// retired 204 traded its emptiness for the one success shape every JSON answer carries.
 func (s *server) apiDeleteBin(w http.ResponseWriter, r *http.Request) {
 	hash := r.PathValue("hash")
 
@@ -703,5 +726,9 @@ func (s *server) apiDeleteBin(w http.ResponseWriter, r *http.Request) {
 		s.writeAPIError(w, http.StatusNotFound, "bin not found")
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	// Marshaling an okBody cannot fail and a failed write means the visitor is already gone,
+	// so there is no refusal left to answer here; the log is all that is left.
+	if err := writeJSON(w, http.StatusOK, okBody{Status: "ok"}); err != nil {
+		log.Printf("encode the delete answer of bin %q: %v", hash, err)
+	}
 }

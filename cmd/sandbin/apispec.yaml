@@ -16,9 +16,9 @@
 # - responsePatterns: the built-in matchers infer statuses from every
 #   HTTP-looking call site in the analyzed files, including the bin content
 #   handlers (image serving, 301 redirects, 405/413). The replacement sees only
-#   the API surface: JSON successes through writeJSON, JSON refusals through
-#   writeAPIError (the request-shape 400s of decodeBinRequest included), and the
-#   two explicit WriteHeader calls (204).
+#   the API surface: JSON successes through writeJSON — every success on it answers a
+#   body, the key check and the bin delete included — and JSON refusals through
+#   writeAPIError (the request-shape 400s of decodeBinRequest included).
 # - paramPatterns: the built-in header matchers also fire inside clientIP and
 #   baseURL, which would attach X-Forwarded-* parameters to every operation.
 #   The re-declared built-ins gate header reads to the API handlers.
@@ -127,12 +127,7 @@ framework:
       deref: true
       callerPkgPatterns:
         - github\.com/yookoala/sandbin/cmd/sandbin$
-      functionNameRegex: ^(apiHealth|apiCreateBin|apiListBins|apiInspectBin|apiPatchBin|apiDeleteBin|apiIndex)$
-    - callRegex: ^WriteHeader$
-      recvTypeRegex: ^net/http\.ResponseWriter$
-      statusFromArg: true
-      typeArgIndex: -1
-      functionNameRegex: ^(apiKeyCheck|apiDeleteBin)$
+      functionNameRegex: ^(apiHealth|apiCreateBin|apiListBins|apiInspectBin|apiPatchBin|apiDeleteBin|apiKeyCheck|apiIndex)$
     # writeAPIError is the API surface's refusal writer: every status it answers carries the
     # JSON envelope {"status":"error","code":<status>,"message":<sentence>}. The call takes no
     # type argument (typeArgIndex: -1), so the scan can only record the status: openapi-fix.jq

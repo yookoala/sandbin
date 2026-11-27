@@ -126,9 +126,12 @@ del(.security)
 | del(.paths["/api"].head.responses["200"].content)
 | .components.schemas.archiveAnswer = {
     "type": "object",
-    "description": "archiveAnswer is the JSON a successful archive upload answers: the store's own created and replaced counts for the extracted entries.",
-    "required": ["created", "replaced"],
+    "description": "archiveAnswer is the JSON a successful archive upload answers: its own status first, then the store's created and replaced counts for the extracted entries.",
+    "required": ["status", "created", "replaced"],
     "properties": {
+      "status": {
+        "type": "string"
+      },
       "created": {
         "type": "integer"
       },
@@ -177,7 +180,7 @@ del(.security)
 | .paths["/api/bins/{hash}"].delete |= op(
     "deleteBin";
     "Delete a bin and every file in it.";
-    "Carries no request body and answers 204 with an empty body. Key-checked: a wrong API key answers 403 and costs the requesting address a lockout step; a protected bin answers 401 bin password required until Basic Auth carries its current password, and that 401 charges nothing.")
+    "Carries no request body and answers 200 with {\"status\":\"ok\"}. Key-checked: a wrong API key answers 403 and costs the requesting address a lockout step; a protected bin answers 401 bin password required until Basic Auth carries its current password, and that 401 charges nothing.")
 | .paths["/api/health"].get |= op(
     "health";
     "Liveness probe: answers {\"status\":\"ok\"}.";
@@ -189,7 +192,7 @@ del(.security)
 | .paths["/api/key"].post |= op(
     "checkApiKey";
     "Check an API key without creating anything.";
-    "A working key answers 204 with an empty body and creates nothing. A wrong key answers 403 and costs the requesting address the same lockout step as a wrong key on a write.")
+    "A working key answers 200 with {\"status\":\"ok\"} and creates nothing. A wrong key answers 403 and costs the requesting address the same lockout step as a wrong key on a write.")
 | .paths["/openapi.json"].get |= op(
     "getOpenAPIDocument";
     "Fetch this OpenAPI document.";

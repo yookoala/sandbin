@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -66,19 +67,22 @@ func apiEnvelope(status int, message string) string {
 	return fmt.Sprintf(`{"status":"error","code":%d,"message":%q}`, status, message) + "\n"
 }
 
-// TestAPIKeyCheck is POST /api/key, the retired verify-key's replacement: the correct key
-// answers 204 with an empty body, a wrong key answers 403 and records the failure, and the
-// blocked-IP refusal with its Retry-After is carried over: an attempt while blocked is
-// refused even with the correct key and charges again.
-func TestAPIKeyCheck(t *testing.T) {
+// TestAPIKeyCheckAnswersOKBody is POST /api/key, the retired verify-key's replacement: the
+// correct key answers 200 with {"status":"ok"}, a wrong key answers 403 and records the
+// failure, and the blocked-IP refusal with its Retry-After is carried over: an attempt while
+// blocked is refused even with the correct key and charges again.
+func TestAPIKeyCheckAnswersOKBody(t *testing.T) {
 	s := newTestServer(t, "test-key")
 
 	rec := postAPIKeyFrom(t, s, "198.51.100.61:1234", "test-key")
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("POST /api/key with the correct key = %d, want %d; body %q", rec.Code, http.StatusNoContent, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/key with the correct key = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "" {
-		t.Errorf("204 body = %q, want it empty", got)
+	if got := rec.Body.String(); got != "{\"status\":\"ok\"}\n" {
+		t.Errorf("200 body = %q, want {\"status\":\"ok\"} with its trailing newline", got)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
 
 	rec = postAPIKeyFrom(t, s, "198.51.100.62:1234", "wrong")
@@ -248,7 +252,7 @@ func TestAPICreateBin(t *testing.T) {
 		if _, err := time.Parse(time.RFC3339, bin.CreatedAt); err != nil {
 			t.Errorf("created_at %q is not RFC 3339: %v", bin.CreatedAt, err)
 		}
-		want := `{"bin":"` + bin.Bin + `","url":"/` + bin.Bin + `/","title":"","description":"","has_password":false,"created_at":"` + bin.CreatedAt + `"}` + "\n"
+		want := `{"status":"ok","bin":"` + bin.Bin + `","url":"/` + bin.Bin + `/","title":"","description":"","has_password":false,"created_at":"` + bin.CreatedAt + `"}` + "\n"
 		if got := rec.Body.String(); got != want {
 			t.Errorf("body = %q, want the pinned bin object %q", got, want)
 		}
@@ -756,16 +760,16 @@ func TestAPIPatchJSON(t *testing.T) {
 		wantTitle, wantDescription, wantBody string
 	}{
 		// {} touches nothing and answers the row as it was.
-		{`{}`, "first title", "first description", `{"bin":"` + hash + `","url":"` + base + `","title":"first title","description":"first description","has_password":false,"created_at":"` + createdAt + `"}`},
+		{`{}`, "first title", "first description", `{"status":"ok","bin":"` + hash + `","url":"` + base + `","title":"first title","description":"first description","has_password":false,"created_at":"` + createdAt + `"}`},
 		// One field replaces its value and says nothing about the other.
-		{`{"title":"second title"}`, "second title", "first description", `{"bin":"` + hash + `","url":"` + base + `","title":"second title","description":"first description","has_password":false,"created_at":"` + createdAt + `"}`},
-		{`{"description":"second description"}`, "second title", "second description", `{"bin":"` + hash + `","url":"` + base + `","title":"second title","description":"second description","has_password":false,"created_at":"` + createdAt + `"}`},
-		{`{"title":"third title","description":"third description"}`, "third title", "third description", `{"bin":"` + hash + `","url":"` + base + `","title":"third title","description":"third description","has_password":false,"created_at":"` + createdAt + `"}`},
+		{`{"title":"second title"}`, "second title", "first description", `{"status":"ok","bin":"` + hash + `","url":"` + base + `","title":"second title","description":"first description","has_password":false,"created_at":"` + createdAt + `"}`},
+		{`{"description":"second description"}`, "second title", "second description", `{"status":"ok","bin":"` + hash + `","url":"` + base + `","title":"second title","description":"second description","has_password":false,"created_at":"` + createdAt + `"}`},
+		{`{"title":"third title","description":"third description"}`, "third title", "third description", `{"status":"ok","bin":"` + hash + `","url":"` + base + `","title":"third title","description":"third description","has_password":false,"created_at":"` + createdAt + `"}`},
 		// null and "" both clear their field and leave the other alone.
-		{`{"title":null}`, "", "third description", `{"bin":"` + hash + `","url":"` + base + `","title":"","description":"third description","has_password":false,"created_at":"` + createdAt + `"}`},
-		{`{"description":""}`, "", "", `{"bin":"` + hash + `","url":"` + base + `","title":"","description":"","has_password":false,"created_at":"` + createdAt + `"}`},
+		{`{"title":null}`, "", "third description", `{"status":"ok","bin":"` + hash + `","url":"` + base + `","title":"","description":"third description","has_password":false,"created_at":"` + createdAt + `"}`},
+		{`{"description":""}`, "", "", `{"status":"ok","bin":"` + hash + `","url":"` + base + `","title":"","description":"","has_password":false,"created_at":"` + createdAt + `"}`},
 		// A cleared field stays cleared when the next PATCH does not mention it.
-		{`{"title":"fourth title"}`, "fourth title", "", `{"bin":"` + hash + `","url":"` + base + `","title":"fourth title","description":"","has_password":false,"created_at":"` + createdAt + `"}`},
+		{`{"title":"fourth title"}`, "fourth title", "", `{"status":"ok","bin":"` + hash + `","url":"` + base + `","title":"fourth title","description":"","has_password":false,"created_at":"` + createdAt + `"}`},
 	} {
 		rec := patchBinsJSON(t, s, addr, "/api/bins/"+hash, "test-key", tc.body, "", "")
 		if rec.Code != http.StatusOK {
@@ -1063,12 +1067,12 @@ func deleteBinFrom(t *testing.T, h http.Handler, remoteAddr, path, apiKey, basic
 	return rec
 }
 
-// TestAPIDeleteBin is DELETE /api/bins/{hash} on an open bin: the API key, no Basic, and the
-// bin is gone — 204 with an empty body. Afterwards every surface says so: the bin's HTML base,
-// a path below it, and its inspect route all answer 404 unknown bin, and the bin no longer
-// appears in the GET /api/bins listing. The orphaned-empty-bin case — a bin with no files —
-// deletes just the same.
-func TestAPIDeleteBin(t *testing.T) {
+// TestAPIDeleteBinAnswersOKBody is DELETE /api/bins/{hash} on an open bin: the API key, no
+// Basic, and the bin is gone — 200 with {"status":"ok"}. Afterwards every surface says so: the
+// bin's HTML base, a path below it, and its inspect route all answer 404 unknown bin, and the
+// bin no longer appears in the GET /api/bins listing. The orphaned-empty-bin case — a bin with
+// no files — deletes just the same.
+func TestAPIDeleteBinAnswersOKBody(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	base := createTestBin(t, s, "test-key")
 	hash := strings.Trim(base, "/")
@@ -1099,14 +1103,14 @@ func TestAPIDeleteBin(t *testing.T) {
 	}
 
 	rec = deleteBinFrom(t, s, addr, "/api/bins/"+hash, "test-key", "", "")
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("DELETE /api/bins/%s = %d, want %d; body %q", hash, rec.Code, http.StatusNoContent, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE /api/bins/%s = %d, want %d; body %q", hash, rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "" {
-		t.Errorf("204 body = %q, want it empty", got)
+	if got := rec.Body.String(); got != "{\"status\":\"ok\"}\n" {
+		t.Errorf("200 body = %q, want {\"status\":\"ok\"} with its trailing newline", got)
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "" {
-		t.Errorf("204 Content-Type = %q, want it unset", ct)
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("200 Content-Type = %q, want application/json", ct)
 	}
 
 	// Every face of the bin now says it is gone: the bin paths keep the plain unknown bin,
@@ -1141,8 +1145,8 @@ func TestAPIDeleteBin(t *testing.T) {
 
 	// The orphaned-empty-bin case: a bin with no files deletes just the same.
 	emptyHash := strings.Trim(createTestBin(t, s, "test-key"), "/")
-	if rec = deleteBinFrom(t, s, addr, "/api/bins/"+emptyHash, "test-key", "", ""); rec.Code != http.StatusNoContent {
-		t.Errorf("DELETE the empty bin = %d, want %d; body %q", rec.Code, http.StatusNoContent, rec.Body.String())
+	if rec = deleteBinFrom(t, s, addr, "/api/bins/"+emptyHash, "test-key", "", ""); rec.Code != http.StatusOK || rec.Body.String() != "{\"status\":\"ok\"}\n" {
+		t.Errorf("DELETE the empty bin = %d, body %q; want 200 with {\"status\":\"ok\"}", rec.Code, rec.Body.String())
 	}
 	if _, found, err := s.store.GetBin(emptyHash); err != nil || found {
 		t.Errorf("empty bin after its delete: found=%v err=%v, want it gone", found, err)
@@ -1152,7 +1156,7 @@ func TestAPIDeleteBin(t *testing.T) {
 // TestAPIDeleteBinProtected is DELETE's bin-password gate: a protected bin goes only to a
 // request carrying its current password. No Basic and wrong Basic both answer 401 with the
 // challenge, the bin survives each one intact, and no 401 charges the address — the API-key
-// lockout is not this gate. The right Basic deletes it with 204 and an empty body.
+// lockout is not this gate. The right Basic deletes it with 200 and {"status":"ok"}.
 func TestAPIDeleteBinProtected(t *testing.T) {
 	s := newTestServer(t, "test-key")
 	base := createTestBinWithPassword(t, s, "sesame")
@@ -1191,11 +1195,11 @@ func TestAPIDeleteBinProtected(t *testing.T) {
 	}
 
 	rec = deleteBinFrom(t, s, addr, "/api/bins/"+hash, "test-key", hash, "sesame")
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("DELETE with the right Basic = %d, want %d; body %q", rec.Code, http.StatusNoContent, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE with the right Basic = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "" {
-		t.Errorf("204 body = %q, want it empty", got)
+	if got := rec.Body.String(); got != "{\"status\":\"ok\"}\n" {
+		t.Errorf("200 body = %q, want {\"status\":\"ok\"} with its trailing newline", got)
 	}
 	if _, found, err := s.store.GetBin(hash); err != nil || found {
 		t.Errorf("the bin after its delete: found=%v err=%v, want it gone", found, err)
@@ -1335,8 +1339,8 @@ func TestAPIListBins(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /api/bins on the empty instance = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "{\"bins\":[]}\n" {
-		t.Errorf("empty instance body = %q, want {\"bins\":[]} with its trailing newline", got)
+	if got := rec.Body.String(); got != "{\"status\":\"ok\",\"bins\":[]}\n" {
+		t.Errorf("empty instance body = %q, want {\"status\":\"ok\",\"bins\":[]} with its trailing newline", got)
 	}
 
 	// Seed 31 bins so the default page has a further page to name, plus a guarded one that
@@ -1458,6 +1462,58 @@ func TestAPIListBins(t *testing.T) {
 	}
 	if failures, dur := storedBlock(t, s, "198.51.100.92"); failures != 2 || dur != 2*blockStep {
 		t.Errorf("after a blocked attempt = failures %d, block %v; want 2 failures, %v", failures, dur, 2*blockStep)
+	}
+}
+
+// TestNestedRowsCarryNoStatus pins the nested-row ruling of docs/decisions/0033-json-api-responses.md:
+// status answers "did this call work", a fact about the response, not about each record it
+// contains. The top level of GET /api/bins and GET /api/bins/{hash} leads with "status":"ok";
+// the rows carried inside them — a bin row in the page, a file row in the bin's list — hold no
+// status key of their own.
+func TestNestedRowsCarryNoStatus(t *testing.T) {
+	s := newTestServer(t, "test-key")
+	base := createTestBin(t, s, "test-key")
+	hash := strings.Trim(base, "/")
+	if rec := put(t, s, base+"notes.md", "test-key", "body of notes.md"); rec.Code != http.StatusCreated {
+		t.Fatalf("PUT notes.md = %d, want %d; body %q", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	rec := listFrom(t, s, "198.51.100.97:1234", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/bins = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	assertTopLevelAndRows(t, "GET /api/bins", rec.Body.Bytes(), "bins")
+
+	rec = get(t, s, "/api/bins/"+hash)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/bins/%s = %d, want %d; body %q", hash, rec.Code, http.StatusOK, rec.Body.String())
+	}
+	assertTopLevelAndRows(t, "GET /api/bins/{hash}", rec.Body.Bytes(), "files")
+}
+
+// assertTopLevelAndRows reads one success body: it starts with {"status":"ok", and every entry
+// of the named array is an object holding no status key.
+func assertTopLevelAndRows(t *testing.T, what string, body []byte, arrayKey string) {
+	t.Helper()
+	if !bytes.HasPrefix(body, []byte(`{"status":"ok",`)) {
+		t.Errorf("%s body %q does not lead with {\"status\":\"ok\",", what, body)
+	}
+	var top map[string]any
+	if err := json.Unmarshal(body, &top); err != nil {
+		t.Fatalf("%s body %q is not a JSON object: %v", what, body, err)
+	}
+	rows, ok := top[arrayKey].([]any)
+	if !ok {
+		t.Fatalf("%s body %q names no %s array", what, body, arrayKey)
+	}
+	for i, row := range rows {
+		object, ok := row.(map[string]any)
+		if !ok {
+			t.Fatalf("%s %s[%d] = %v, want an object", what, arrayKey, i, row)
+		}
+		if _, found := object["status"]; found {
+			t.Errorf("%s %s[%d] carries a status key: %v; a nested row is data, not a response", what, arrayKey, i, object)
+		}
 	}
 }
 

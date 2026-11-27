@@ -77,10 +77,10 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// the OpenAPI document dispatch in api.go on an http.ServeMux, every request classified
 	// against its authoritative route table before the mux answers it: GET|HEAD /api/health
 	// is the unauthenticated probe the container HEALTHCHECK asks for, POST /api/key is the
-	// pure key check — good key 204, wrong key charged — POST /api/bins makes a bin from a
-	// JSON body, GET /api/bins is the key-gated paged listing, GET, PATCH and DELETE
-	// /api/bins/{hash} inspect, update and delete one, and GET /openapi.json serves the
-	// machine-readable contract — key-free, never charged, answered even while the address
+	// pure key check — good key 200 with {"status":"ok"}, wrong key charged — POST /api/bins
+	// makes a bin from a JSON body, GET /api/bins is the key-gated paged listing, GET, PATCH
+	// and DELETE /api/bins/{hash} inspect, update and delete one, and GET /openapi.json serves
+	// the machine-readable contract — key-free, never charged, answered even while the address
 	// is blocked.
 	if r.URL.Path == "/openapi.json" || r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
 		s.apiRoutes(w, r)
@@ -386,17 +386,18 @@ func (s *server) putFile(w http.ResponseWriter, r *http.Request, hash, sub strin
 		w.Header().Set("Location", "/"+hash+"/"+sub)
 		status = http.StatusCreated
 	}
-	if err := writeJSON(w, status, fileJSON{Path: entry.Path, Size: entry.Size, UpdatedAt: entry.UpdatedAt}); err != nil {
+	if err := writeJSON(w, status, fileJSON{Status: "ok", Path: entry.Path, Size: entry.Size, UpdatedAt: entry.UpdatedAt}); err != nil {
 		log.Printf("encode the entry %q in bin %q: %v", sub, hash, err)
 		http.Error(w, "could not answer the upload", http.StatusInternalServerError)
 	}
 }
 
-// archiveAnswer is the JSON a successful archive upload answers: the store's own
-// created and replaced counts for the extracted entries.
+// archiveAnswer is the JSON a successful archive upload answers: its own status first, then
+// the store's created and replaced counts for the extracted entries.
 type archiveAnswer struct {
-	Created  int `json:"created"`
-	Replaced int `json:"replaced"`
+	Status   string `json:"status"`
+	Created  int    `json:"created"`
+	Replaced int    `json:"replaced"`
 }
 
 // putArchive answers an extraction upload: the entries land under the upload name's
@@ -427,15 +428,16 @@ func (s *server) putArchive(w http.ResponseWriter, hash, sub string, kind archiv
 	if created >= 1 {
 		status = http.StatusCreated
 	}
-	if err := writeJSON(w, status, archiveAnswer{Created: created, Replaced: replaced}); err != nil {
+	if err := writeJSON(w, status, archiveAnswer{Status: "ok", Created: created, Replaced: replaced}); err != nil {
 		log.Printf("encode the counts of %q in bin %q: %v", sub, hash, err)
 		http.Error(w, "could not answer the upload", http.StatusInternalServerError)
 	}
 }
 
-// deleteBody is the DELETE answer: the bin-relative paths that were removed, a folder
-// listing every file it took.
+// deleteBody is the DELETE answer: its own status first, then the bin-relative paths that
+// were removed, a folder listing every file it took.
 type deleteBody struct {
+	Status  string   `json:"status"`
 	Deleted []string `json:"deleted"`
 }
 
@@ -506,7 +508,7 @@ func (s *server) deletePath(w http.ResponseWriter, r *http.Request, hash, sub st
 		return
 	}
 
-	out, err := json.Marshal(deleteBody{Deleted: deleted})
+	out, err := json.Marshal(deleteBody{Status: "ok", Deleted: deleted})
 	if err != nil {
 		log.Printf("encode the deleted paths of bin %q: %v", hash, err)
 		http.Error(w, "could not answer the delete", http.StatusInternalServerError)
