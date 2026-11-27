@@ -63,11 +63,16 @@ type fakeServer struct {
 
 	// Archive knobs for the archive tests: unpack makes a PUT without the ?raw
 	// query extract a gzipped tar body the way the real server does, and putFail,
-	// when non-zero, answers every PUT with that status. pageSize is the GET
-	// /api/bins page size, 100 when unset.
-	unpack   bool
-	putFail  int
-	pageSize int
+	// when non-zero, answers every PUT with that status. putFailBody answers those
+	// injected refusals with this body instead of the injected-failure line, and
+	// putFailAfter lets that many PUTs through before putFail starts answering —
+	// together they refuse, say, the third file of a run with a pinned body.
+	// pageSize is the GET /api/bins page size, 100 when unset.
+	unpack       bool
+	putFail      int
+	putFailBody  string
+	putFailAfter int
+	pageSize     int
 
 	mu            sync.Mutex
 	requests      int
@@ -553,7 +558,13 @@ func (f *fakeServer) servePut(w http.ResponseWriter, r *http.Request, first, res
 		http.Error(w, "body over 1 MiB", http.StatusRequestEntityTooLarge)
 		return
 	}
-	if f.putFail != 0 {
+	if f.putFail != 0 && f.puts > f.putFailAfter {
+		if f.putFailBody != "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(f.putFail)
+			io.WriteString(w, f.putFailBody)
+			return
+		}
 		http.Error(w, "injected failure", f.putFail)
 		return
 	}
@@ -678,6 +689,22 @@ func (f *fakeServer) setPutFail(status int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.putFail = status
+}
+
+// setPutFailBody answers the injected PUT refusals with this body, which is how a
+// --json test hands the client a real error envelope. setPutFailAfter lets that
+// many PUTs succeed first, which is how a test refuses a run's third file and not
+// its first. Both change from the test goroutine under the handler's lock.
+func (f *fakeServer) setPutFailBody(body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.putFailBody = body
+}
+
+func (f *fakeServer) setPutFailAfter(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.putFailAfter = n
 }
 
 // setPageSize sizes the fake's GET /api/bins pages, which is how a list test forces
@@ -1027,6 +1054,22 @@ func TestRelayFallsBackToPlainBody(t *testing.T) {
 		if stdout != "" {
 			t.Errorf("status %d: stdout = %q, want nothing", c.status, stdout)
 		}
+	}
+}
+
+// TestRelayEmptyEnvelopeMessageUsesStatus is ruling R5(1): an envelope whose message is empty
+// is still an envelope — the relay names the status, never the raw JSON body.
+func TestRelayEmptyEnvelopeMessageUsesStatus(t *testing.T) {
+	stdout, stderr, err := runAgainstRefusal(t, http.StatusForbidden, "application/json",
+		`{"status":"error","code":403,"message":""}`+"\n")
+	if err == nil {
+		t.Fatalf("upload against an empty-message envelope succeeded, want an error")
+	}
+	if want := "sandbin-client: 403 403 Forbidden\n"; stderr != want {
+		t.Errorf("stderr = %q, want %q", stderr, want)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want nothing", stdout)
 	}
 }
 
@@ -3298,5 +3341,357 @@ func TestVersionFlagPrintsTheResolvedVersion(t *testing.T) {
 	}
 	if stderr != "" {
 		t.Errorf("sandbin-client --version stderr = %q, want nothing", stderr)
+	}
+}
+
+// The --json tests read the report the way a caller would: one JSON object, its keys, its
+// actions with their fixed sentences and each result the raw body the server answered with.
+
+type jsonActionProbe struct {
+	Description string          `json:"description"`
+	Result      json.RawMessage `json:"result"`
+}
+
+type jsonReportProbe struct {
+	Status  string            `json:"status"`
+	Bin     string            `json:"bin"`
+	URL     string            `json:"url"`
+	Actions []jsonActionProbe `json:"actions"`
+	Message string            `json:"message"`
+}
+
+// decodeJSONReport fails the test unless stdout is exactly one JSON object, and hands back its
+// fields plus its key set, so a test can also say which keys a report left out.
+func decodeJSONReport(t *testing.T, stdout string) (jsonReportProbe, map[string]json.RawMessage) {
+	t.Helper()
+	var rep jsonReportProbe
+	if err := json.Unmarshal([]byte(stdout), &rep); err != nil {
+		t.Fatalf("--json stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(stdout), &keys); err != nil {
+		t.Fatalf("--json stdout is not one JSON object: %v\n%s", err, stdout)
+	}
+	return rep, keys
+}
+
+func assertActionDescriptions(t *testing.T, rep jsonReportProbe, want []string) {
+	t.Helper()
+	got := make([]string, 0, len(rep.Actions))
+	for _, action := range rep.Actions {
+		got = append(got, action.Description)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("action descriptions = %v, want %v", got, want)
+	}
+}
+
+func decodeActionResult(t *testing.T, raw json.RawMessage) any {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatalf("action result %q is not JSON: %v", raw, err)
+	}
+	return v
+}
+
+// TestUploadJSONActions is the upload report: a run that creates its bin stores its files, and
+// every action names its step with the fixed sentence and carries the server's own raw answer.
+// The same directory then gets a title through the metadata PATCH, which is what the fixed
+// patch sentence belongs to.
+func TestUploadJSONActions(t *testing.T) {
+	f := newFake(t, "test-key")
+	writeWorkDirFile(t, "a.txt", "aaa")
+	writeWorkDirFile(t, "b.md", "bbb")
+	base := os.Getenv("SANDBIN_URL")
+
+	stdout, stderr, err := runClient(t, nil, "upload", "--json", "a.txt", "b.md")
+	if err != nil {
+		t.Fatalf("upload --json: %v; stderr %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want nothing on a successful run", stderr)
+	}
+	rep, _ := decodeJSONReport(t, stdout)
+	if rep.Status != "ok" {
+		t.Errorf("status = %q, want ok", rep.Status)
+	}
+	if rep.Bin != "bin0001" || rep.URL != base+"/bin0001/" {
+		t.Errorf("bin = %q, url = %q, want the created bin and its address at top level", rep.Bin, rep.URL)
+	}
+	assertActionDescriptions(t, rep, []string{"create the bin", "store a.txt", "store b.md"})
+	if got := decodeActionResult(t, rep.Actions[0].Result); !reflect.DeepEqual(got, map[string]any{
+		"bin": "bin0001", "url": "/bin0001/", "title": "", "description": "",
+		"has_password": false, "created_at": fakeCreatedAt(1),
+	}) {
+		t.Errorf("create result = %v, want the bin object the POST answered", got)
+	}
+	if got := decodeActionResult(t, rep.Actions[1].Result); !reflect.DeepEqual(got, map[string]any{
+		"path": "a.txt", "size": float64(len("aaa")), "updated_at": fakeFileUpdatedAt,
+	}) {
+		t.Errorf("store a.txt result = %v, want the stored row the PUT answered", got)
+	}
+	if got := decodeActionResult(t, rep.Actions[2].Result); !reflect.DeepEqual(got, map[string]any{
+		"path": "b.md", "size": float64(len("bbb")), "updated_at": fakeFileUpdatedAt,
+	}) {
+		t.Errorf("store b.md result = %v, want the stored row the PUT answered", got)
+	}
+
+	// A metadata flag on the bin this run stored is the PATCH action, before the store.
+	stdout, stderr, err = runClient(t, nil, "upload", "--json", "--title", "Audit notes", "a.txt")
+	if err != nil {
+		t.Fatalf("metadata upload --json: %v; stderr %s", err, stderr)
+	}
+	rep, _ = decodeJSONReport(t, stdout)
+	if rep.Status != "ok" {
+		t.Errorf("status = %q, want ok", rep.Status)
+	}
+	assertActionDescriptions(t, rep, []string{"set the bin title and description", "store a.txt"})
+	if got := decodeActionResult(t, rep.Actions[0].Result); !reflect.DeepEqual(got, map[string]any{
+		"bin": "bin0001", "url": "/bin0001/", "title": "Audit notes", "description": "",
+		"has_password": false, "created_at": fakeCreatedAt(1),
+	}) {
+		t.Errorf("patch result = %v, want the bin row the PATCH answered", got)
+	}
+	// The wire behind the report: the create POST and two PUTs, then one PATCH and one PUT.
+	if f.requestsSeen() != 5 || f.putsSeen() != 3 || f.patchesSeen() != 1 {
+		t.Errorf("requests = %d (PUTs %d, PATCHes %d), want 1 POST, 3 PUTs and 1 PATCH",
+			f.requestsSeen(), f.putsSeen(), f.patchesSeen())
+	}
+}
+
+// TestUploadJSONReusesBinWithoutCreate is the reuse rule on the report: a stored bin is not
+// a step, so no create the bin action appears — while bin and url still name it.
+func TestUploadJSONReusesBinWithoutCreate(t *testing.T) {
+	f := newFake(t, "test-key")
+	writeWorkDirFile(t, "a.txt", "aaa")
+	first, _, err := runClient(t, nil, "upload", "a.txt")
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	hash := binHashOf(t, first)
+	base := os.Getenv("SANDBIN_URL")
+
+	writeWorkDirFile(t, "b.md", "bbb")
+	stdout, stderr, err := runClient(t, nil, "upload", "--json", "b.md")
+	if err != nil {
+		t.Fatalf("upload --json: %v; stderr %s", err, stderr)
+	}
+	rep, _ := decodeJSONReport(t, stdout)
+	if rep.Status != "ok" {
+		t.Errorf("status = %q, want ok", rep.Status)
+	}
+	if rep.Bin != hash || rep.URL != base+"/"+hash+"/" {
+		t.Errorf("bin = %q, url = %q, want the reused bin named at top level", rep.Bin, rep.URL)
+	}
+	assertActionDescriptions(t, rep, []string{"store b.md"})
+	if f.binCount() != 1 {
+		t.Errorf("bins = %d, want the stored bin only", f.binCount())
+	}
+}
+
+// TestUploadJSONStopsAtFailedStep is Review Focus 5: a refusal on the third file still leaves
+// one complete JSON object on stdout — three actions, the failed step's result the refusal
+// envelope — exits non-zero, and prints no sandbin-client: error line, only the protected-bin
+// warning on stderr.
+func TestUploadJSONStopsAtFailedStep(t *testing.T) {
+	f := newFake(t, "test-key")
+	hash := f.addBin("")
+	base := os.Getenv("SANDBIN_URL")
+	writeWorkDirFile(t, configFileName, "sandbin_url: "+base+"\nbin: "+hash+"\nprotected: true\n")
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		writeWorkDirFile(t, name, "body of "+name)
+	}
+	f.setPutFail(http.StatusUnauthorized)
+	f.setPutFailBody(`{"status":"error","code":401,"message":"bin password required"}` + "\n")
+	f.setPutFailAfter(2)
+
+	stdout, stderr, err := runClient(t, nil, "upload", "--json", "a.txt", "b.txt", "c.txt")
+	if err == nil {
+		t.Fatalf("upload against a refused third file succeeded, want a non-zero exit")
+	}
+	if want := "sandbin-client: warning: bin " + hash + " has a password and SANDBIN_BIN_PASSWORD is not set\n"; stderr != want {
+		t.Errorf("stderr = %q, want only the protected-bin warning", stderr)
+	}
+	rep, _ := decodeJSONReport(t, stdout)
+	if rep.Status != "error" {
+		t.Errorf("status = %q, want error", rep.Status)
+	}
+	if rep.Message != "bin password required" {
+		t.Errorf("message = %q, want the refused envelope's message", rep.Message)
+	}
+	if rep.Bin != hash || rep.URL != base+"/"+hash+"/" {
+		t.Errorf("bin = %q, url = %q, want the bin named at top level", rep.Bin, rep.URL)
+	}
+	assertActionDescriptions(t, rep, []string{"store a.txt", "store b.txt", "store c.txt"})
+	for i, name := range []string{"a.txt", "b.txt"} {
+		if got := decodeActionResult(t, rep.Actions[i].Result); !reflect.DeepEqual(got, map[string]any{
+			"path": name, "size": float64(len("body of " + name)), "updated_at": fakeFileUpdatedAt,
+		}) {
+			t.Errorf("store %s result = %v, want the stored row the PUT answered", name, got)
+		}
+	}
+	if got := decodeActionResult(t, rep.Actions[2].Result); !reflect.DeepEqual(got, map[string]any{
+		"status": "error", "code": float64(http.StatusUnauthorized), "message": "bin password required",
+	}) {
+		t.Errorf("failed step result = %v, want the refusal envelope", got)
+	}
+	// Three requests is the proof the array stopped at the failed step and nothing retried.
+	if f.requestsSeen() != 3 || f.putsSeen() != 3 {
+		t.Errorf("requests = %d (PUTs %d), want the three the report lists", f.requestsSeen(), f.putsSeen())
+	}
+}
+
+// TestListJSONActions is the list report: the one GET /api/bins as the list bins action, its
+// raw page body as the result, and no bin or url — a listing worked on no bin.
+func TestListJSONActions(t *testing.T) {
+	f := newFake(t, "test-key")
+	f.addBinMeta("", "alpha bin", "the oldest")
+	f.addBinMeta("", "gamma bin", "the newest")
+
+	stdout, stderr, err := runClient(t, nil, "list", "--json")
+	if err != nil {
+		t.Fatalf("list --json: %v; stderr %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want nothing on a successful run", stderr)
+	}
+	rep, keys := decodeJSONReport(t, stdout)
+	if rep.Status != "ok" {
+		t.Errorf("status = %q, want ok", rep.Status)
+	}
+	if _, ok := keys["bin"]; ok {
+		t.Errorf("the list report carries a bin key, want it left out")
+	}
+	if _, ok := keys["url"]; ok {
+		t.Errorf("the list report carries a url key, want it left out")
+	}
+	assertActionDescriptions(t, rep, []string{"list bins"})
+	want := map[string]any{"bins": []any{
+		map[string]any{"bin": "bin0002", "url": "/bin0002/", "title": "gamma bin",
+			"description": "the newest", "has_password": false, "created_at": fakeCreatedAt(2)},
+		map[string]any{"bin": "bin0001", "url": "/bin0001/", "title": "alpha bin",
+			"description": "the oldest", "has_password": false, "created_at": fakeCreatedAt(1)},
+	}}
+	if got := decodeActionResult(t, rep.Actions[0].Result); !reflect.DeepEqual(got, want) {
+		t.Errorf("list result = %v, want the page body the GET answered", got)
+	}
+	if f.listRequests() != 1 {
+		t.Errorf("GET /api/bins = %d, want the one request the report lists", f.listRequests())
+	}
+}
+
+// TestDescribeJSONObject is the describe report, pinned byte for byte: the run's status, the
+// bin and its address at top level, and the one describe the bin action carrying the whole
+// inspect answer.
+func TestDescribeJSONObject(t *testing.T) {
+	f := newFake(t, "test-key")
+	hash := f.addBinMeta("", "Release notes", "notes for the release")
+	base := os.Getenv("SANDBIN_URL")
+
+	stdout, stderr, err := runClient(t, nil, "describe", "--json", "--bin", hash)
+	if err != nil {
+		t.Fatalf("describe --json: %v; stderr %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want nothing on a successful run", stderr)
+	}
+	want := `{"status":"ok","bin":"bin0001","url":"` + base + `/bin0001/","actions":[{"description":"describe the bin",` +
+		`"result":{"bin":"bin0001","url":"/bin0001/","title":"Release notes","description":"notes for the release",` +
+		`"has_password":false,"created_at":"` + fakeCreatedAt(1) + `","files":[]}}]}` + "\n"
+	if stdout != want {
+		t.Errorf("stdout =\n%s\nwant exactly\n%s", stdout, want)
+	}
+	rep, keys := decodeJSONReport(t, stdout)
+	if rep.Status != "ok" || rep.Bin != hash || rep.URL != base+"/"+hash+"/" {
+		t.Errorf("status = %q, bin = %q, url = %q, want ok and the inspected bin named", rep.Status, rep.Bin, rep.URL)
+	}
+	if _, ok := keys["message"]; ok {
+		t.Errorf("the ok report carries a message key, want it left out")
+	}
+}
+
+// TestDeleteJSONActions is the delete report: one delete <path> action per DELETE, in the
+// order the run named them, each carrying the server's deleted-paths answer. The flag-after-
+// path spelling reorders --json the same way it reorders every delete flag.
+func TestDeleteJSONActions(t *testing.T) {
+	f := newFake(t, "test-key")
+	for _, name := range []string{"notes.md", "other.md", "third.md"} {
+		writeWorkDirFile(t, name, "body of "+name)
+	}
+	first, _, err := runClient(t, nil, "upload", "notes.md", "other.md", "third.md")
+	if err != nil {
+		t.Fatalf("upload run: %v", err)
+	}
+	hash := binHashOf(t, first)
+	base := os.Getenv("SANDBIN_URL")
+
+	stdout, stderr, err := runClient(t, nil, "delete", "--json", "notes.md", "other.md")
+	if err != nil {
+		t.Fatalf("delete --json: %v; stderr %s", err, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want nothing on a successful run", stderr)
+	}
+	rep, _ := decodeJSONReport(t, stdout)
+	if rep.Status != "ok" {
+		t.Errorf("status = %q, want ok", rep.Status)
+	}
+	if rep.Bin != hash || rep.URL != base+"/"+hash+"/" {
+		t.Errorf("bin = %q, url = %q, want the deleted-from bin named at top level", rep.Bin, rep.URL)
+	}
+	assertActionDescriptions(t, rep, []string{"delete notes.md", "delete other.md"})
+	if got := decodeActionResult(t, rep.Actions[0].Result); !reflect.DeepEqual(got, map[string]any{"deleted": []any{"notes.md"}}) {
+		t.Errorf("delete notes.md result = %v, want the DELETE answer", got)
+	}
+	if got := decodeActionResult(t, rep.Actions[1].Result); !reflect.DeepEqual(got, map[string]any{"deleted": []any{"other.md"}}) {
+		t.Errorf("delete other.md result = %v, want the DELETE answer", got)
+	}
+
+	stdout, stderr, err = runClient(t, nil, "delete", "third.md", "--json")
+	if err != nil {
+		t.Fatalf("delete third.md --json: %v; stderr %s", err, stderr)
+	}
+	rep, _ = decodeJSONReport(t, stdout)
+	if rep.Status != "ok" {
+		t.Errorf("status = %q, want ok", rep.Status)
+	}
+	assertActionDescriptions(t, rep, []string{"delete third.md"})
+	if f.deletesSeen() != 3 {
+		t.Errorf("DELETEs = %d, want the three the two reports list", f.deletesSeen())
+	}
+}
+
+// TestJSONRefusalWithoutServerIsClientSentence is the no-request refusal: a run that never got
+// to ask a server answers status error with the client's own sentence, an empty actions array,
+// and nothing else — pinned byte for byte.
+func TestJSONRefusalWithoutServerIsClientSentence(t *testing.T) {
+	f := newFake(t, "test-key")
+	t.Setenv("SANDBIN_URL", "")
+	writeWorkDirFile(t, "a.txt", "aaa")
+
+	stdout, stderr, err := runClient(t, nil, "upload", "--json", "a.txt")
+	if err == nil {
+		t.Fatalf("upload --json without a server URL succeeded, want a non-zero exit")
+	}
+	want := `{"status":"error","actions":[],"message":"no server URL: pass --url, set SANDBIN_URL or run sandbin-client init"}` + "\n"
+	if stdout != want {
+		t.Errorf("stdout =\n%s\nwant exactly\n%s", stdout, want)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want the sandbin-client: line silenced under --json", stderr)
+	}
+	rep, keys := decodeJSONReport(t, stdout)
+	if rep.Status != "error" || rep.Message != "no server URL: pass --url, set SANDBIN_URL or run sandbin-client init" {
+		t.Errorf("status = %q, message = %q, want the error status and the client's own sentence", rep.Status, rep.Message)
+	}
+	if len(rep.Actions) != 0 {
+		t.Errorf("actions = %v, want the empty array", rep.Actions)
+	}
+	if _, ok := keys["bin"]; ok {
+		t.Errorf("the report carries a bin key, want it left out")
+	}
+	if f.requestsSeen() != 0 {
+		t.Errorf("requests = %d, want none", f.requestsSeen())
 	}
 }

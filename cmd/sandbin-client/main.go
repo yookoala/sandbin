@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -219,6 +220,49 @@ func reportFailure(stderr io.Writer, err error) {
 	}
 }
 
+// jsonFlag is the machine-readable output switch, offered to the four verbs that carry work
+// and not to init, whose output is a setup transcript for a person.
+func jsonFlag() cli.Flag {
+	return &cli.BoolFlag{Name: "json", Usage: "print the run as one JSON action report on stdout"}
+}
+
+// printJSONReport writes the run's one JSON action report to stdout, with a trailing
+// newline. Actions always prints as an array, even an empty one.
+func printJSONReport(stdout io.Writer, rep clientReport) {
+	if rep.Actions == nil {
+		rep.Actions = []clientAction{}
+	}
+	out, err := json.Marshal(rep)
+	if err != nil {
+		return // unreachable: note keeps every result valid JSON
+	}
+	fmt.Fprintln(stdout, string(out))
+}
+
+// failureReport is the --json answer of a failed run: the bin it had resolved, the actions
+// that completed plus the failed step's, and the message — the refusal envelope's when a
+// server answered, the client's own sentence when none did.
+func failureReport(cl *client, bin string, err error) clientReport {
+	rep := clientReport{Status: "error", Message: refusalMessage(err)}
+	if cl != nil {
+		rep.Actions = cl.actions
+		if bin != "" {
+			rep.Bin, rep.URL = bin, cl.binURL(bin)
+		}
+	}
+	return rep
+}
+
+// refusalMessage is what --json puts in message: an apiError's message is exactly the
+// sentence the human path relays; any other error is its own sentence.
+func refusalMessage(err error) string {
+	var api *apiError
+	if errors.As(err, &api) {
+		return api.message
+	}
+	return err.Error()
+}
+
 // uploadCommand is sandbin-client upload: file arguments and piped stdin go into this
 // directory's bin, and a metadata flag on its own describes the bin without uploading.
 func uploadCommand(stdin io.Reader, stdout, stderr io.Writer, hook cli.OnUsageErrorFunc) *cli.Command {
@@ -231,6 +275,7 @@ func uploadCommand(stdin io.Reader, stdout, stderr io.Writer, hook cli.OnUsageEr
 	flags = append(flags,
 		&cli.StringFlag{Name: "archive", Usage: "upload this folder as one tar.gz the server unpacks into the bin"},
 		&cli.BoolFlag{Name: "no-extract", Usage: "put every upload with ?raw=1, so archive bodies are stored raw"},
+		jsonFlag(),
 	)
 	cmd := &cli.Command{
 		Name:      "upload",
@@ -249,9 +294,21 @@ func uploadCommand(stdin io.Reader, stdout, stderr io.Writer, hook cli.OnUsageEr
 // a request, reads stdin before choosing a bin, and holds its stdout lines until every
 // request has succeeded.
 func runUpload(c *cli.Context, stdin io.Reader, stdout, stderr io.Writer) (err error) {
+	jsonMode := c.Bool("json")
+	// cl and bin must outlive an error return so the failure report can still name them.
+	var (
+		cl          *client
+		bin         string
+		protected   bool
+		justCreated bool
+	)
 	defer func() {
 		if err != nil {
-			reportFailure(stderr, err)
+			if jsonMode {
+				printJSONReport(stdout, failureReport(cl, bin, err))
+			} else {
+				reportFailure(stderr, err)
+			}
 		}
 	}()
 
@@ -290,7 +347,7 @@ func runUpload(c *cli.Context, stdin io.Reader, stdout, stderr io.Writer) (err e
 	}
 
 	// The bin password is env-only on purpose: no flag puts it on a command line.
-	cl, err := newClient(s.baseURL, s.apiKey, os.Getenv("SANDBIN_BIN_PASSWORD"))
+	cl, err = newClient(s.baseURL, s.apiKey, os.Getenv("SANDBIN_BIN_PASSWORD"))
 	if err != nil {
 		return err
 	}
@@ -343,7 +400,7 @@ func runUpload(c *cli.Context, stdin io.Reader, stdout, stderr io.Writer) (err e
 		archiveName = path.Base(folder) + ".tar.gz"
 	}
 
-	bin, protected, justCreated, err := resolveBin(cl, dir, s.cfg, s.cfgFound, binFlag, newBin, titleFlag, descriptionFlag)
+	bin, protected, justCreated, err = resolveBin(cl, dir, s.cfg, s.cfgFound, binFlag, newBin, titleFlag, descriptionFlag)
 	if err != nil {
 		return err
 	}
@@ -393,6 +450,10 @@ func runUpload(c *cli.Context, stdin io.Reader, stdout, stderr io.Writer) (err e
 		lines = append(lines, resultLine(created, extracted, cl.fileURL(bin, archiveName)))
 	}
 
+	if jsonMode {
+		printJSONReport(stdout, clientReport{Status: "ok", Bin: bin, URL: cl.binURL(bin), Actions: cl.actions})
+		return nil
+	}
 	lines = append(lines, cl.binURL(bin))
 	for _, line := range lines {
 		fmt.Fprintln(stdout, line)
@@ -423,6 +484,7 @@ func deleteCommand(stdout, stderr io.Writer, hook cli.OnUsageErrorFunc) *cli.Com
 	flags = append(flags, metadataFlags()...)
 	flags = append(flags,
 		&cli.StringSliceFlag{Name: "folder", Usage: "delete this folder and everything under it; repeat it per folder"},
+		jsonFlag(),
 	)
 	cmd := &cli.Command{
 		Name:      "delete",
@@ -441,9 +503,19 @@ func deleteCommand(stdout, stderr io.Writer, hook cli.OnUsageErrorFunc) *cli.Com
 // describe does and never makes one, and its lines are held until every request has
 // succeeded.
 func runDelete(c *cli.Context, stdout, stderr io.Writer) (err error) {
+	jsonMode := c.Bool("json")
+	var (
+		cl        *client
+		bin       string
+		protected bool
+	)
 	defer func() {
 		if err != nil {
-			reportFailure(stderr, err)
+			if jsonMode {
+				printJSONReport(stdout, failureReport(cl, bin, err))
+			} else {
+				reportFailure(stderr, err)
+			}
 		}
 	}()
 
@@ -479,12 +551,12 @@ func runDelete(c *cli.Context, stdout, stderr io.Writer) (err error) {
 		return errors.New("no API key: pass --api-key, set SANDBIN_API_KEY or run sandbin-client init")
 	}
 
-	cl, err := newClient(s.baseURL, s.apiKey, os.Getenv("SANDBIN_BIN_PASSWORD"))
+	cl, err = newClient(s.baseURL, s.apiKey, os.Getenv("SANDBIN_BIN_PASSWORD"))
 	if err != nil {
 		return err
 	}
 
-	bin, protected, err := resolveExistingBin(cl, dir, s.cfg, s.cfgFound, c.String("bin"), "delete")
+	bin, protected, err = resolveExistingBin(cl, dir, s.cfg, s.cfgFound, c.String("bin"), "delete")
 	if err != nil {
 		return err
 	}
@@ -515,6 +587,10 @@ func runDelete(c *cli.Context, stdout, stderr io.Writer) (err error) {
 			lines = append(lines, "deleted "+cl.fileURL(bin, name))
 		}
 	}
+	if jsonMode {
+		printJSONReport(stdout, clientReport{Status: "ok", Bin: bin, URL: cl.binURL(bin), Actions: cl.actions})
+		return nil
+	}
 	lines = append(lines, cl.binURL(bin))
 	for _, line := range lines {
 		fmt.Fprintln(stdout, line)
@@ -527,6 +603,7 @@ func runDelete(c *cli.Context, stdout, stderr io.Writer) (err error) {
 func describeCommand(stdout, stderr io.Writer, hook cli.OnUsageErrorFunc) *cli.Command {
 	flags := append(settingFlags(),
 		&cli.StringFlag{Name: "bin", Usage: "an existing bin hash to read"},
+		jsonFlag(),
 	)
 	cmd := &cli.Command{
 		Name:      "describe",
@@ -542,9 +619,19 @@ func describeCommand(stdout, stderr io.Writer, hook cli.OnUsageErrorFunc) *cli.C
 }
 
 func runDescribe(c *cli.Context, stdout, stderr io.Writer) (err error) {
+	jsonMode := c.Bool("json")
+	var (
+		cl        *client
+		bin       string
+		protected bool
+	)
 	defer func() {
 		if err != nil {
-			reportFailure(stderr, err)
+			if jsonMode {
+				printJSONReport(stdout, failureReport(cl, bin, err))
+			} else {
+				reportFailure(stderr, err)
+			}
 		}
 	}()
 
@@ -561,12 +648,12 @@ func runDescribe(c *cli.Context, stdout, stderr io.Writer) (err error) {
 		return err
 	}
 
-	cl, err := newClient(s.baseURL, s.apiKey, os.Getenv("SANDBIN_BIN_PASSWORD"))
+	cl, err = newClient(s.baseURL, s.apiKey, os.Getenv("SANDBIN_BIN_PASSWORD"))
 	if err != nil {
 		return err
 	}
 
-	bin, protected, err := resolveExistingBin(cl, dir, s.cfg, s.cfgFound, c.String("bin"), "describe")
+	bin, protected, err = resolveExistingBin(cl, dir, s.cfg, s.cfgFound, c.String("bin"), "describe")
 	if err != nil {
 		return err
 	}
@@ -576,6 +663,10 @@ func runDescribe(c *cli.Context, stdout, stderr io.Writer) (err error) {
 	info, err := cl.inspectBin(bin)
 	if err != nil {
 		return err
+	}
+	if jsonMode {
+		printJSONReport(stdout, clientReport{Status: "ok", Bin: bin, URL: cl.binURL(bin), Actions: cl.actions})
+		return nil
 	}
 	password := "no"
 	if info.HasPassword {
@@ -602,7 +693,7 @@ func listCommand(stdout, stderr io.Writer, hook cli.OnUsageErrorFunc) *cli.Comma
 		Name:      "list",
 		Usage:     "print every bin on the server, newest first",
 		ArgsUsage: "(no arguments)",
-		Flags:     settingFlags(),
+		Flags:     append(settingFlags(), jsonFlag()),
 		Action: func(c *cli.Context) error {
 			return runList(c, stdout, stderr)
 		},
@@ -614,9 +705,15 @@ func listCommand(stdout, stderr io.Writer, hook cli.OnUsageErrorFunc) *cli.Comma
 // runList is the whole list verb: one walk of GET /api/bins, then one line per bin on
 // stdout, newest first. A bin with no title prints without the title column.
 func runList(c *cli.Context, stdout, stderr io.Writer) (err error) {
+	jsonMode := c.Bool("json")
+	var cl *client
 	defer func() {
 		if err != nil {
-			reportFailure(stderr, err)
+			if jsonMode {
+				printJSONReport(stdout, failureReport(cl, "", err))
+			} else {
+				reportFailure(stderr, err)
+			}
 		}
 	}()
 
@@ -639,13 +736,17 @@ func runList(c *cli.Context, stdout, stderr io.Writer) (err error) {
 		return errors.New("no API key: pass --api-key, set SANDBIN_API_KEY or run sandbin-client init")
 	}
 
-	cl, err := newClient(s.baseURL, s.apiKey, "")
+	cl, err = newClient(s.baseURL, s.apiKey, "")
 	if err != nil {
 		return err
 	}
 	bins, err := cl.listBins()
 	if err != nil {
 		return err
+	}
+	if jsonMode {
+		printJSONReport(stdout, clientReport{Status: "ok", Actions: cl.actions})
+		return nil
 	}
 	if len(bins) == 0 {
 		fmt.Fprintln(stdout, "no bins")

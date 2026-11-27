@@ -37,13 +37,18 @@ func (e *apiError) Error() string {
 // newAPIError keeps what the client reports about a refused request.
 func newAPIError(resp *http.Response, body []byte) *apiError {
 	// The server's refusals are the JSON error envelope: {"status":"error","code":<status>,
-	// "message":<sentence>}. Its message is what this client relays. Anything that is not
-	// that shape — the plain-text body an older server or a proxy writes, a page, an empty
-	// body — reads the way it always did: the trimmed body, or the status text when there is
-	// no body to read.
-	message := envelopeMessage(body)
+	// "message":<sentence>}. Its message is what this client relays — and when the envelope
+	// carries an empty message, the response's own status text is what it relays, never the
+	// raw JSON. Anything that is not an envelope — the plain-text body an older server or a
+	// proxy writes, a page, an empty body — reads the way it always did: the trimmed body,
+	// or the status text when there is no body to read.
+	message, isEnvelope := envelopeMessage(body)
 	if message == "" {
-		message = strings.TrimSpace(string(body))
+		if isEnvelope {
+			message = resp.Status
+		} else {
+			message = strings.TrimSpace(string(body))
+		}
 	}
 	if message == "" {
 		message = resp.Status
@@ -57,20 +62,40 @@ func newAPIError(resp *http.Response, body []byte) *apiError {
 	return &apiError{status: resp.StatusCode, message: message, retryAfter: retryAfter}
 }
 
-// envelopeMessage reads the message out of the JSON error envelope, and answers the empty
-// string for every body that is not one: a plain-text line, a page, or no body at all.
-func envelopeMessage(body []byte) string {
+// envelopeMessage reads the message out of the JSON error envelope — and says whether the
+// body is one at all, which is how an empty envelope message still reads as a refusal
+// sentence rather than as a body to fall back on.
+func envelopeMessage(body []byte) (string, bool) {
 	var envelope struct {
 		Status  string `json:"status"`
 		Message string `json:"message"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return ""
+		return "", false
 	}
 	if envelope.Status != "error" {
-		return ""
+		return "", false
 	}
-	return envelope.Message
+	return envelope.Message, true
+}
+
+// clientAction is one server request a --json run made: the fixed sentence naming its step
+// and the raw body the server answered that request with. Reading .sandbin.yaml or reusing a
+// stored bin makes no request, so it is no action.
+type clientAction struct {
+	Description string          `json:"description"`
+	Result      json.RawMessage `json:"result"`
+}
+
+// clientReport is the one JSON object --json prints for a run: its status, the bin it worked
+// on and that bin's address whenever the run resolved one, the actions in request order, and
+// the refusal's message when the run failed.
+type clientReport struct {
+	Status  string         `json:"status"`
+	Bin     string         `json:"bin,omitempty"`
+	URL     string         `json:"url,omitempty"`
+	Actions []clientAction `json:"actions"`
+	Message string         `json:"message,omitempty"`
 }
 
 // client talks to one server with one API key. Every call is exactly one attempt:
@@ -82,6 +107,7 @@ type client struct {
 	apiKey    string
 	password  string // empty leaves the bin open
 	noExtract bool   // --no-extract: every PUT of the run carries the ?raw=1 opt-out query
+	actions   []clientAction
 }
 
 // newClient checks the base URL once, so a bad --url fails before any request.
@@ -98,6 +124,22 @@ func newClient(base, apiKey, password string) (*client, error) {
 	}
 	u.Path = strings.TrimSuffix(u.Path, "/")
 	return &client{http: &http.Client{Timeout: 30 * time.Second}, base: u, apiKey: apiKey, password: password}, nil
+}
+
+// note records one request the server answered as an action of the --json report, success or
+// refusal alike. A request the server never answered (a refused connection) makes no action,
+// and a body that is not JSON is recorded as its text, so a report is always parseable.
+func (c *client) note(description string, body []byte) {
+	if body == nil {
+		return
+	}
+	var result json.RawMessage
+	if json.Valid(body) {
+		result = append(json.RawMessage(nil), body...)
+	} else {
+		result, _ = json.Marshal(strings.TrimRight(string(body), "\r\n"))
+	}
+	c.actions = append(c.actions, clientAction{Description: description, Result: result})
 }
 
 // binURL is the bin base path, the one line to hand to a human.
@@ -180,6 +222,7 @@ func (c *client) createBin(title, description string) (string, error) {
 	req.Header.Set(apiKeyHeader, c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	_, _, answer, err := c.do(req)
+	c.note("create the bin", answer)
 	if err != nil {
 		return "", err
 	}
@@ -212,6 +255,7 @@ func (c *client) putFile(bin, name string, body io.Reader) (bool, int, error) {
 		req.URL.RawQuery = "raw=1"
 	}
 	status, _, answer, err := c.do(req)
+	c.note("store "+name, answer)
 	if err != nil {
 		return false, 0, err
 	}
@@ -258,6 +302,7 @@ func (c *client) deletePaths(bin, name string, folder bool) ([]string, error) {
 		req.SetBasicAuth(bin, c.password)
 	}
 	status, _, body, err := c.do(req)
+	c.note("delete "+name, body)
 	if err != nil {
 		return nil, err
 	}
@@ -300,7 +345,8 @@ func (c *client) patchBinMeta(bin string, title, description *string) error {
 	if c.password != "" {
 		req.SetBasicAuth(bin, c.password)
 	}
-	status, _, _, err := c.do(req)
+	status, _, body, err := c.do(req)
+	c.note("set the bin title and description", body)
 	if err != nil {
 		return err
 	}
@@ -323,6 +369,7 @@ func (c *client) inspectBin(bin string) (binInfo, error) {
 		req.SetBasicAuth(bin, c.password)
 	}
 	_, _, body, err := c.do(req)
+	c.note("describe the bin", body)
 	if err != nil {
 		return binInfo{}, err
 	}
@@ -352,6 +399,7 @@ func (c *client) listBins() ([]binInfo, error) {
 		}
 		req.Header.Set(apiKeyHeader, c.apiKey)
 		_, _, body, err := c.do(req)
+		c.note("list bins", body)
 		if err != nil {
 			return nil, err
 		}
@@ -391,6 +439,7 @@ func (c *client) verifyKey() error {
 	if err != nil {
 		return fmt.Errorf("cannot reach %s: read response: %v", c.base, err)
 	}
+	c.note("verify the API key", body)
 	switch resp.StatusCode {
 	case http.StatusOK:
 		return nil
@@ -418,7 +467,9 @@ func (c *client) do(req *http.Request) (int, http.Header, []byte, error) {
 		return resp.StatusCode, nil, nil, fmt.Errorf("%s %s: read response: %v", req.Method, req.URL, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return resp.StatusCode, nil, nil, newAPIError(resp, body)
+		// The refused body comes back alongside the *apiError, because the --json report
+		// prints the refusal envelope as the failed step's result.
+		return resp.StatusCode, nil, body, newAPIError(resp, body)
 	}
 	return resp.StatusCode, resp.Header, body, nil
 }
